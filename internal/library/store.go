@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -57,6 +60,9 @@ type Song struct {
 	Instrumental bool `json:"instrumental,omitempty"`
 	// DerivedFrom is the ID of the song this one was copied from.
 	DerivedFrom string `json:"derived_from,omitempty"`
+	// Takes records the song's audio files; Audio names the current one.
+	// Songs without it list the take files found in their folder.
+	Takes []Take `json:"takes,omitempty"`
 }
 
 // CheckRender reports what stops the song from rendering, as the
@@ -70,10 +76,25 @@ const songFile = "song.json"
 type Store struct {
 	dir string
 	now func() time.Time
+	// Probe reads an audio file's length in seconds, 0 when unknown; nil
+	// leaves lengths it was not told unknown.
+	Probe func(path string) float64
+	// mu keeps each Save's merge of take records, and each Update, whole.
+	mu sync.Mutex
 }
 
 func NewStore(dir string) *Store {
-	return &Store{dir: dir, now: time.Now}
+	return &Store{dir: dir, now: time.Now, Probe: ProbeDuration}
+}
+
+// ProbeDuration reads an audio file's length with ffprobe, or 0.
+func ProbeDuration(path string) float64 {
+	out, err := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", path).Output()
+	if err != nil {
+		return 0
+	}
+	d, _ := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+	return d
 }
 
 func (s *Store) Dir() string { return s.dir }
@@ -134,10 +155,24 @@ func (s *Store) Create(song Song) (Song, error) {
 	return song, s.Save(song)
 }
 
-// Save writes song.json atomically.
+// Save writes song.json atomically. Take records are only ever added: any
+// the stored copy has and song lacks are kept.
 func (s *Store) Save(song Song) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.save(song)
+}
+
+func (s *Store) save(song Song) error {
 	if song.ID == "" {
 		return errors.New("save song: empty id")
+	}
+	if stored, err := s.Load(song.ID); err == nil {
+		for _, t := range stored.Takes {
+			if !slices.ContainsFunc(song.Takes, func(x Take) bool { return x.File == t.File }) {
+				song.Takes = append(song.Takes, t)
+			}
+		}
 	}
 	dir := s.songDir(song.ID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

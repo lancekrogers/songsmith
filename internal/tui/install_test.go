@@ -305,7 +305,7 @@ func TestBrowsingStartsNothing(t *testing.T) {
 	for range 30 {
 		a = hit(t, a, "up")
 	}
-	for _, sec := range []string{"2", "3", "5", "1"} {
+	for _, sec := range []string{"2", "3", "6", "1"} {
 		a = hit(t, a, sec)
 		for range 10 {
 			a = hit(t, a, "down")

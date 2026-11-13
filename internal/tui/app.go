@@ -14,7 +14,7 @@ import (
 	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/health"
 	"github.com/lancekrogers/songsmith/internal/library"
-	"github.com/lancekrogers/songsmith/internal/player"
+	"github.com/lancekrogers/songsmith/internal/master"
 	"github.com/lancekrogers/songsmith/internal/queue"
 	"github.com/lancekrogers/songsmith/internal/writer"
 )
@@ -25,12 +25,32 @@ type Drafter interface {
 	Revise(ctx context.Context, current writer.Draft, idea, instruction string, opts writer.Options) (writer.Draft, error)
 }
 
+// AudioPlayer plays one file at a time; *player.Player is one.
+type AudioPlayer interface {
+	Play(path string) error
+	Stop()
+	Current() string
+	// Finished delivers the path of each file whose playback ended.
+	Finished() <-chan string
+}
+
+// MasterRunner measures, previews and masters audio; *master.Runner is one.
+type MasterRunner interface {
+	// Check reports why mastering cannot run here, or nil.
+	Check() error
+	Analyze(ctx context.Context, path string) (master.Measure, error)
+	Preview(ctx context.Context, in, out string, s master.Settings, start, seconds float64) (master.Measure, error)
+	Render(ctx context.Context, in, out string, s master.Settings, progress func(float64)) (master.Measure, error)
+}
+
 // Deps are the services the screens share.
 type Deps struct {
 	Store   *library.Store
 	Queue   *queue.Queue
 	Drafter Drafter
-	Player  *player.Player
+	Player  AudioPlayer
+	// Master measures, previews and masters takes; nil means ffmpeg.
+	Master MasterRunner
 	// Config holds the running settings and the file they were loaded from.
 	Config *config.Live
 	// Checks runs the setup checks. It is called off the UI goroutine;
@@ -59,6 +79,7 @@ const (
 	screenCompose
 	screenSettings
 	screenSetup
+	screenMaster
 )
 
 type (
@@ -81,6 +102,8 @@ type (
 
 	songsMsg struct {
 		songs []library.Song
+		// takes are each song's takes, read with the list.
+		takes map[string][]library.Take
 		err   error
 	}
 	updateMsg   queue.Update
@@ -104,7 +127,10 @@ type app struct {
 	library  libraryModel
 	compose  composeModel
 	settings settingsModel
+	master   masterModel
 	jobs     jobsState
+	// mastering are the takes being mastered, by song ID.
+	mastering masterJobs
 
 	// notice and err are the latest outcome, shown on the launcher and library.
 	notice, err string
@@ -115,15 +141,19 @@ func newApp(ctx context.Context, d Deps, updates <-chan queue.Update) app {
 	if d.Checks == nil {
 		d.Checks = health.Run
 	}
+	if d.Master == nil {
+		d.Master = master.NewRunner()
+	}
 	return app{
-		d:        d,
-		ctx:      ctx,
-		updates:  updates,
-		events:   newBridge(bridgeCapacity),
-		launcher: newLauncher(),
-		library:  newLibrary(),
-		compose:  newCompose(),
-		jobs:     newJobsState(),
+		d:         d,
+		ctx:       ctx,
+		updates:   updates,
+		events:    newBridge(bridgeCapacity),
+		launcher:  newLauncher(),
+		library:   newLibrary(),
+		compose:   newCompose(),
+		jobs:      newJobsState(),
+		mastering: newMasterJobs(),
 	}
 }
 
@@ -163,7 +193,13 @@ func (a app) loadSongs() tea.Cmd {
 	store := a.d.Store
 	return func() tea.Msg {
 		songs, err := store.List()
-		return songsMsg{songs, err}
+		takes := make(map[string][]library.Take, len(songs))
+		for _, s := range songs {
+			if s.Status == library.StatusDone || len(s.Takes) > 0 {
+				takes[s.ID] = store.Takes(s)
+			}
+		}
+		return songsMsg{songs: songs, takes: takes, err: err}
 	}
 }
 
@@ -177,8 +213,8 @@ func waitUpdate(ch <-chan queue.Update) tea.Cmd {
 	}
 }
 
-func waitPlayDone(p *player.Player) tea.Cmd {
-	return func() tea.Msg { return playDoneMsg(<-p.Done) }
+func waitPlayDone(p AudioPlayer) tea.Cmd {
+	return func() tea.Msg { return playDoneMsg(<-p.Finished()) }
 }
 
 func tick() tea.Cmd {
@@ -196,8 +232,11 @@ func (a app) defaultSeconds() float64 {
 func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := a.update(msg)
 	next.launcher = next.launcher.sync(next.launcherState())
-	if next.screen == screenSettings {
+	switch next.screen {
+	case screenSettings:
 		next.syncSettings()
+	case screenMaster:
+		next.syncMaster()
 	}
 	return next, cmd
 }
@@ -300,12 +339,22 @@ func (a app) update(msg tea.Msg) (app, tea.Cmd) {
 		return a.quit()
 	case settingsAsync:
 		return a.receiveSettings(msg)
+	case masterAsync:
+		return a.receiveMaster(msg)
+	case openMasterMsg:
+		if a.screen == screenMaster {
+			return a, nil
+		}
+		return a.openMaster(msg)
 	case useServerFolderMsg:
 		return a.receiveUseServerFolder(msg)
 	case tea.KeyMsg:
 		// The song form and the text editors handle ctrl+c themselves, so a
 		// reflex copy or cancel there never loses work.
 		if msg.String() == "ctrl+c" && a.screen != screenCompose && !(a.screen == screenSettings && a.settings.text != nil) {
+			if a.screen == screenMaster {
+				a.leaveMaster()
+			}
 			return a.quit()
 		}
 	}
@@ -319,6 +368,8 @@ func (a app) update(msg tea.Msg) (app, tea.Cmd) {
 		return a.updateCompose(msg)
 	case screenSettings:
 		return a.updateSettings(msg)
+	case screenMaster:
+		return a.updateMaster(msg)
 	}
 	return a, nil
 }
@@ -341,6 +392,9 @@ func (a app) show(s screen) (app, tea.Cmd) {
 func (a app) quit() (app, tea.Cmd) {
 	if a.compose.cancel != nil {
 		a.compose.cancel()
+	}
+	if a.screen == screenMaster {
+		a.leaveMaster()
 	}
 	a.cancelAllJobs()
 	return a, tea.Quit
@@ -378,6 +432,8 @@ func (a app) screenView() string {
 		return a.composeView()
 	case screenSettings:
 		return a.settingsView()
+	case screenMaster:
+		return a.masterView()
 	default:
 		return a.launcher.view(a.launcherState(), a.width, a.height)
 	}

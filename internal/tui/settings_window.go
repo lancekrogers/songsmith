@@ -63,11 +63,39 @@ func fitWindow(m, h, s, cur int) listWindow {
 	return w
 }
 
-// listWindows are the windows of the section's long lists, keyed by row.
-// The lists share the rows the rest of the section leaves; the one the
-// cursor is in gets the most, and every window is between minWindow and
-// maxWindow lines high.
+// rowCursor is where the cursor and the scroll sit on a screen drawn from
+// rows: Settings, and the Master screen.
+type rowCursor struct {
+	cursor int
+	offset int
+	// window is where the focused long list's window starts; filter is
+	// the text typed after / on it.
+	window listTop
+	filter settingsFilter
+}
+
+// rowFrame is the room a screen gives its rows.
+type rowFrame struct {
+	// height is how many lines the rows get, width how wide they are.
+	height, width int
+	// desc is set when there is room for the focused row's description;
+	// editing is set while a value editor is open above the rows.
+	desc, editing bool
+}
+
+func (a app) settingsFrame() rowFrame {
+	return rowFrame{height: a.settingsListRows(), width: a.settingsContentWidth(),
+		desc: !a.settingsCompact() && a.settingsListRows() >= 6, editing: a.settings.edit.active}
+}
+
 func (a app) listWindows(rows []settingRow, lines []settingLine) map[int]listWindow {
+	return listWindowsIn(rows, lines, a.settings.rowCursor, a.settingsFrame())
+}
+
+// listWindowsIn are the windows of the long lists, keyed by row. The lists
+// share the lines the other rows leave; the one the cursor is in gets the
+// most, and every window is between minWindow and maxWindow lines high.
+func listWindowsIn(rows []settingRow, lines []settingLine, c rowCursor, f rowFrame) map[int]listWindow {
 	opts := map[int][]int{}
 	var order []int
 	for i, l := range lines {
@@ -82,15 +110,15 @@ func (a app) listWindows(rows []settingRow, lines []settingLine) map[int]listWin
 	if len(order) == 0 {
 		return nil
 	}
-	fixed := len(lines) + 1
+	fixed := len(lines) + max(len(descLines(rows, lines, c, f)), 1)
 	for _, r := range order {
 		fixed -= len(opts[r])
 	}
-	room := a.settingsListRows() - fixed
+	room := f.height - fixed
 	focused := -1
-	if c := a.settings.cursor; c >= 0 && c < len(lines) && lines[c].option >= 0 {
-		if _, ok := opts[lines[c].row]; ok {
-			focused = lines[c].row
+	if at := c.cursor; at >= 0 && at < len(lines) && lines[at].option >= 0 {
+		if _, ok := opts[lines[at].row]; ok {
+			focused = lines[at].row
 		}
 	}
 	out := make(map[int]listWindow, len(order))
@@ -106,9 +134,9 @@ func (a app) listWindows(rows []settingRow, lines []settingLine) map[int]listWin
 		m := len(opts[r])
 		cur, start := -1, 0
 		if r == focused {
-			cur = slices.Index(opts[r], a.settings.cursor)
+			cur = slices.Index(opts[r], c.cursor)
 			start = cur - (h-2)/2
-			if t := a.settings.window; t.set && t.name == rows[r].anchorName() {
+			if t := c.window; t.set && t.name == rows[r].anchorName() {
 				start = t.start
 			}
 		} else if at := currentPos(rows[r], lines, opts[r]); at >= 0 {
@@ -149,19 +177,25 @@ type displayLine struct {
 	indent bool
 }
 
-// settingsDisplay is every line the section draws, top to bottom, and where
-// the cursor's line is among them.
 func (a app) settingsDisplay(rows []settingRow, lines []settingLine) ([]displayLine, int) {
-	wins := a.listWindows(rows, lines)
+	return rowDisplay(rows, lines, a.settings.rowCursor, a.settingsFrame())
+}
+
+// rowDisplay is every line the rows draw, top to bottom, and where the
+// cursor's line is among them.
+func rowDisplay(rows []settingRow, lines []settingLine, c rowCursor, f rowFrame) ([]displayLine, int) {
+	wins := listWindowsIn(rows, lines, c, f)
 	var out []displayLine
 	at := 0
 	pos := map[int]int{}
-	desc := a.focusedDescription(rows, lines)
+	desc := focusedDesc(rows, lines, c, f)
 	pending := false
 	flush := func() {
 		if pending {
-			row := rows[lines[a.settings.cursor].row]
-			out = append(out, displayLine{kind: displayDesc, line: -1, text: desc, indent: row.indent})
+			row := rows[lines[c.cursor].row]
+			for _, l := range descLines(rows, lines, c, f) {
+				out = append(out, displayLine{kind: displayDesc, line: -1, text: l, indent: row.indent})
+			}
 			pending = false
 		}
 	}
@@ -171,7 +205,7 @@ func (a app) settingsDisplay(rows []settingRow, lines []settingLine) ([]displayL
 		}
 		w, windowed := wins[l.row]
 		if !windowed || l.option < 0 {
-			if i == a.settings.cursor {
+			if i == c.cursor {
 				at = len(out)
 				pending = desc != ""
 			}
@@ -186,7 +220,7 @@ func (a app) settingsDisplay(rows []settingRow, lines []settingLine) ([]displayL
 		if !w.visible(p) {
 			continue
 		}
-		if i == a.settings.cursor {
+		if i == c.cursor {
 			at = len(out)
 			pending = desc != ""
 		}
@@ -200,34 +234,56 @@ func (a app) settingsDisplay(rows []settingRow, lines []settingLine) ([]displayL
 	return out, at
 }
 
-// focusedDescription is the dim line drawn under the focused row, or "" on
-// a screen too short for it.
 func (a app) focusedDescription(rows []settingRow, lines []settingLine) string {
-	c := a.settings.cursor
-	if a.settingsCompact() || a.settings.edit.active || c < 0 || c >= len(lines) || !lines[c].focusable() {
+	return focusedDesc(rows, lines, a.settings.rowCursor, a.settingsFrame())
+}
+
+// descLines is the focused row's description wrapped to the column, so it
+// is read whole.
+func descLines(rows []settingRow, lines []settingLine, c rowCursor, f rowFrame) []string {
+	desc := focusedDesc(rows, lines, c, f)
+	if desc == "" {
+		return nil
+	}
+	room := f.width - rowIndent
+	if row := rows[lines[c.cursor].row]; row.indent {
+		room -= 2
+	}
+	return wrapText(desc, room)
+}
+
+// focusedDesc is the dim line drawn under the focused row, or "" where
+// there is no room for it.
+func focusedDesc(rows []settingRow, lines []settingLine, c rowCursor, f rowFrame) string {
+	at := c.cursor
+	if !f.desc || f.editing || at < 0 || at >= len(lines) || !lines[at].focusable() {
 		return ""
 	}
-	if a.settingsListRows() < 6 {
-		return ""
-	}
-	return rows[lines[c].row].description(lines[c].option)
+	return rows[lines[at].row].description(lines[at].option)
 }
 
 // descFits reports whether text fits on the line under a row.
 func (a app) descFits(text string, indent bool) bool {
-	room := a.settingsContentWidth() - rowIndent
+	return descFitsIn(text, indent, a.settingsContentWidth())
+}
+
+func descFitsIn(text string, indent bool, width int) bool {
+	room := width - rowIndent
 	if indent {
 		room -= 2
 	}
 	return lipgloss.Width(text) <= room
 }
 
-// ensureSettingsCursorVisible scrolls so the cursor's line, its description
-// and the heading of its list or group are on screen.
 func (a *app) ensureSettingsCursorVisible(rows []settingRow, lines []settingLine) {
-	s := &a.settings
-	disp, at := a.settingsDisplay(rows, lines)
-	visible := a.settingsListRows()
+	a.settings.rowCursor.ensureVisible(rows, lines, a.settingsFrame())
+}
+
+// ensureVisible scrolls so the cursor's line, its description and the
+// heading of its list or group are on screen.
+func (s *rowCursor) ensureVisible(rows []settingRow, lines []settingLine, f rowFrame) {
+	disp, at := rowDisplay(rows, lines, *s, f)
+	visible := f.height
 	top, bottom := at, at
 	for bottom+1 < len(disp) && (disp[bottom+1].kind == displayDesc || disp[bottom+1].kind == displayRow && lines[disp[bottom+1].line].wrap > 0) {
 		bottom++

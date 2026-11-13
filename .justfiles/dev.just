@@ -61,3 +61,14 @@ demo-setup: build
         SONGSMITH_COLOR_PROFILE=ansi \
         demos/with-setupfake.sh vhs demos/setup.tape
     ls -lh demos/setup.gif
+
+# Record demos/master.gif: the Master screen on a fixture song whose audio is a tone made by ffmpeg (throwaway config in /tmp; nothing plays)
+demo-master: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    env -u NO_COLOR -u CLICOLOR \
+        CLICOLOR_FORCE=1 FORCE_COLOR=1 \
+        TERM=xterm-256color COLORTERM=truecolor \
+        SONGSMITH_COLOR_PROFILE=ansi \
+        demos/with-setupfake.sh vhs demos/master.tape
+    ls -lh demos/master.gif

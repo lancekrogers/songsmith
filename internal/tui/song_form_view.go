@@ -6,6 +6,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/lancekrogers/songsmith/internal/writer"
 )
 
 // labelWidth is the label column of the Song box rows.
@@ -256,6 +258,11 @@ func (a app) formBoxes(avail int) (boxes [][]string, focus int) {
 		row(rowVocals, "‹ "+vocals+" ›"+dimStyle.Render("  "+vocalsHint)),
 		row(rowSeed, c.seed.View()+dimStyle.Render(c.seedHint())),
 	}
+	if c.longSong() {
+		for _, l := range wrapText(longSongWarning, inner-2) {
+			song = append(song, "  "+warningStyle.Render(l))
+		}
+	}
 	songFocused := c.focus >= rowTitle && c.focus <= rowSeed
 	add(songFocused, formBox(headerStyle.Render("Song"), song, boxW, songFocused))
 
@@ -385,6 +392,20 @@ func (c composeModel) editorLines(rows int) []string {
 		title += dimStyle.Render("  [Verse] [Chorus] tags on their own lines")
 	}
 	return formBox(title, body, c.boxWidth(), true)
+}
+
+// longSongWarning is shown, and never blocks anything, while a song is set
+// or written to run past writer.CleanSeconds.
+const longSongWarning = "Songs over about 3:00 have come out with static on this setup. Shorter lyrics or a 3:00 length keep it clean."
+
+// longSong reports whether the Length, or the lyrics, will likely run the
+// song past writer.CleanSeconds.
+func (c composeModel) longSong() bool {
+	seconds := c.seconds
+	if c.autoLength && !c.draftedLength {
+		seconds = 0
+	}
+	return writer.LongerThanClean(seconds, c.texts[0])
 }
 
 // seedHint follows a filled Seed field.

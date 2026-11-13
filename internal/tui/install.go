@@ -197,6 +197,9 @@ func (a *app) cancelAllJobs() {
 	for key := range a.jobs.running {
 		a.cancelJob(key)
 	}
+	for id := range a.mastering.running {
+		a.cancelMastering(id)
+	}
 }
 
 // waitJobs waits up to limit for cancelled jobs to let go of their files.

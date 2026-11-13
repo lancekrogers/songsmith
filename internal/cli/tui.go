@@ -35,6 +35,7 @@ func (a *app) runTUI(ctx context.Context) error {
 		Queue:      r.queue,
 		Drafter:    liveDrafter{live},
 		Player:     player.New(),
+		Master:     r.master,
 		Config:     live,
 		Checks:     health.Run,
 		WorkerNote: func() string { return note.Load().(string) },

@@ -26,6 +26,8 @@ type libraryModel struct {
 	detail   viewport.Model
 	// selectID is the song to select once a reload contains it.
 	selectID string
+	// takes are the takes of each finished song.
+	takes map[string][]library.Take
 }
 
 func newLibrary() libraryModel {
@@ -46,6 +48,9 @@ func (a *app) applySongs(msg songsMsg) {
 		keep = s.ID
 	}
 	a.library.songs = msg.songs
+	if msg.takes != nil {
+		a.library.takes = msg.takes
+	}
 	if msg.err != nil {
 		a.err = msg.err.Error()
 	}
@@ -144,6 +149,18 @@ func (a app) updateLibrary(msg tea.Msg) (app, tea.Cmd) {
 			}
 		}
 		return a, a.loadSongs()
+	case "m":
+		if ok && a.canMaster(song) {
+			return a, func() tea.Msg { return openMasterMsg{song: &song} }
+		}
+		if ok {
+			a.notice = "m masters a finished song; render this one first."
+		}
+	case "t":
+		if !ok {
+			break
+		}
+		return a.cycleTake(song)
 	case "v":
 		if !ok {
 			break
@@ -184,6 +201,41 @@ func (a app) updateLibrary(msg tea.Msg) (app, tea.Cmd) {
 		return a, cmd
 	}
 	return a, nil
+}
+
+// takeLine says which take the library plays, such as "take 2 of 3 ·
+// mastered (Streaming)", for a song with takes.
+func (a *app) takeLine(song library.Song) string {
+	takes := a.library.takes[song.ID]
+	i := library.TakeIndex(takes, song.Audio)
+	if i == 0 {
+		return ""
+	}
+	return labelStyle.Render(fmt.Sprintf("take %d of %d", i, len(takes))) + dimStyle.Render(" · "+takes[i-1].Label())
+}
+
+// cycleTake makes the next take of a finished song the one the library
+// plays.
+func (a app) cycleTake(song library.Song) (app, tea.Cmd) {
+	takes := a.library.takes[song.ID]
+	if song.Status != library.StatusDone || len(takes) < 2 {
+		a.notice = "t switches between the takes of a finished song with more than one."
+		return a, nil
+	}
+	next := takes[library.TakeIndex(takes, song.Audio)%len(takes)]
+	wasPlaying := a.d.Player.Current() == a.d.Store.AudioPath(song)
+	saved, err := a.d.Store.SetCurrent(song.ID, next.File)
+	if err != nil {
+		a.err = "switch take: " + err.Error()
+		return a, nil
+	}
+	if wasPlaying {
+		a.d.Player.Stop()
+	}
+	a.replaceSong(saved)
+	a.notice = fmt.Sprintf("Current take: %d of %d, %s · %s.", library.TakeIndex(takes, next.File), len(takes), next.File, next.Label())
+	a.layoutDetail()
+	return a, a.loadSongs()
 }
 
 // hasSeed reports whether a song has a seed to show or copy: a pinned one,
@@ -271,6 +323,12 @@ func (a app) libraryKeysFor(scroll bool) []string {
 		switch song.Status {
 		case library.StatusDone:
 			keys = append(keys, "r new take")
+			if a.canMaster(song) {
+				keys = append(keys, "m master")
+			}
+			if len(a.library.takes[song.ID]) > 1 {
+				keys = append(keys, "t next take")
+			}
 		case library.StatusDraft, library.StatusFailed:
 			if needsDraft(song) {
 				keys = append(keys, "g draft lyrics and style")
@@ -334,6 +392,16 @@ func (a *app) detailText(width int) string {
 	}
 	if song.Status == library.StatusRendering {
 		b.WriteString(renderProgress(a.library.progress[song.ID], song.Started, max(10, width-2)) + "\n")
+	}
+	if j, ok := a.mastering.running[song.ID]; ok {
+		label := fmt.Sprintf(" mastering %d%%", int(j.done*100))
+		if j.stopping {
+			label = " stopping…"
+		}
+		b.WriteString(progressBar(j.done, max(5, width-2-len(label))) + warningStyle.Render(label) + "\n")
+	}
+	if line := a.takeLine(song); line != "" {
+		b.WriteString(wrap.Render(line) + "\n")
 	}
 	if song.Error != "" {
 		b.WriteString(wrap.Render(errorStyle.Render(song.Error)) + "\n")

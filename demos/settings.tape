@@ -1,4 +1,4 @@
-# Settings: walk all seven sections on a machine that is ready to render,
+# Settings: walk all eight sections on a machine that is ready to render,
 # filter the writer's model list, change the temperature and the render
 # steps, have the install folder catch a mistyped path, then show that the config file changed only those keys and kept its
 # comments. Uses a throwaway config under /tmp/songsmith-demo-settings (see
@@ -70,6 +70,10 @@ Sleep 3s
 Right
 Sleep 1.5s
 Type@600ms "++"
+Sleep 2.5s
+
+# Master: the auto toggle and the saved default chain.
+Right
 Sleep 2.5s
 
 # Server: a mistyped install folder is not saved on the first enter; tab

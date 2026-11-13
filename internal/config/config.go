@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/lancekrogers/songsmith/internal/master"
 )
 
 type ComfyUI struct {
@@ -57,10 +59,20 @@ type Render struct {
 	Scheduler      string `yaml:"scheduler"`
 }
 
+// Master is the mastering chain the user saved and whether new renders
+// are mastered with it.
+type Master struct {
+	// Auto masters each new render with Default, keeps the raw render as
+	// its own take and makes the master current.
+	Auto    bool            `yaml:"auto"`
+	Default master.Settings `yaml:"default"`
+}
+
 type Config struct {
 	ComfyUI    ComfyUI `yaml:"comfyui"`
 	Ollama     Ollama  `yaml:"ollama"`
 	Render     Render  `yaml:"render"`
+	Master     Master  `yaml:"master"`
 	LibraryDir string  `yaml:"library_dir"`
 	StateDir   string  `yaml:"state_dir"`
 }

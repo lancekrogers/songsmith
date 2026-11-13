@@ -153,10 +153,15 @@ func nameColumns(rows []settingRow) []int {
 const rowIndent = 6
 
 func (a app) settingsValueWidths(rows []settingRow) []int {
+	return valueWidths(rows, a.settingsContentWidth())
+}
+
+// valueWidths is the room each row has for its value, in a column width wide.
+func valueWidths(rows []settingRow, width int) []int {
 	names := nameColumns(rows)
 	out := make([]int, len(rows))
 	for i, n := range names {
-		out[i] = a.settingsContentWidth() - rowIndent - n
+		out[i] = width - rowIndent - n
 	}
 	return out
 }
@@ -287,29 +292,39 @@ func (a *app) syncSettings() {
 
 func (a *app) placeSettingsCursor(rows []settingRow, lines []settingLine, i int) {
 	s := &a.settings
-	s.cursor = nearestFocusable(lines, i)
+	s.rowCursor.place(rows, lines, i, a.settingsFrame())
 	s.marks[s.section] = anchorAt(rows, lines, s.cursor)
-	if c := s.cursor; c < len(lines) && lines[c].option >= 0 {
-		if w, ok := a.listWindows(rows, lines)[lines[c].row]; ok {
-			s.window = listTop{name: rows[lines[c].row].anchorName(), start: w.start, set: true}
-		}
-	}
-	a.ensureSettingsCursorVisible(rows, lines)
 }
 
-// moveSettingsCursor moves |delta| focusable lines and stops at either end.
-// While a filter is typed it stays among the filtered options.
+// place puts the cursor on line i, or the nearest line it can rest on, and
+// scrolls it into view.
+func (c *rowCursor) place(rows []settingRow, lines []settingLine, i int, f rowFrame) {
+	c.cursor = nearestFocusable(lines, i)
+	if at := c.cursor; at < len(lines) && lines[at].option >= 0 {
+		if w, ok := listWindowsIn(rows, lines, *c, f)[lines[at].row]; ok {
+			c.window = listTop{name: rows[lines[at].row].anchorName(), start: w.start, set: true}
+		}
+	}
+	c.ensureVisible(rows, lines, f)
+}
+
 func (a *app) moveSettingsCursor(delta int) {
 	rows, lines := a.settingsLayout()
+	a.placeSettingsCursor(rows, lines, a.settings.rowCursor.step(rows, lines, delta))
+}
+
+// step is the line |delta| focusable lines away, stopping at either end.
+// While a filter is typed it stays among the filtered options.
+func (c rowCursor) step(rows []settingRow, lines []settingLine, delta int) int {
 	step := 1
 	if delta < 0 {
 		step, delta = -1, -delta
 	}
 	stay := func(int) bool { return true }
-	if f := a.settings.filter; f.on {
+	if f := c.filter; f.on {
 		stay = func(i int) bool { return rows[lines[i].row].anchorName() == f.row }
 	}
-	at := a.settings.cursor
+	at := c.cursor
 	for ; delta > 0; delta-- {
 		next := at + step
 		for next >= 0 && next < len(lines) && !lines[next].focusable() {
@@ -320,7 +335,7 @@ func (a *app) moveSettingsCursor(delta int) {
 		}
 		at = next
 	}
-	a.placeSettingsCursor(rows, lines, at)
+	return at
 }
 
 // gotoSection leaves the cursor where it was in the section it leaves and
@@ -439,6 +454,15 @@ func (a *app) adjustSetting(row settingRow, line settingLine, delta int) tea.Cmd
 	return nil
 }
 
+// rowNote says something on the status line of the screen drawn from rows.
+func (a *app) rowNote(msg string) {
+	if a.screen == screenMaster {
+		a.masterNote(msg)
+		return
+	}
+	a.settingsNote(msg)
+}
+
 // stepChoice moves a choice row delta options along and stops at the ends.
 func (a *app) stepChoice(row settingRow, delta int) tea.Cmd {
 	n := len(row.options)
@@ -453,10 +477,10 @@ func (a *app) stepChoice(row settingRow, delta int) tea.Cmd {
 	}
 	switch {
 	case next < 0:
-		a.settingsNote(row.name + " is at its first option")
+		a.rowNote(row.name + " is at its first option")
 		return nil
 	case next >= n:
-		a.settingsNote(row.name + " is at its last option")
+		a.rowNote(row.name + " is at its last option")
 		return nil
 	}
 	return row.set(a, next)

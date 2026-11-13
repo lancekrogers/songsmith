@@ -15,7 +15,6 @@ import (
 	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/health"
 	"github.com/lancekrogers/songsmith/internal/library"
-	"github.com/lancekrogers/songsmith/internal/player"
 	"github.com/lancekrogers/songsmith/internal/queue"
 	"github.com/lancekrogers/songsmith/internal/writer"
 )
@@ -62,7 +61,7 @@ func testConfig(t *testing.T) *config.Live {
 
 func testDeps(t *testing.T, store *library.Store, q *queue.Queue, d Drafter) Deps {
 	return Deps{
-		Store: store, Queue: q, Drafter: d, Player: player.New(), Config: testConfig(t),
+		Store: store, Queue: q, Drafter: d, Player: newFakePlayer(), Master: &fakeMaster{}, Config: testConfig(t),
 		Checks:    func(context.Context, config.Config) []health.Check { return readyChecks() },
 		Clipboard: func(string) error { return nil },
 	}

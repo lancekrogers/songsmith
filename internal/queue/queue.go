@@ -5,10 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"math/rand/v2"
-	"os/exec"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +45,8 @@ type Queue struct {
 	// beforeRender runs once a song is claimed and before the backend
 	// starts, such as freeing memory the render needs.
 	beforeRender func(ctx context.Context)
+	// afterRender runs after a render succeeded and was saved.
+	afterRender AfterRender
 
 	subMu   sync.Mutex
 	subs    map[int]chan Update
@@ -58,7 +59,7 @@ func New(store *library.Store, b backend.Backend) *Queue {
 		backend: b,
 		wake:    make(chan struct{}, 1),
 		now:     time.Now,
-		probe:   probeDuration,
+		probe:   library.ProbeDuration,
 		poll:    PollInterval,
 		subs:    map[int]chan Update{},
 	}
@@ -149,11 +150,20 @@ func (q *Queue) SaveEdit(song library.Song) error {
 		return ErrBusy
 	}
 	q.dropStaleJob(&song, false)
+	q.keepTakes(&song)
 	if err := q.store.Save(song); err != nil {
 		return err
 	}
 	q.publish(Update{SongID: song.ID, Status: song.Status})
 	return nil
+}
+
+// keepTakes gives song the current take on disk: a copy read before a take
+// was chosen or mastered must not switch it back.
+func (q *Queue) keepTakes(song *library.Song) {
+	if stored, err := q.store.Load(song.ID); err == nil {
+		song.Audio, song.Duration = stored.Audio, stored.Duration
+	}
 }
 
 // Enqueue marks a song queued and wakes the worker. A song that cannot
@@ -172,6 +182,7 @@ func (q *Queue) Enqueue(song library.Song) (library.Song, error) {
 		song.Seed = newSeed()
 	}
 	q.dropStaleJob(&song, false)
+	q.keepTakes(&song)
 	song.Status = library.StatusQueued
 	song.Error = ""
 	if err := q.store.Save(song); err != nil {
@@ -395,9 +406,68 @@ func (q *Queue) Render(ctx context.Context, song library.Song) library.Song {
 
 	q.mu.Lock()
 	q.current, q.cancel = "", nil
-	q.save(song)
+	song = q.finish(song, err == nil, take)
 	q.mu.Unlock()
+	if err == nil && q.afterRender != nil {
+		song = q.runAfterRender(parent, song)
+	}
 	return song
+}
+
+// finish saves the outcome of a render. A new take is recorded and made
+// current; otherwise the current take stays whichever is current on disk,
+// since it may have been changed while the render ran.
+func (q *Queue) finish(song library.Song, rendered bool, take string) library.Song {
+	saved, err := q.store.Update(song.ID, func(s *library.Song) error {
+		audio, duration := s.Audio, s.Duration
+		*s = song
+		if rendered {
+			s.Takes = append(s.Takes, library.Take{File: take, Kind: library.TakeRender, Created: q.now(), Duration: song.Duration})
+		} else {
+			s.Audio, s.Duration = audio, duration
+		}
+		return nil
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		saved, err = song, q.store.Save(song)
+	}
+	u := Update{SongID: song.ID, Status: song.Status, Err: song.Error}
+	if err != nil {
+		u.Err = strings.TrimSpace(u.Err + "; " + err.Error())
+		saved = song
+	}
+	q.publish(u)
+	return saved
+}
+
+// AfterRender post-processes a finished render, such as mastering it. It
+// returns the song as it should be saved; an error leaves the raw render
+// current and is recorded on the song.
+type AfterRender func(ctx context.Context, song library.Song) (library.Song, error)
+
+// AfterRender sets fn to run after each successful render. A failure never
+// fails the render.
+func (q *Queue) AfterRender(fn AfterRender) { q.afterRender = fn }
+
+func (q *Queue) runAfterRender(ctx context.Context, song library.Song) library.Song {
+	out, err := q.afterRender(ctx, song)
+	if err != nil && ctx.Err() != nil {
+		// Shutting down is not a failure; the raw render stays current.
+		return song
+	}
+	if err == nil {
+		q.publish(Update{SongID: out.ID, Status: out.Status, Err: out.Error})
+		return out
+	}
+	saved, uerr := q.store.Update(song.ID, func(s *library.Song) error {
+		s.Error = "mastering after the render failed, so the raw take is current: " + err.Error()
+		return nil
+	})
+	if uerr != nil {
+		return song
+	}
+	q.publish(Update{SongID: song.ID, Status: saved.Status, Err: saved.Error})
+	return saved
 }
 
 func (q *Queue) save(song library.Song) {
@@ -406,13 +476,4 @@ func (q *Queue) save(song library.Song) {
 		u.Err = strings.TrimSpace(u.Err + "; " + err.Error())
 	}
 	q.publish(u)
-}
-
-func probeDuration(path string) float64 {
-	out, err := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", path).Output()
-	if err != nil {
-		return 0
-	}
-	d, _ := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
-	return d
 }
