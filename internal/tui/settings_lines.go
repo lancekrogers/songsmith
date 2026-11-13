@@ -99,9 +99,9 @@ func anchorAt(rows []settingRow, lines []settingLine, at int) lineAnchor {
 		return lineAnchor{}
 	}
 	l := lines[at]
-	an := lineAnchor{set: true, name: rows[l.row].name, option: l.option}
+	an := lineAnchor{set: true, name: rows[l.row].anchorName(), option: l.option}
 	for i := range at {
-		if lines[i].focusable() && rows[lines[i].row].name == an.name && lines[i].option == an.option {
+		if lines[i].focusable() && rows[lines[i].row].anchorName() == an.name && lines[i].option == an.option {
 			an.nth++
 		}
 	}
@@ -117,7 +117,7 @@ func findAnchor(rows []settingRow, lines []settingLine, an lineAnchor) (int, boo
 	}
 	n, sameName := 0, -1
 	for i, l := range lines {
-		if !l.focusable() || rows[l.row].name != an.name {
+		if !l.focusable() || rows[l.row].anchorName() != an.name {
 			continue
 		}
 		if l.option == an.option {

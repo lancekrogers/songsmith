@@ -222,7 +222,7 @@ func TestSetupRowStartsItsInstallAndKeepsReportingAcrossScreens(t *testing.T) {
 		t.Fatalf("library footer:\n%s", plain(a))
 	}
 	a = openSettingsOn(t, a, sectionSetup)
-	if !strings.Contains(plain(a), "downloading 61%") || !strings.Contains(plain(a), "Cancel VAE") {
+	if !strings.Contains(plain(a), "downloading 61%") || !strings.Contains(plain(a), "stop VAE  what is downloaded is kept") {
 		t.Fatalf("Setup while downloading:\n%s", plain(a))
 	}
 
@@ -248,7 +248,7 @@ func TestCancelStopsTheJobKeepsItsPartAndIgnoresLateProgress(t *testing.T) {
 	a = pump(t, a, func(a app) bool { j, _ := a.job(vaeKey); return j.progress.Percent == 10 })
 	seq := a.jobs.running[vaeKey].seq
 
-	a = focus(t, a, "  Cancel VAE", -1)
+	a = focus(t, a, "  Cancel", -1)
 	a = hit(t, a, "enter")
 	if run.ctx.Err() == nil {
 		t.Fatal("cancel did not stop the install")
@@ -415,7 +415,7 @@ func TestWriterPullSavesOnlyWhenItSucceeds(t *testing.T) {
 			return a
 		}, false, "file does not exist"},
 		{"cancel", func(a app, r *fakeRun) app {
-			a = focus(t, a, "  Cancel newcomer:2b", -1)
+			a = focus(t, a, "  Cancel", -1)
 			return hit(t, a, "enter")
 		}, false, ""},
 	} {
@@ -469,7 +469,7 @@ func TestChoosingAVariantNotOnDiskDownloadsItAndSavesOnlyOnceVerified(t *testing
 		}
 		run.progress(setup.Progress{Phase: setup.PhaseDownload, Bytes: 1, Total: 4, Percent: 25})
 		a = pump(t, a, func(a app) bool { j, _ := a.job(run.key); return j.progress.Percent == 25 })
-		if !strings.Contains(plain(a), "DiT fp32 · 9.8 GB · downloading 25%") || !strings.Contains(plain(a), "Cancel DiT fp32") {
+		if !strings.Contains(plain(a), "DiT fp32 · 9.8 GB · downloading 25%") || !strings.Contains(plain(a), "stop DiT fp32") {
 			t.Fatalf("while downloading:\n%s", plain(a))
 		}
 		if ok {
@@ -496,7 +496,7 @@ func TestEngineOffersToInstallComfyUIWithItsLog(t *testing.T) {
 	run := fake.next(t)
 	run.progress(setup.Progress{Phase: setup.PhaseInstall, Detail: "Collecting torch"})
 	a = pump(t, a, func(a app) bool { j, _ := a.job("comfyui"); return j.progress.Detail == "Collecting torch" })
-	if !strings.Contains(plain(a), "installing…  Collecting torch") || !strings.Contains(plain(a), "Cancel ComfyUI") {
+	if !strings.Contains(plain(a), "installing…  Collecting torch") || !strings.Contains(plain(a), "stop ComfyUI") {
 		t.Fatalf("Music engine while installing:\n%s", plain(a))
 	}
 	if st := a.launcherState(); st.comfyJob != "installing…" || a.downloading() {

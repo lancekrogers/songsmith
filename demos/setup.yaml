@@ -1,0 +1,12 @@
+# Throwaway settings for demos/setup.tape: a fresh machine with nothing
+# installed. Every path is under /tmp/songsmith-demo-setup, and Ollama and the
+# model downloads are demos/setupfake on a loopback port, so the recording
+# downloads nothing real and reaches no real Ollama.
+library_dir: /tmp/songsmith-demo-setup/library
+state_dir: /tmp/songsmith-demo-setup/state
+comfyui:
+  dir: /tmp/songsmith-demo-setup/ComfyUI
+  port: 18191
+ollama:
+  url: http://127.0.0.1:18490
+  model: songwriter:demo

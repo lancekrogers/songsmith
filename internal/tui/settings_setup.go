@@ -161,7 +161,7 @@ func (a app) requirementRows(c health.Check, width int) []settingRow {
 	case hasAct && installable(act):
 		row.kind, row.verb, row.applies = rowAction, "install", appliesNow
 		row.detail = installOffer(act)
-		row.help = installOffer(act) + ". " + act.Detail
+		row.help = capitalize(installOffer(act)) + " · " + act.Detail
 		id := act.ID
 		row.run = func(a *app) tea.Cmd { return a.installAction(id) }
 	case hasAct && act.Pending():
@@ -212,22 +212,22 @@ func (a app) failureRows(t installTarget, width int) []settingRow {
 	return styledReportRows(t.name+" · error", "Last try failed: "+msg, width, &errorStyle)
 }
 
-// cancelRow stops a running job. Its name is the job's own, so the cursor
+// cancelRow stops a running job. Its anchor is the job's own, so the cursor
 // never confuses two Cancel rows.
 func (a app) cancelRow(j *job) settingRow {
-	row := settingRow{name: "  Cancel " + j.target.name, kind: rowAction, verb: "cancel", applies: appliesNow,
-		value: "stop this install"}
+	key := j.target.key()
+	row := settingRow{name: "  Cancel", anchor: "cancel " + key, kind: rowAction, verb: "cancel", applies: appliesNow,
+		value: "stop " + j.target.name}
 	if j.target.resumable() {
-		row.value = "stop; what is downloaded is kept"
-		row.help = "Stops the download. The partial file stays, and installing again resumes it"
+		row.detail = "what is downloaded is kept"
+		row.help = "Stops downloading " + j.target.name + ". The partial file stays, and installing again resumes it"
 	} else {
-		row.help = "Stops the install. Installing again carries on from the steps already done"
+		row.help = "Stops installing " + j.target.name + ". Installing again carries on from the steps already done"
 	}
 	if j.stopping {
-		row.kind, row.value = rowInfo, "stopping…"
+		row.kind, row.value, row.detail = rowInfo, "stopping…", ""
 		return row
 	}
-	key := j.target.key()
 	row.run = func(a *app) tea.Cmd {
 		a.cancelJob(key)
 		a.settingsNote("Stopping " + j.target.name + "…")

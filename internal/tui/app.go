@@ -4,9 +4,11 @@ package tui
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/lancekrogers/songsmith/internal/backend"
 	"github.com/lancekrogers/songsmith/internal/config"
@@ -326,6 +328,9 @@ func (a app) View() string {
 	}
 	view := a.screenView()
 	if a.height < a.termHeight {
+		if pad := a.height - lipgloss.Height(view); pad > 0 {
+			view += strings.Repeat("\n", pad)
+		}
 		view += "\n" + footer(a.width, "  ", downloadNote)
 	}
 	return view

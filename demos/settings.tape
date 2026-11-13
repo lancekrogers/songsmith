@@ -2,7 +2,8 @@
 # the server port, then show that the config file changed only those keys and
 # kept its comments. Uses a throwaway config under /tmp/songsmith-demo-settings
 # (see demos/settings.yaml) where no ComfyUI or Ollama runs; nothing is
-# installed, started or rendered.
+# installed, started or rendered, and the install plan reads demos/setupfake
+# on a loopback port (SONGSMITH_DEMO_SETUP).
 # Record with: just demo-settings
 
 Output demos/settings.gif
@@ -22,7 +23,7 @@ Set Theme {"name":"termcast","background":"#0d0d11","foreground":"#f8f8f2","curs
 Hide
 Type "unset NO_COLOR CLICOLOR; export CLICOLOR_FORCE=1 FORCE_COLOR=1 TERM=xterm-256color SONGSMITH_COLOR_PROFILE=ansi" Enter
 Type "rm -rf /tmp/songsmith-demo-settings && mkdir -p /tmp/songsmith-demo-settings && cp demos/settings.yaml /tmp/songsmith-demo-settings/config.yaml" Enter
-Type "export PATH=$PWD/bin:/usr/bin:/bin SONGSMITH_CONFIG=/tmp/songsmith-demo-settings/config.yaml" Enter
+Type "export PATH=$PWD/bin:/usr/bin:/bin SONGSMITH_CONFIG=/tmp/songsmith-demo-settings/config.yaml SONGSMITH_DEMO_SETUP=http://127.0.0.1:18490" Enter
 Type "clear" Enter
 Show
 

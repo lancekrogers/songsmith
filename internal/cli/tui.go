@@ -12,7 +12,6 @@ import (
 	"github.com/lancekrogers/songsmith/internal/library"
 	"github.com/lancekrogers/songsmith/internal/player"
 	"github.com/lancekrogers/songsmith/internal/queue"
-	"github.com/lancekrogers/songsmith/internal/setup"
 	"github.com/lancekrogers/songsmith/internal/tui"
 )
 
@@ -20,6 +19,10 @@ const waitingNote = "another songsmith is rendering; queued songs render when it
 
 func (a *app) runTUI(ctx context.Context) error {
 	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	installer, err := tuiInstaller(version)
 	if err != nil {
 		return err
 	}
@@ -36,7 +39,7 @@ func (a *app) runTUI(ctx context.Context) error {
 		Checks:     health.Run,
 		WorkerNote: func() string { return note.Load().(string) },
 		Server:     tui.NewComfyServer(r.server),
-		Installer:  setup.New(version),
+		Installer:  installer,
 	}
 
 	ctx, cancel := context.WithCancel(ctx)

@@ -67,6 +67,9 @@ type settingRow struct {
 	verb string
 	// style draws a report line in place of the dim default.
 	style *lipgloss.Style
+	// anchor tells apart rows that share a name, such as Cancel rows, so
+	// the cursor stays on the one it was on.
+	anchor string
 	// set applies option idx (pick, choice). run performs the row's own verb
 	// (toggle, text, action). nudge moves a slider by delta steps. Each gets
 	// the app to change, never a copy captured when the row was built.
@@ -105,4 +108,11 @@ func styledReportRows(name, text string, width int, style *lipgloss.Style) []set
 		rows = append(rows, settingRow{name: name, kind: rowReport, value: strings.TrimRight(l, " "), style: style})
 	}
 	return rows
+}
+
+func (r settingRow) anchorName() string {
+	if r.anchor != "" {
+		return r.anchor
+	}
+	return r.name
 }

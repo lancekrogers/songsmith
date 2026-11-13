@@ -2,7 +2,8 @@
 # unavailable: a new song, lyrics with section tags and tag completion, a
 # Style part, Length and Vocals, the unsaved-changes warning, and the saved
 # draft in the library. Uses a throwaway config under /tmp/songsmith-demo-editor
-# (see demos/editor.yaml); nothing is installed, queued or played.
+# (see demos/editor.yaml); nothing is installed, queued or played, and the
+# install plan reads demos/setupfake on a loopback port (SONGSMITH_DEMO_SETUP).
 # Record with: just demo-editor
 
 Output demos/editor.gif
@@ -22,7 +23,7 @@ Set Theme {"name":"termcast","background":"#0d0d11","foreground":"#f8f8f2","curs
 Hide
 Type "unset NO_COLOR CLICOLOR VISUAL EDITOR; export CLICOLOR_FORCE=1 FORCE_COLOR=1 TERM=xterm-256color SONGSMITH_COLOR_PROFILE=ansi" Enter
 Type "rm -rf /tmp/songsmith-demo-editor && mkdir -p /tmp/songsmith-demo-editor/library && cp demos/editor.yaml /tmp/songsmith-demo-editor/config.yaml && cp -R demos/fixture/. /tmp/songsmith-demo-editor/library/" Enter
-Type "export PATH=$PWD/bin:/usr/bin:/bin SONGSMITH_CONFIG=/tmp/songsmith-demo-editor/config.yaml" Enter
+Type "export PATH=$PWD/bin:/usr/bin:/bin SONGSMITH_CONFIG=/tmp/songsmith-demo-editor/config.yaml SONGSMITH_DEMO_SETUP=http://127.0.0.1:18490" Enter
 Type "clear" Enter
 Show
 
