@@ -84,12 +84,20 @@ func (a app) composeView() string {
 	c := a.compose
 	w, h := a.width, a.height
 	var head, body, tail []string
-	if c.editor != nil {
+	switch {
+	case c.rv.stage == reviseReview:
+		all := c.reviewView()
+		for i, l := range all {
+			all[i] = truncate(l, w)
+		}
+		return strings.Join(all, "\n")
+	case c.editor != nil:
 		var rows int
 		head, tail, rows = c.editorChrome()
 		body = fitLines(c.editorLines(rows), rows)
-	} else {
-		head, tail = fitChrome(h, []string{c.headerLine(), ""}, append(c.messageLines(), a.formFooter()...))
+	default:
+		head = append(append([]string{c.headerLine()}, c.noteLines()...), "")
+		head, tail = fitChrome(h, head, append(c.messageLines(), a.formFooter()...))
 		budget := max(h-len(head)-len(tail), 0)
 		boxes, focus := a.formBoxes(budget)
 		body = scrollBoxes(boxes, focus, budget)
@@ -129,17 +137,28 @@ func (c composeModel) messageLines() []string {
 func (a app) formFooter() []string {
 	c := a.compose
 	w := a.width
-	if c.drafting {
+	model := a.cfg().Ollama.Model
+	switch {
+	case c.drafting && c.rv.stage == reviseRunning:
+		return []string{footer(w, "  ", "esc cancel the revision")}
+	case c.drafting:
 		return []string{footer(w, "  ", "esc cancel the draft")}
+	case c.rv.stage == reviseInput:
+		return []string{footer(w, "  ", "enter revise with "+model, "esc cancel")}
 	}
 	var keys []string
 	_, down := a.writerUnavailable()
-	model := a.cfg().Ollama.Model
 	switch {
 	case c.focus == rowIdea && down:
 		keys = append(keys, "enter next field")
 	case c.focus == rowIdea || c.focus == rowDraft:
 		keys = append(keys, "enter drafts with "+model)
+	case c.focus == rowRevise:
+		keys = append(keys, "enter revise with "+model)
+	case c.focus == rowSeed && strings.TrimSpace(c.seed.Value()) != "":
+		keys = append(keys, "p random each render")
+	case c.focus == rowSeed && c.lastSeed != 0:
+		keys = append(keys, fmt.Sprintf("p pin seed %d", c.lastSeed))
 	case c.focus == rowWriter:
 		keys = append(keys, "←/→ change the model that drafts")
 	case c.focus == rowLength:
@@ -160,7 +179,12 @@ func (a app) formFooter() []string {
 	if c.armed == "esc" {
 		esc = "esc discard changes"
 	}
-	return []string{footer(w, "  ", keys...), footer(w, "  ", "ctrl+s save & queue", "ctrl+d save draft", esc)}
+	var save []string
+	if c.hasLyrics() && !down {
+		save = append(save, "ctrl+r revise")
+	}
+	save = append(save, "ctrl+s save & queue", "ctrl+d save draft", esc)
+	return []string{footer(w, "  ", keys...), footer(w, "  ", save...)}
 }
 
 // formBoxes draws the form's boxes and says which one has focus. avail is
@@ -199,7 +223,7 @@ func (a app) formBoxes(avail int) (boxes [][]string, focus int) {
 	}
 	why, down := a.writerUnavailable()
 	switch {
-	case c.drafting:
+	case c.drafting && c.rv.stage != reviseRunning:
 		idea = append(idea, "  "+c.spinner.View()+" "+warningStyle.Render("Drafting lyrics and style with "+model+"…"))
 	case down:
 		idea = append(idea,
@@ -212,7 +236,8 @@ func (a app) formBoxes(avail int) (boxes [][]string, focus int) {
 		}
 		idea = append(idea, mark+style.Render("✦ Draft lyrics and style with "+model)+dimStyle.Render("  enter or ctrl+g"))
 	}
-	ideaFocused := c.focus <= rowDraft
+	idea = append(idea, a.reviseRows()...)
+	ideaFocused := c.focus <= rowRevise
 	add(ideaFocused, formBox(headerStyle.Render("Idea"), idea, boxW, ideaFocused))
 	vocals, vocalsHint := "sung", "the draft writes lines to sing"
 	if c.instrumental {
@@ -229,7 +254,7 @@ func (a app) formBoxes(avail int) (boxes [][]string, focus int) {
 		row(rowTitle, c.title.View()),
 		row(rowLength, length),
 		row(rowVocals, "‹ "+vocals+" ›"+dimStyle.Render("  "+vocalsHint)),
-		row(rowSeed, c.seed.View()),
+		row(rowSeed, c.seed.View()+dimStyle.Render(c.seedHint())),
 	}
 	songFocused := c.focus >= rowTitle && c.focus <= rowSeed
 	add(songFocused, formBox(headerStyle.Render("Song"), song, boxW, songFocused))
@@ -360,4 +385,12 @@ func (c composeModel) editorLines(rows int) []string {
 		title += dimStyle.Render("  [Verse] [Chorus] tags on their own lines")
 	}
 	return formBox(title, body, c.boxWidth(), true)
+}
+
+// seedHint follows a filled Seed field.
+func (c composeModel) seedHint() string {
+	if strings.TrimSpace(c.seed.Value()) != "" {
+		return "  pinned · every render uses it"
+	}
+	return ""
 }

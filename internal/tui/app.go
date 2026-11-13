@@ -19,9 +19,10 @@ import (
 	"github.com/lancekrogers/songsmith/internal/writer"
 )
 
-// Drafter drafts a song from an idea.
+// Drafter drafts a song from an idea, and revises one as asked.
 type Drafter interface {
 	Write(ctx context.Context, idea string, opts writer.Options) (writer.Draft, error)
+	Revise(ctx context.Context, current writer.Draft, idea, instruction string, opts writer.Options) (writer.Draft, error)
 }
 
 // Deps are the services the screens share.
@@ -46,6 +47,8 @@ type Deps struct {
 	// Installer installs ComfyUI, the model files and the writer model; nil
 	// means nothing can be installed from the TUI.
 	Installer Installer
+	// Clipboard copies text for the user; nil means the system clipboard.
+	Clipboard func(text string) error
 }
 
 type screen int
@@ -63,10 +66,12 @@ type (
 	switchScreenMsg screen
 	// openComposeMsg opens the song form on song, or on a new idea when nil.
 	// The form returns to the screen that opened it.
-	// draft starts drafting from the song's idea as the form opens.
+	// draft starts drafting from the song's idea as the form opens; revise
+	// opens the revise instruction instead.
 	openComposeMsg struct {
-		song  *library.Song
-		draft bool
+		song   *library.Song
+		draft  bool
+		revise bool
 	}
 	// openLibraryMsg opens the library with songID selected.
 	openLibraryMsg struct{ songID string }
@@ -277,6 +282,14 @@ func (a app) update(msg tea.Msg) (app, tea.Cmd) {
 			var draft tea.Cmd
 			a, draft = a.draftKeepingTitle()
 			edit = tea.Batch(edit, draft)
+		}
+		if msg.revise {
+			if a.compose.copied {
+				a.compose.extendCopy(song)
+			}
+			var rv tea.Cmd
+			a, rv = a.openRevise()
+			edit = tea.Batch(edit, rv)
 		}
 		return a, tea.Batch(edit, models)
 	case openLibraryMsg:

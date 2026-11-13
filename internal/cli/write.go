@@ -58,6 +58,11 @@ func (d liveDrafter) Write(ctx context.Context, idea string, opts writer.Options
 	return w.Write(ctx, idea, opts)
 }
 
+func (d liveDrafter) Revise(ctx context.Context, current writer.Draft, idea, instruction string, opts writer.Options) (writer.Draft, error) {
+	w, _ := newWriter(d.live.Get(), "")
+	return w.Revise(ctx, current, idea, instruction, opts)
+}
+
 func (f *writeFlags) options() writer.Options {
 	return writer.Options{Seconds: f.seconds, Instrumental: f.instrumental}
 }

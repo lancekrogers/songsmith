@@ -99,3 +99,17 @@ func statusBadge(s library.Status) string {
 func footer(width int, indent string, keys ...string) string {
 	return dimStyle.Render(ansi.Truncate(indent+strings.Join(keys, "   "), width, "…"))
 }
+
+// footerRows is footer over as many lines as its keys need at width,
+// breaking only between keys.
+func footerRows(width int, indent string, keys ...string) []string {
+	var rows, line []string
+	for _, k := range keys {
+		if len(line) > 0 && ansi.StringWidth(indent+strings.Join(append(line, k), "   ")) > width {
+			rows = append(rows, footer(width, indent, line...))
+			line = nil
+		}
+		line = append(line, k)
+	}
+	return append(rows, footer(width, indent, line...))
+}

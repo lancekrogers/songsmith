@@ -298,28 +298,9 @@ func (w *Writer) Write(ctx context.Context, idea string, opts Options) (Draft, e
 	if opts.Instrumental {
 		user.WriteString("\nThis is an instrumental: use only [Intro], [Instrumental], [Solo] and [Outro] tags with no sung lines.")
 	}
-	think := false
-	options := map[string]any{"temperature": w.temperature}
-	if w.numCtx > 0 {
-		options["num_ctx"] = w.numCtx
-	}
-	reply, err := w.llm.Chat(ctx, ollama.ChatRequest{
-		Model: w.model,
-		Messages: []ollama.Message{
-			{Role: "system", Content: w.system},
-			{Role: "user", Content: user.String()},
-		},
-		Format:    draftSchema,
-		Think:     &think,
-		Options:   options,
-		KeepAlive: ollama.KeepAlive(w.keepAlive),
-	})
+	d, err := w.ask(ctx, "draft song", user.String())
 	if err != nil {
-		return Draft{}, fmt.Errorf("draft song with %s: %w", w.model, err)
-	}
-	var d Draft
-	if err := json.Unmarshal([]byte(reply), &d); err != nil {
-		return Draft{}, fmt.Errorf("model %s returned invalid JSON: %w", w.model, err)
+		return Draft{}, err
 	}
 	d.Lyrics = strings.TrimSpace(d.Lyrics)
 	d.Instrumental = opts.Instrumental
@@ -329,6 +310,100 @@ func (w *Writer) Write(ctx context.Context, idea string, opts Options) (Draft, e
 	d.Seconds = min(max(d.Seconds, MinSeconds), MaxSeconds)
 	if err := d.Validate(); err != nil {
 		return d, fmt.Errorf("draft from %s is incomplete: %w", w.model, err)
+	}
+	return d, nil
+}
+
+// ask sends one request with the system prompt and decodes the reply; what
+// names the request in errors.
+func (w *Writer) ask(ctx context.Context, what, user string) (Draft, error) {
+	think := false
+	options := map[string]any{"temperature": w.temperature}
+	if w.numCtx > 0 {
+		options["num_ctx"] = w.numCtx
+	}
+	reply, err := w.llm.Chat(ctx, ollama.ChatRequest{
+		Model: w.model,
+		Messages: []ollama.Message{
+			{Role: "system", Content: w.system},
+			{Role: "user", Content: user},
+		},
+		Format:    draftSchema,
+		Think:     &think,
+		Options:   options,
+		KeepAlive: ollama.KeepAlive(w.keepAlive),
+	})
+	if err != nil {
+		return Draft{}, fmt.Errorf("%s with %s: %w", what, w.model, err)
+	}
+	var d Draft
+	if err := json.Unmarshal([]byte(reply), &d); err != nil {
+		return Draft{}, fmt.Errorf("model %s returned invalid JSON: %w", w.model, err)
+	}
+	return d, nil
+}
+
+// ReviseMarker opens every revision request.
+const ReviseMarker = "Revise the song below."
+
+// ReviseRules tell the model how to revise a song; they follow ReviseMarker.
+var ReviseRules = `Return the complete revised song as JSON in the same shape as a new song: title, lyrics, caption and seconds.
+- Change only what the instruction asks for.
+- Keep every existing lyric line and section that the instruction does not ask to change, word for word and in the same order.
+- When asked to make the song longer or to add story, add new sections (verses, pre-choruses, a bridge, a final chorus variation) that continue the same narrative, voice, rhyme feel and recurring hook. Place them where they fit the song's structure, not only at the end.
+- Keep caption.global_metadata and caption.vocal_details exactly as they are unless the instruction is about the sound.
+- Update caption.arrangement so it covers every section tag in the revised lyrics.
+- Keep the title unless the instruction asks for a new one.
+- Set seconds to the length that fits the revised lyrics, between ` + fmt.Sprint(MinSeconds) + ` and ` + fmt.Sprint(MaxSeconds) + `.`
+
+// Revise asks for current rewritten as instruction says. The model picks the
+// length; opts.Seconds is not a target here. A reply that fails Validate is
+// returned with the error, as Write does.
+func (w *Writer) Revise(ctx context.Context, current Draft, idea, instruction string, opts Options) (Draft, error) {
+	instruction = strings.TrimSpace(instruction)
+	if instruction == "" {
+		return Draft{}, errors.New("say what should change")
+	}
+	if strings.TrimSpace(current.Lyrics) == "" {
+		return Draft{}, errors.New("the song has no lyrics to revise")
+	}
+	instrumental := opts.Instrumental || current.Instrumental
+	var user strings.Builder
+	user.WriteString(ReviseMarker + "\n" + ReviseRules + "\n\n")
+	user.WriteString("Instruction: " + instruction + "\n")
+	if idea = strings.TrimSpace(idea); idea != "" {
+		user.WriteString("Song idea: " + idea + "\n")
+	}
+	if instrumental {
+		user.WriteString("This is an instrumental: use only [Intro], [Instrumental], [Solo] and [Outro] tags with no sung lines.\n")
+	}
+	fmt.Fprintf(&user, "\nCurrent title: %s\nCurrent length: %.0f seconds\n", current.Title, current.Seconds)
+	user.WriteString("Current lyrics:\n<lyrics>\n" + strings.TrimSpace(current.Lyrics) + "\n</lyrics>\n")
+	user.WriteString("Current caption.global_metadata: " + strings.TrimSpace(current.Caption.GlobalMetadata) + "\n")
+	user.WriteString("Current caption.vocal_details: " + strings.TrimSpace(current.Caption.VocalDetails) + "\n")
+	user.WriteString("Current caption.arrangement: " + strings.TrimSpace(current.Caption.Arrangement) + "\n")
+
+	d, err := w.ask(ctx, "revise song", user.String())
+	if err != nil {
+		return Draft{}, err
+	}
+	d.Lyrics = strings.TrimSpace(d.Lyrics)
+	d.Instrumental = instrumental
+	keep := func(dst *string, v string) {
+		if strings.TrimSpace(*dst) == "" {
+			*dst = v
+		}
+	}
+	keep(&d.Title, current.Title)
+	keep(&d.Caption.GlobalMetadata, current.Caption.GlobalMetadata)
+	keep(&d.Caption.VocalDetails, current.Caption.VocalDetails)
+	keep(&d.Caption.Arrangement, current.Caption.Arrangement)
+	if d.Seconds <= 0 {
+		d.Seconds = current.Seconds
+	}
+	d.Seconds = min(max(d.Seconds, MinSeconds), MaxSeconds)
+	if err := d.Validate(); err != nil {
+		return d, fmt.Errorf("revision from %s is incomplete: %w", w.model, err)
 	}
 	return d, nil
 }
