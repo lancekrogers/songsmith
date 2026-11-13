@@ -16,6 +16,7 @@ import (
 	"github.com/lancekrogers/songsmith/internal/comfy/server"
 	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/ollama"
+	"github.com/lancekrogers/songsmith/internal/writer"
 )
 
 type Result int
@@ -48,6 +49,7 @@ const (
 	IDServerModelFiles = "comfyui-model-list"
 	IDWriter           = "ollama"
 	IDFFprobe          = "ffprobe"
+	IDInstructions     = "writer-instructions"
 )
 
 // Install actions that can fix a failing check.
@@ -128,6 +130,9 @@ func Run(ctx context.Context, cfg config.Config) []Check {
 
 	names, err := ollama.NewClient(cfg.Ollama.URL).Models(ctx)
 	out = append(out, writerCheck(cfg.Ollama, names, err))
+	if ch, ok := instructionsCheck(cfg.Ollama.InstructionsFile); ok {
+		out = append(out, ch)
+	}
 	_, err = exec.LookPath("ffprobe")
 	return append(out, ffprobeCheck(err))
 }
@@ -249,6 +254,21 @@ func writerCheck(o config.Ollama, names []string, err error) Check {
 		ch.Result, ch.Detail = OK, fmt.Sprintf("%s at %s", o.Model, o.URL)
 	}
 	return ch
+}
+
+// instructionsCheck reports on a configured instructions file; ok is false
+// when none is set. It never blocks: drafts fall back to the built-in prompt.
+func instructionsCheck(path string) (ch Check, ok bool) {
+	if path == "" {
+		return Check{}, false
+	}
+	ch = Check{ID: IDInstructions, Name: "Writing instructions", Result: OK, Detail: path}
+	if _, err := writer.Instructions(path); err != nil {
+		ch.Result = Warn
+		ch.Detail = fmt.Sprintf("%v, so drafts use the built-in instructions. "+
+			"Fix the file or change it in Settings → Writer (config key ollama.instructions_file)", err)
+	}
+	return ch, true
 }
 
 // ffprobeCheck never blocks: without ffprobe songs render but their length

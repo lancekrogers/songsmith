@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -45,8 +46,12 @@ func Set(path, key string, value any) error {
 		return fmt.Errorf("read config %s: %w", path, err)
 	}
 	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(&doc); err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("parse config %s: %w", path, err)
+	}
+	if err := dec.Decode(new(yaml.Node)); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("config %s has more than one YAML document; merge them into one to change settings here", path)
 	}
 	if doc.Kind == 0 {
 		// An empty or comment-only file parses to nothing; keep its comments.
@@ -59,7 +64,9 @@ func Set(path, key string, value any) error {
 	if root.Kind != yaml.MappingNode {
 		return fmt.Errorf("config %s: top level is not a map", path)
 	}
-	if err := setPath(root, strings.Split(key, "."), &val); err != nil {
+	if err := setPath(root, strings.Split(key, "."), &val); errors.Is(err, errAnchored) {
+		return fmt.Errorf("config %s: %s uses a YAML anchor and must be edited by hand", path, key)
+	} else if err != nil {
 		return fmt.Errorf("config %s: %w", path, err)
 	}
 
@@ -79,6 +86,8 @@ func Set(path, key string, value any) error {
 	return writeFile(path, out.Bytes())
 }
 
+var errAnchored = errors.New("value carries a YAML anchor")
+
 // setPath walks segments under m, creating maps where they are missing, and
 // puts val at the last one. An existing scalar keeps its comments.
 func setPath(m *yaml.Node, segments []string, val *yaml.Node) error {
@@ -94,6 +103,9 @@ func setPath(m *yaml.Node, segments []string, val *yaml.Node) error {
 		if cur == nil {
 			m.Content = append(m.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: name}, val)
 			return nil
+		}
+		if cur.Anchor != "" {
+			return errAnchored
 		}
 		val.HeadComment, val.LineComment, val.FootComment = cur.HeadComment, cur.LineComment, cur.FootComment
 		*cur = *val
@@ -141,8 +153,12 @@ func fieldType(key string) (reflect.Type, error) {
 	return t, nil
 }
 
-// writeFile replaces path atomically, keeping an existing file's mode.
+// writeFile replaces path atomically, keeping an existing file's mode. A
+// symlinked path is written through to its target, so the link survives.
 func writeFile(path string, data []byte) error {
+	if target, err := filepath.EvalSymlinks(path); err == nil {
+		path = target
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
@@ -161,6 +177,10 @@ func writeFile(path string, data []byte) error {
 		return fmt.Errorf("write config: %w", err)
 	}
 	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write config: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		return fmt.Errorf("write config: %w", err)
 	}

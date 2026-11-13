@@ -5,7 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 const commented = `# songsmith settings
@@ -227,5 +229,113 @@ func TestPath(t *testing.T) {
 	}
 	if NewLive("", Default()).Path() != "/env/config.yaml" {
 		t.Fatal("live path ignores the env var")
+	}
+}
+
+func TestSetRefusesMultiDocumentFile(t *testing.T) {
+	body := "render:\n  steps: 3\n---\nrender:\n  steps: 9\n"
+	p := writeConfig(t, body)
+	err := Set(p, "render.steps", 4)
+	if err == nil || !strings.Contains(err.Error(), "more than one YAML document") {
+		t.Fatalf("err = %v", err)
+	}
+	if read(t, p) != body {
+		t.Fatalf("file changed:\n%s", read(t, p))
+	}
+	single := writeConfig(t, "---\nrender:\n  steps: 3\n")
+	if err := Set(single, "render.steps", 4); err != nil {
+		t.Fatalf("leading document marker: %v", err)
+	}
+}
+
+func TestSetWritesThroughASymlink(t *testing.T) {
+	target := writeConfig(t, commented)
+	link := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := Set(link, "render.steps", 40); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("link replaced: %v %v", fi.Mode(), err)
+	}
+	if !strings.Contains(read(t, target), "steps: 40") {
+		t.Fatalf("target not updated:\n%s", read(t, target))
+	}
+	if fi, _ := os.Stat(target); fi.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v", fi.Mode().Perm())
+	}
+	for _, dir := range []string{filepath.Dir(target), filepath.Dir(link)} {
+		if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+			t.Errorf("%s holds %d entries, want 1", dir, len(entries))
+		}
+	}
+}
+
+func TestSetRefusesAnchoredValuePlainly(t *testing.T) {
+	body := "render:\n  steps: &n 7\n  top_k: *n\n"
+	p := writeConfig(t, body)
+	err := Set(p, "render.steps", 9)
+	if err == nil || !strings.Contains(err.Error(), "render.steps uses a YAML anchor") || strings.Contains(err.Error(), "unknown anchor") {
+		t.Fatalf("err = %v", err)
+	}
+	if read(t, p) != body {
+		t.Fatalf("file changed:\n%s", read(t, p))
+	}
+}
+
+func TestSetKeepsRelativeInstructionsFileLiteral(t *testing.T) {
+	p := writeConfig(t, "")
+	if err := Set(p, "ollama.instructions_file", "prompts/songs.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, p); !strings.Contains(got, "instructions_file: prompts/songs.txt") {
+		t.Fatalf("file:\n%s", got)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(filepath.Dir(p), "prompts", "songs.txt"); cfg.Ollama.InstructionsFile != want {
+		t.Fatalf("instructions file = %q, want %q", cfg.Ollama.InstructionsFile, want)
+	}
+}
+
+func TestLiveConcurrentSetsKeepEveryChange(t *testing.T) {
+	p := writeConfig(t, "")
+	live := NewLive(p, Default())
+	firstRead, secondDone := make(chan struct{}), make(chan struct{})
+	var loads atomic.Int32
+	// The first reload stalls until a second Set has finished, or briefly
+	// when that Set has to wait for this one.
+	live.load = func(path string) (Config, error) {
+		cfg, err := Load(path)
+		if loads.Add(1) == 1 {
+			close(firstRead)
+			select {
+			case <-secondDone:
+			case <-time.After(200 * time.Millisecond):
+			}
+		}
+		return cfg, err
+	}
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		if err := live.Set("ollama.model", "first"); err != nil {
+			t.Error(err)
+		}
+	})
+	<-firstRead
+	wg.Go(func() {
+		defer close(secondDone)
+		if err := live.Set("render.sampler", "second"); err != nil {
+			t.Error(err)
+		}
+	})
+	wg.Wait()
+	got := live.Get()
+	if got.Ollama.Model != "first" || got.Render.Sampler != "second" {
+		t.Fatalf("running settings lost a change: model %q sampler %q", got.Ollama.Model, got.Render.Sampler)
 	}
 }

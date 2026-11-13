@@ -206,3 +206,28 @@ func TestSummaries(t *testing.T) {
 		t.Fatal("Find missing")
 	}
 }
+
+func TestInstructionsCheck(t *testing.T) {
+	dir := t.TempDir()
+	empty := filepath.Join(dir, "empty.txt")
+	good := filepath.Join(dir, "good.txt")
+	if err := os.WriteFile(empty, []byte(" \n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(good, []byte("Write sea shanties."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := instructionsCheck(""); ok {
+		t.Fatal("check reported with no instructions file set")
+	}
+	for _, p := range []string{filepath.Join(dir, "gone.txt"), empty, dir} {
+		ch, ok := instructionsCheck(p)
+		if !ok || ch.ID != IDInstructions || ch.Result != Warn || ch.Blocking || ch.Missing != "" ||
+			!inOrder(ch.Detail, p, "drafts use the built-in instructions", "Settings → Writer") {
+			t.Errorf("%s: %+v", p, ch)
+		}
+	}
+	if ch, ok := instructionsCheck(good); !ok || ch.Result != OK || ch.Detail != good {
+		t.Errorf("good file: %+v", ch)
+	}
+}

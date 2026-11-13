@@ -3,7 +3,6 @@
 package tui
 
 import (
-	"cmp"
 	"context"
 	"time"
 
@@ -160,7 +159,7 @@ func tick() tea.Cmd {
 func (a app) cfg() config.Config { return a.d.Config.Get() }
 
 func (a app) defaultSeconds() float64 {
-	return float64(cmp.Or(a.cfg().Render.DefaultSeconds, 120))
+	return float64(a.cfg().Render.DefaultSeconds)
 }
 
 // Update keeps the launcher's selection valid after every message, since
@@ -223,6 +222,10 @@ func (a app) update(msg tea.Msg) (app, tea.Cmd) {
 	case switchScreenMsg:
 		return a.show(screen(msg))
 	case openComposeMsg:
+		// A second open queued before the first arrived must not reset the form.
+		if a.screen == screenCompose {
+			return a, nil
+		}
 		a.err = ""
 		a.compose.returnTo = a.screen
 		a.screen = screenCompose

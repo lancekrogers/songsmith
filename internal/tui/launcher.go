@@ -216,12 +216,15 @@ func (m launcherModel) fullView(st launcherState, width int) string {
 	return lipgloss.NewStyle().Padding(1, 2).Render(b.String())
 }
 
-// compactView fits short terminals: a title, the notice, a window of the menu
-// around the selection, and the footer.
+// compactView fits short terminals: a title, the notice, the latest message, a
+// window of the menu around the selection, and the footer.
 func (m launcherModel) compactView(st launcherState, width, height int) string {
 	var lines []string
 	lines = append(lines, ansi.Truncate(headerStyle.Render(" ♪ SONGSMITH"), width, "…"))
 	lines = append(lines, st.noticeLines(width)[0])
+	if msg := st.message(width); msg != "" {
+		lines = append(lines, msg)
+	}
 	items := st.items()
 	cur := m.cursor(items)
 	visible := max(1, height-len(lines)-1)
@@ -376,20 +379,20 @@ func progressLabel(p backend.Progress) string {
 }
 
 // noticeLines name what stops rendering and who can fix it: while setup is
-// incomplete, everything missing and whether songsmith can install it;
-// otherwise the first problem and its fix.
+// incomplete, the first blocking failure, then everything missing and whether
+// songsmith can install it; otherwise the first problem and its fix.
 func (st launcherState) noticeLines(width int) []string {
 	var lines []string
 	switch {
 	case !st.checked:
 		lines = []string{dimStyle.Render("Checking ComfyUI, the music model files, Ollama and ffprobe…")}
 	default:
-		b, blocked := st.blocker()
+		b, blocked := blockerSummary(st.checks)
 		if !blocked {
 			// A stopped server is normal (it starts on the first render) and
-			// its chip already says so; only failures and missing pieces count.
+			// its chip already says so; every other problem counts.
 			i := slices.IndexFunc(st.checks, func(c health.Check) bool {
-				return c.Result == health.Fail || c.Result != health.OK && c.Missing != ""
+				return c.Result == health.Fail || c.Result == health.Warn && c.ID != health.IDServer
 			})
 			if i < 0 {
 				lines = []string{statusStyle.Render("✓ Ready to render")}
@@ -398,22 +401,39 @@ func (st launcherState) noticeLines(width int) []string {
 			}
 			break
 		}
+		lines = []string{errorStyle.Render("▲ " + b)}
 		if head, fix, ok := missingSummary(st.checks); ok {
 			// The fix line wraps: it says who installs what, and none of it may be cut.
 			wrapped := lipgloss.NewStyle().Width(max(10, width-2)).Render(fix)
-			lines = []string{ansi.Truncate(errorStyle.Render("▲ "+head), width, "…")}
+			lines = append(lines, warningStyle.Render("  "+head))
 			for _, l := range strings.Split(wrapped, "\n") {
 				lines = append(lines, dimStyle.Render("  "+strings.TrimRight(l, " ")))
 			}
-			return lines
-		} else {
-			lines = []string{errorStyle.Render("▲ " + b.Name + ": " + b.Detail)}
 		}
 	}
 	for i, l := range lines {
 		lines[i] = ansi.Truncate(l, width, "…")
 	}
 	return lines
+}
+
+// blockerSummary names the first check that stops rendering and its detail,
+// and says how many more block.
+func blockerSummary(checks []health.Check) (string, bool) {
+	b, ok := health.Blocker(checks)
+	if !ok {
+		return "", false
+	}
+	name, more := b.Name, -1
+	for _, c := range checks {
+		if c.Result == health.Fail && c.Blocking {
+			more++
+		}
+	}
+	if more > 0 {
+		name += fmt.Sprintf(" (+%d more)", more)
+	}
+	return name + ": " + b.Detail, true
 }
 
 // missingSummary lists what is missing and splits it into what Finish setup

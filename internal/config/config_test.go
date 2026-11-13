@@ -70,3 +70,42 @@ func TestLoad(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadResolvesInstructionsFileAgainstTheConfigFolder(t *testing.T) {
+	dir := t.TempDir()
+	home, _ := os.UserHomeDir()
+	for value, want := range map[string]string{
+		"prompts/songs.txt": filepath.Join(dir, "prompts", "songs.txt"),
+		"/abs/songs.txt":    "/abs/songs.txt",
+		"~/songs.txt":       filepath.Join(home, "songs.txt"),
+		`""`:                "",
+	} {
+		p := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(p, []byte("ollama:\n  instructions_file: "+value+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Ollama.InstructionsFile != want {
+			t.Errorf("%s: got %q, want %q", value, cfg.Ollama.InstructionsFile, want)
+		}
+	}
+}
+
+func TestLoadFallsBackForNonPositiveDefaultSeconds(t *testing.T) {
+	for _, v := range []string{"0", "-30"} {
+		p := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(p, []byte("render:\n  default_seconds: "+v+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Render.DefaultSeconds != Default().Render.DefaultSeconds {
+			t.Errorf("default_seconds %s loads as %d", v, cfg.Render.DefaultSeconds)
+		}
+	}
+}

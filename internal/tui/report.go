@@ -59,11 +59,12 @@ func (a app) reportBody() []string {
 	case a.health.running:
 		lines = append(lines, dimStyle.Render("Checking ComfyUI, the music model files, Ollama and ffprobe…"), "")
 	case a.report.setup:
-		if _, blocked := health.Blocker(a.health.checks); !blocked {
+		if b, blocked := blockerSummary(a.health.checks); !blocked {
 			lines = append(lines, statusStyle.Render("✓ Nothing blocks rendering."), "")
 		} else {
+			lines = append(lines, errorStyle.Render(ansi.Truncate("▲ "+b, inner, "…")))
 			if head, fix, ok := missingSummary(a.health.checks); ok {
-				lines = append(lines, errorStyle.Render(head), dimStyle.Render(fix))
+				lines = append(lines, warningStyle.Render(head), dimStyle.Render(fix))
 			}
 			lines = append(lines, "Each failed check says how to fix it. Press r to check again once it is fixed.", "")
 		}

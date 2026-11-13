@@ -98,7 +98,7 @@ ollama:
   url: http://127.0.0.1:11434
   model: qwen3.8:latest
   temperature: 0.8
-  instructions_file: ""   # a text file that replaces the built-in writing instructions
+  instructions_file: ""   # a text file that replaces the built-in writing instructions; relative to this file
 render:
   steps: 30
   cfg_scale: 1.7
