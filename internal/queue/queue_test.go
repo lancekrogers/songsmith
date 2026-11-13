@@ -292,9 +292,7 @@ func TestSaveEditRefusesRenderingSong(t *testing.T) {
 func TestRunPicksUpSongsQueuedElsewhere(t *testing.T) {
 	b := &fakeBackend{started: make(chan string, 1)}
 	q, store := setup(t, b)
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	go q.Run(ctx)
+	runQueue(t, q)
 	time.Sleep(20 * time.Millisecond)
 	song := create(t, store, "From another process", library.StatusQueued)
 	select {
@@ -313,9 +311,7 @@ func TestRunSurvivesCorruptSong(t *testing.T) {
 	os.MkdirAll(filepath.Join(store.Dir(), "bad"), 0o755)
 	os.WriteFile(filepath.Join(store.Dir(), "bad", "song.json"), []byte("{"), 0o644)
 	song := create(t, store, "Good", library.StatusQueued)
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	go q.Run(ctx)
+	runQueue(t, q)
 	select {
 	case id := <-b.started:
 		if id != song.ID {
@@ -324,4 +320,19 @@ func TestRunSurvivesCorruptSong(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("a corrupt song stopped the worker")
 	}
+}
+
+// runQueue runs q until the test ends and waits for the worker to stop, so
+// it never writes into a temp dir that is being removed.
+func runQueue(t *testing.T, q *Queue) {
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		q.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 }
