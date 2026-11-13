@@ -13,3 +13,7 @@ run *args:
 # Format all Go files
 fmt:
     gofmt -w .
+
+# Record the TUI demo GIF (needs Ollama; uses a throwaway library in /tmp)
+demo: build
+    PATH="$PWD/bin:$PATH" vhs demos/tui.tape

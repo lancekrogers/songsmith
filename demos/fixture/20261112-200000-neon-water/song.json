@@ -1,0 +1,21 @@
+{
+  "id": "20261112-200000-neon-water",
+  "created": "2026-11-12T20:00:00Z",
+  "updated": "2026-11-12T20:02:10Z",
+  "idea": "synth pop about a city at night",
+  "title": "Neon Water",
+  "lyrics": "[Verse]\nNeon on the water\nCity in my chest\n[Chorus]\nWe light it up tonight",
+  "caption": {
+    "global_metadata": "Upbeat synth pop, 118 BPM, A minor, bright and punchy.",
+    "vocal_details": "Confident female lead.",
+    "arrangement": "Verse: analog synth bass and gated drums. Chorus: shimmering pads."
+  },
+  "seconds": 20,
+  "seed": 42,
+  "status": "done",
+  "audio": "song.flac",
+  "duration": 20,
+  "backend": "minimax-music3 (comfyui)",
+  "started": "2026-11-12T20:00:00Z",
+  "finished": "2026-11-12T20:02:10Z"
+}
