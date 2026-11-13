@@ -121,6 +121,8 @@ func (a *app) enterSection(sec settingsSection) tea.Cmd {
 	case sectionServer:
 		a.refreshComfyFound()
 		return a.loadServerStatus()
+	case sectionRender:
+		return a.loadServerStatus()
 	case sectionAdvanced:
 		return a.loadSamplers()
 	}

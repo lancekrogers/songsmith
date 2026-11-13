@@ -303,3 +303,128 @@ func TestMiniMaxGraphSamplerSettings(t *testing.T) {
 }
 
 func (g Graph) sampler() map[string]any { return g[NodeSampler].Inputs }
+
+func TestStagedGraphsMatchRequiredNodes(t *testing.T) {
+	p := MiniMaxParams{Caption: "c", Lyrics: "l", Seed: 7, MaxSeconds: 60, CFGScale: 1.7, TopK: 50, Steps: 30,
+		DiffusionModel: "dit", TextEncoder: "te", VAE: "vae", FilenamePrefix: "songsmith/x"}
+	sample := MiniMaxSampleGraph(p, "songsmith/latents/x")
+	decode := MiniMaxDecodeGraph("vae", "songsmith/latents/x_00001_.latent [output]", "songsmith/x")
+	for name, g := range map[string]Graph{"sample": sample, "decode": decode} {
+		for id, n := range g {
+			req, ok := RequiredNodes[n.ClassType]
+			if !ok {
+				t.Errorf("%s: node %s uses unchecked class %s", name, id, n.ClassType)
+			}
+			for _, in := range req {
+				if _, ok := n.Inputs[in]; !ok {
+					t.Errorf("%s: node %s missing input %s", name, id, in)
+				}
+			}
+			for in, v := range n.Inputs {
+				if l, ok := v.([]any); ok {
+					if _, exists := g[l[0].(string)]; !exists {
+						t.Errorf("%s: node %s input %s links to missing node %v", name, id, in, l[0])
+					}
+				}
+			}
+		}
+	}
+	full := MiniMaxGraph(p)
+	for _, id := range []string{NodeTextEncoder, NodeDiffusion, NodeEncode, NodeNegative, NodeLatent, NodeSampler} {
+		a, _ := json.Marshal(sample[id])
+		b, _ := json.Marshal(full[id])
+		if string(a) != string(b) {
+			t.Errorf("sample graph changed %s: %s, want %s", id, a, b)
+		}
+	}
+	for _, id := range []string{NodeVAE, NodeDecode, NodeSave} {
+		if _, ok := sample[id]; ok {
+			t.Errorf("sample graph still has %s", id)
+		}
+	}
+	if len(decode) != 4 || decode[NodeDecode].Inputs["samples"].([]any)[0] != NodeLoadLatent {
+		t.Errorf("decode graph = %+v", decode)
+	}
+}
+
+func TestLatentRefRoundTrips(t *testing.T) {
+	f := OutputFile{Filename: "song_00001_.latent", Subfolder: "songsmith/latents", Type: "output"}
+	ref := LatentRef(f)
+	if ref != "songsmith/latents/song_00001_.latent [output]" {
+		t.Fatalf("ref = %q", ref)
+	}
+	if got, ok := ParseLatentRef(ref); !ok || got != f {
+		t.Fatalf("parsed %+v %v", got, ok)
+	}
+	if _, ok := ParseLatentRef("no-tag.latent"); ok {
+		t.Fatal("parsed a ref without a folder tag")
+	}
+}
+
+func TestOutOfMemory(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		node string
+		want bool
+	}{
+		{&ExecutionError{Node: NodeDecode, Message: "RuntimeError: MPS backend out of memory (MPS allocated: 40.95 GiB)"}, NodeDecode, true},
+		{&ExecutionError{Node: NodeDecode, Message: "OutOfMemoryError: CUDA out of memory. Tried to allocate 4.75 GiB"}, NodeDecode, true},
+		{&ExecutionError{Node: NodeDecode, Message: "torch.OutOfMemoryError: Allocation failed"}, NodeDecode, true},
+		{fmt.Errorf("wrapped: %w", &ExecutionError{Node: NodeDecode, Message: "out of memory"}), NodeDecode, true},
+		{&ExecutionError{Node: NodeSampler, Message: "MPS backend out of memory"}, NodeDecode, false},
+		{&ExecutionError{Node: NodeDecode, Message: "RuntimeError: shape mismatch"}, NodeDecode, false},
+		{errors.New("out of memory"), NodeDecode, false},
+	} {
+		if got := OutOfMemory(c.err, c.node); got != c.want {
+			t.Errorf("%v at %s = %v", c.err, c.node, got)
+		}
+	}
+}
+
+func TestFinishedPromptReportsItsError(t *testing.T) {
+	f, c := newFake(t)
+	f.history = `{"p1":{"status":{"status_str":"error","completed":false,"messages":[["execution_start",{"prompt_id":"p1"}],` +
+		`["execution_error",{"prompt_id":"p1","node_id":"decode","exception_type":"RuntimeError","exception_message":"MPS backend out of memory"}]]},"outputs":{}}}`
+	_, err := c.Run(t.Context(), Graph{"x": {}}, RunOptions{ResumeID: "p1"})
+	if !OutOfMemory(err, NodeDecode) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestFreeAndSystemStats(t *testing.T) {
+	var free map[string]bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /free", func(w http.ResponseWriter, r *http.Request) { json.NewDecoder(r.Body).Decode(&free) })
+	mux.HandleFunc("GET /system_stats", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"system":{"ram_total":34359738368,"argv":["main.py","--output-directory","/srv/comfy-out"]},"devices":[{"type":"mps","vram_total":34359738368}]}`)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c := NewClient(srv.URL)
+	if err := c.Free(t.Context(), true, true); err != nil || !free["unload_models"] || !free["free_memory"] {
+		t.Fatalf("free = %v, %v", free, err)
+	}
+	s, err := c.SystemStats(t.Context())
+	if err != nil || s.Memory() != 32<<30 {
+		t.Fatalf("memory = %d, %v", s.Memory(), err)
+	}
+	if dir, err := c.OutputDir(t.Context()); err != nil || dir != "/srv/comfy-out" {
+		t.Fatalf("output dir = %q, %v", dir, err)
+	}
+	if !c.Local() || NewClient("http://10.0.0.5:8188").Local() || !NewClient("http://[::1]:8188").Local() {
+		t.Fatal("Local is wrong")
+	}
+}
+
+func TestMemoryPrefersADedicatedGPU(t *testing.T) {
+	var s SystemStats
+	s.System.RAMTotal = 128 << 30
+	s.Devices = []Device{{Type: "cuda", VRAMTotal: 24 << 30}}
+	if s.Memory() != 24<<30 {
+		t.Fatalf("cuda memory = %d", s.Memory())
+	}
+	s.Devices = []Device{{Type: "mps", VRAMTotal: 128 << 30}}
+	if s.Memory() != 128<<30 {
+		t.Fatalf("mps memory = %d", s.Memory())
+	}
+}

@@ -156,7 +156,7 @@ func TestTakesUse(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"master:", "auto: false", "default:"} {
+	for _, want := range []string{"master:", "auto: false", "default:", "low_memory: auto"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("config output lacks %q:\n%s", want, out.String())
 		}

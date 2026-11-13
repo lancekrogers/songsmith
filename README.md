@@ -311,6 +311,7 @@ render:
   default_seconds: 120        # the length a new song starts with
   sampler: euler
   scheduler: simple
+  low_memory: auto            # on renders in two steps and frees the models before decoding; auto when ComfyUI has under 48 GB
 master:
   auto: false                 # master every new render with default and make it current
   default: {}                 # e.g. {loudness: -14, ceiling: -1, low_cut: 30}

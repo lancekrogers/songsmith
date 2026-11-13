@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -57,6 +58,33 @@ type Render struct {
 	DefaultSeconds int    `yaml:"default_seconds"`
 	Sampler        string `yaml:"sampler"`
 	Scheduler      string `yaml:"scheduler"`
+	// LowMemory renders in two prompts, freeing the models between them.
+	LowMemory LowMemoryMode `yaml:"low_memory"`
+}
+
+// LowMemoryMode is auto, on or off; auto decides at the start of each
+// render from the ComfyUI server's memory.
+type LowMemoryMode string
+
+const (
+	LowMemoryAuto LowMemoryMode = "auto"
+	LowMemoryOn   LowMemoryMode = "on"
+	LowMemoryOff  LowMemoryMode = "off"
+)
+
+// LowMemoryModes are the values render.low_memory takes.
+var LowMemoryModes = []LowMemoryMode{LowMemoryAuto, LowMemoryOn, LowMemoryOff}
+
+func (m *LowMemoryMode) UnmarshalYAML(n *yaml.Node) error {
+	var s string
+	if err := n.Decode(&s); err != nil {
+		return err
+	}
+	if !slices.Contains(LowMemoryModes, LowMemoryMode(s)) {
+		return fmt.Errorf("render.low_memory is %q; use auto, on or off", s)
+	}
+	*m = LowMemoryMode(s)
+	return nil
 }
 
 // Master is the mastering chain the user saved and whether new renders
@@ -102,6 +130,7 @@ func Default() Config {
 			DefaultSeconds: 120,
 			Sampler:        "euler",
 			Scheduler:      "simple",
+			LowMemory:      LowMemoryAuto,
 		},
 		LibraryDir: filepath.Join(home, "Music", "Songsmith"),
 		StateDir:   filepath.Join(home, ".local", "state", "songsmith"),
