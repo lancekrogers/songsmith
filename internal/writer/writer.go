@@ -20,11 +20,53 @@ type Caption struct {
 	Arrangement    string `json:"arrangement" yaml:"arrangement"`
 }
 
-// String renders the caption in the layout used by the official examples.
+var captionHeader = regexp.MustCompile(`(?mi)^\s*(Global Metadata|Vocal Details|Arrangement)\s*:`)
+
+// String renders the caption in the layout used by the official examples,
+// skipping empty parts.
 func (c Caption) String() string {
-	return "Global Metadata: " + strings.TrimSpace(c.GlobalMetadata) +
-		"\n\nVocal Details: " + strings.TrimSpace(c.VocalDetails) +
-		"\n\nArrangement: " + strings.TrimSpace(c.Arrangement)
+	var parts []string
+	for _, p := range [...]struct{ name, text string }{
+		{"Global Metadata", c.GlobalMetadata},
+		{"Vocal Details", c.VocalDetails},
+		{"Arrangement", c.Arrangement},
+	} {
+		if t := strings.TrimSpace(p.text); t != "" {
+			parts = append(parts, p.name+": "+t)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// ParseCaption splits caption text on its "Global Metadata:", "Vocal
+// Details:" and "Arrangement:" headers. Text before the first header, or
+// text with no headers, becomes global metadata.
+func ParseCaption(text string) Caption {
+	var c Caption
+	locs := captionHeader.FindAllStringSubmatchIndex(text, -1)
+	if len(locs) == 0 {
+		c.GlobalMetadata = strings.TrimSpace(text)
+		return c
+	}
+	if pre := strings.TrimSpace(text[:locs[0][0]]); pre != "" {
+		c.GlobalMetadata = pre
+	}
+	for i, loc := range locs {
+		end := len(text)
+		if i+1 < len(locs) {
+			end = locs[i+1][0]
+		}
+		body := strings.TrimSpace(text[loc[1]:end])
+		switch strings.ToLower(text[loc[2]:loc[3]]) {
+		case "global metadata":
+			c.GlobalMetadata = strings.TrimSpace(c.GlobalMetadata + "\n" + body)
+		case "vocal details":
+			c.VocalDetails = body
+		case "arrangement":
+			c.Arrangement = body
+		}
+	}
+	return c
 }
 
 type Draft struct {

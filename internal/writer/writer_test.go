@@ -100,3 +100,17 @@ func TestValidateClampsAndTags(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestParseCaptionRoundTrip(t *testing.T) {
+	c := Caption{GlobalMetadata: "Pop, 120 BPM", VocalDetails: "Female lead", Arrangement: "Intro: synth.\nChorus: drums."}
+	if got := ParseCaption(c.String()); got != c {
+		t.Fatalf("round trip = %+v", got)
+	}
+	if got := ParseCaption("just a vibe"); got.GlobalMetadata != "just a vibe" || got.String() != "Global Metadata: just a vibe" {
+		t.Fatalf("headerless = %+v", got)
+	}
+	got := ParseCaption("lo-fi\nvocal details: hushed\nARRANGEMENT: rhodes")
+	if got.GlobalMetadata != "lo-fi" || got.VocalDetails != "hushed" || got.Arrangement != "rhodes" {
+		t.Fatalf("mixed case = %+v", got)
+	}
+}
