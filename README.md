@@ -44,6 +44,23 @@ Then check the setup:
 songsmith doctor
 ```
 
+### Installing ComfyUI and the models
+
+`songsmith setup` lists what is installed and what is missing; `songsmith setup --install`
+installs what is missing, in order (`--comfyui`, `--models` or `--writer` limit it to one
+part):
+
+1. **ComfyUI** into `comfyui.dir`: a `git clone`, a `.venv` with Python 3.12 through
+   [uv](https://docs.astral.sh/uv/) when it is installed, otherwise through an installed
+   Python 3.12 or 3.13 (other versions are refused), then torch and ComfyUI's
+   requirements. Needs `git`. Output goes to `<state_dir>/install.log`. On Linux the
+   default torch wheel is the CUDA build; the Linux path is untested.
+2. **MiniMax Music 3 files** from Hugging Face, about 22 GB. Each download is checked
+   against its SHA-256. If it is interrupted (ctrl+c is fine), the `.part` file stays and
+   the next run resumes it.
+3. **Writer model** through Ollama. songsmith does not install Ollama itself; get it from
+   [ollama.com](https://ollama.com/download). Lyrics can be written by hand without it.
+
 ## Use
 
 ```bash
