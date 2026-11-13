@@ -36,6 +36,7 @@ func newRootCmd() *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&a.configPath, "config", "", "config file (default $SONGSMITH_CONFIG or ~/.config/songsmith/config.yaml)")
 	root.AddCommand(
+		newWriteCmd(a),
 		newConfigCmd(a),
 		newServerCmd(a),
 		newDoctorCmd(a),
