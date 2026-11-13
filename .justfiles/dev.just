@@ -28,3 +28,14 @@ demo-shell: build
         SONGSMITH_COLOR_PROFILE=ansi \
         vhs demos/shell.tape
     ls -lh demos/shell.gif
+
+# Record demos/editor.gif: the song form and text editor on a hand-written song (throwaway config in /tmp, no Ollama or ComfyUI needed)
+demo-editor: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    env -u NO_COLOR -u CLICOLOR \
+        CLICOLOR_FORCE=1 FORCE_COLOR=1 \
+        TERM=xterm-256color COLORTERM=truecolor \
+        SONGSMITH_COLOR_PROFILE=ansi \
+        vhs demos/editor.tape
+    ls -lh demos/editor.gif

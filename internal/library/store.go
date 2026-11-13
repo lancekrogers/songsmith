@@ -50,6 +50,8 @@ type Song struct {
 	Finished time.Time `json:"finished,omitzero"`
 	// Timings holds seconds spent in each render stage.
 	Timings map[string]float64 `json:"timings,omitempty"`
+	// Instrumental songs are drafted without sung lines.
+	Instrumental bool `json:"instrumental,omitempty"`
 }
 
 const songFile = "song.json"

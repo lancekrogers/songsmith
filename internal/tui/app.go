@@ -232,7 +232,7 @@ func (a app) update(msg tea.Msg) (app, tea.Cmd) {
 		if msg.song != nil {
 			return a, a.compose.startEdit(*msg.song, a.defaultSeconds())
 		}
-		return a, a.compose.startIdea()
+		return a, a.compose.startEdit(library.Song{}, a.defaultSeconds())
 	case openLibraryMsg:
 		a.library.selectID = msg.songID
 		a.selectPending()
@@ -297,7 +297,7 @@ func (a app) View() string {
 	case screenLibrary:
 		return a.libraryView()
 	case screenCompose:
-		return a.compose.view(a.width)
+		return a.composeView()
 	case screenSettings, screenSetup:
 		return a.reportView()
 	default:

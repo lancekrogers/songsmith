@@ -261,12 +261,16 @@ func TestLauncherLibraryAndBack(t *testing.T) {
 func TestNewSongFromLauncherReturnsToLauncher(t *testing.T) {
 	a, _ := newLauncherApp(t, readyChecks())
 	a = nav(t, a, "enter")
-	if a.screen != screenCompose || a.compose.step != stepIdea {
+	if a.screen != screenCompose || a.compose.focus != rowIdea {
 		t.Fatalf("New song opened %v", a.screen)
 	}
 	a, _ = send(t, a, key("q"))
 	if a.screen != screenCompose || a.compose.idea.Value() != "q" {
 		t.Fatalf("q should type into the idea, not quit: screen %v idea %q", a.screen, a.compose.idea.Value())
+	}
+	a, _ = send(t, a, key("esc"))
+	if a.screen != screenCompose {
+		t.Fatal("esc on a changed form should warn first")
 	}
 	a, _ = send(t, a, key("esc"))
 	if a.screen != screenLauncher {

@@ -91,6 +91,16 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyUp}
 	case "down":
 		return tea.KeyMsg{Type: tea.KeyDown}
+	case "left":
+		return tea.KeyMsg{Type: tea.KeyLeft}
+	case "right":
+		return tea.KeyMsg{Type: tea.KeyRight}
+	case "shift+tab":
+		return tea.KeyMsg{Type: tea.KeyShiftTab}
+	case "backspace":
+		return tea.KeyMsg{Type: tea.KeyBackspace}
+	case "ctrl+e":
+		return tea.KeyMsg{Type: tea.KeyCtrlE}
 	case "ctrl+c":
 		return tea.KeyMsg{Type: tea.KeyCtrlC}
 	case "ctrl+s":
@@ -164,8 +174,8 @@ func plain(a app) string { return ansi.Strip(a.View()) }
 func TestComposeDraftAndQueue(t *testing.T) {
 	m, store := newTestModel(t, fakeDrafter{draft: sampleDraft})
 	m = nav(t, m, "n")
-	if m.screen != screenCompose || m.compose.step != stepIdea {
-		t.Fatalf("screen %v step %v", m.screen, m.compose.step)
+	if m.screen != screenCompose || m.compose.focus != rowIdea || m.compose.base.ID != "" {
+		t.Fatalf("screen %v focus %v", m.screen, m.compose.focus)
 	}
 	m, _ = send(t, m, key("a cat who steals socks"))
 	m, cmd := send(t, m, key("enter"))
@@ -173,8 +183,8 @@ func TestComposeDraftAndQueue(t *testing.T) {
 		t.Fatal("not drafting")
 	}
 	m = runCmd(t, m, cmd)
-	if m.compose.step != stepEdit || m.compose.title.Value() != "Sock Thief" || !strings.Contains(m.compose.caption.Value(), "Vocal Details: Shouted") {
-		t.Fatalf("step %v title %q", m.compose.step, m.compose.title.Value())
+	if m.compose.drafting || m.compose.title.Value() != "Sock Thief" || m.compose.texts[2] != "Shouted male lead" {
+		t.Fatalf("title %q vocal details %q", m.compose.title.Value(), m.compose.texts[2])
 	}
 	if v := m.View(); !strings.Contains(v, "ctrl+s save & queue") {
 		t.Fatalf("edit view missing help:\n%s", v)
@@ -182,7 +192,7 @@ func TestComposeDraftAndQueue(t *testing.T) {
 
 	m, cmd = send(t, m, key("ctrl+s"))
 	if m.screen != screenLibrary {
-		t.Fatalf("screen after save = %v (err %q)", m.screen, m.compose.err)
+		t.Fatalf("screen after save = %v (msg %q)", m.screen, m.compose.msg)
 	}
 	m = runCmd(t, m, cmd)
 	songs, _ := store.List()
@@ -200,12 +210,12 @@ func TestDraftFailureFallsBackToManualEdit(t *testing.T) {
 	m, _ = send(t, m, key("idea"))
 	m, cmd := send(t, m, key("enter"))
 	m = runCmd(t, m, cmd)
-	if m.compose.step != stepEdit || !strings.Contains(m.compose.err, "connection refused") {
-		t.Fatalf("step %v err %q", m.compose.step, m.compose.err)
+	if m.compose.drafting || !strings.Contains(m.compose.msg, "connection refused") {
+		t.Fatalf("drafting %v msg %q", m.compose.drafting, m.compose.msg)
 	}
 	m, _ = send(t, m, key("ctrl+s"))
-	if m.screen != screenCompose || !strings.Contains(m.compose.err, "lyrics are empty") {
-		t.Fatalf("empty form should not save: screen %v err %q", m.screen, m.compose.err)
+	if m.screen != screenCompose || !strings.Contains(m.compose.msg, "lyrics are empty") {
+		t.Fatalf("empty form should not save: screen %v msg %q", m.screen, m.compose.msg)
 	}
 	if songs, _ := store.List(); len(songs) != 0 {
 		t.Fatalf("saved %d songs", len(songs))
@@ -223,8 +233,8 @@ func TestEditingDoneSongMakesACopy(t *testing.T) {
 	}
 	m = runCmd(t, m, m.loadSongs())
 	m = nav(t, m, "e")
-	if m.compose.step != stepEdit || m.compose.base.ID != "" {
-		t.Fatalf("step %v base %q", m.compose.step, m.compose.base.ID)
+	if m.screen != screenCompose || m.compose.base.ID != "" {
+		t.Fatalf("screen %v base %q", m.screen, m.compose.base.ID)
 	}
 	m, cmd := send(t, m, key("ctrl+d"))
 	runCmd(t, m, cmd)
@@ -342,11 +352,11 @@ func TestSavingEditsToASongThatStartedRenderingMakesACopy(t *testing.T) {
 	go func() { q.Render(ctx, song); close(done) }()
 	<-bb.started
 
-	m.compose.lyrics.SetValue("[Verse]\nnew words")
+	m.compose.texts[0] = "[Verse]\nnew words"
 	m, cmd := send(t, m, key("ctrl+d"))
 	runCmd(t, m, cmd)
 	if !strings.Contains(m.notice, "saved as a new song") {
-		t.Fatalf("notice = %q err = %q", m.notice, m.compose.err)
+		t.Fatalf("notice = %q msg = %q", m.notice, m.compose.msg)
 	}
 	songs, _ := store.List()
 	if len(songs) != 2 {
@@ -382,8 +392,8 @@ func TestNewSongsUseConfiguredDefaultLength(t *testing.T) {
 	m.d.Config.Replace(cfg)
 	m = nav(t, m, "n")
 	m, _ = send(t, m, key("tab"))
-	if m.compose.step != stepEdit || m.compose.seconds.Value() != "75" {
-		t.Fatalf("step %v seconds %q", m.compose.step, m.compose.seconds.Value())
+	if m.compose.focus != rowTitle || m.compose.seconds != 75 {
+		t.Fatalf("focus %v seconds %v", m.compose.focus, m.compose.seconds)
 	}
 	m, _ = send(t, m, key("esc"))
 	if m.screen != screenLibrary {
