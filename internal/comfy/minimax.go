@@ -1,5 +1,7 @@
 package comfy
 
+import "cmp"
+
 // Node IDs in the MiniMax graph. Progress events carry the executing node ID,
 // so these double as stage names.
 const (
@@ -17,13 +19,16 @@ const (
 // MiniMaxParams configures one MiniMax Music 3 render. The graph mirrors the
 // official ComfyUI "audio_minimax_music_3" template.
 type MiniMaxParams struct {
-	Caption        string
-	Lyrics         string
-	Seed           int64
-	MaxSeconds     float64
-	CFGScale       float64
-	TopK           int
-	Steps          int
+	Caption    string
+	Lyrics     string
+	Seed       int64
+	MaxSeconds float64
+	CFGScale   float64
+	TopK       int
+	Steps      int
+	// Sampler and Scheduler default to "euler" and "simple".
+	Sampler        string
+	Scheduler      string
 	DiffusionModel string
 	TextEncoder    string
 	VAE            string
@@ -62,8 +67,8 @@ func MiniMaxGraph(p MiniMaxParams) Graph {
 			"seed":         p.Seed,
 			"steps":        p.Steps,
 			"cfg":          p.CFGScale,
-			"sampler_name": "euler",
-			"scheduler":    "simple",
+			"sampler_name": cmp.Or(p.Sampler, "euler"),
+			"scheduler":    cmp.Or(p.Scheduler, "simple"),
 			"positive":     Link(NodeEncode, 0),
 			"negative":     Link(NodeNegative, 0),
 			"latent_image": Link(NodeLatent, 0),

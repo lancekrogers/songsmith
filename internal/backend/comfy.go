@@ -29,13 +29,14 @@ type Starter interface {
 type ComfyMiniMax struct {
 	client  *comfy.Client
 	starter Starter
-	models  config.ComfyUI
-	render  config.Render
-	now     func() time.Time
+	// settings returns the current model files and render settings; each
+	// render reads them once when it starts.
+	settings func() config.Config
+	now      func() time.Time
 }
 
-func NewComfyMiniMax(client *comfy.Client, starter Starter, models config.ComfyUI, render config.Render) *ComfyMiniMax {
-	return &ComfyMiniMax{client: client, starter: starter, models: models, render: render, now: time.Now}
+func NewComfyMiniMax(client *comfy.Client, starter Starter, settings func() config.Config) *ComfyMiniMax {
+	return &ComfyMiniMax{client: client, starter: starter, settings: settings, now: time.Now}
 }
 
 func (b *ComfyMiniMax) Name() string { return "minimax-music3 (comfyui)" }
@@ -65,17 +66,20 @@ func (b *ComfyMiniMax) Generate(ctx context.Context, req Request, progress func(
 			return Result{}, fmt.Errorf("start comfyui: %w", err)
 		}
 	}
+	cfg := b.settings()
 	g := comfy.MiniMaxGraph(comfy.MiniMaxParams{
 		Caption:        req.Caption,
 		Lyrics:         req.Lyrics,
 		Seed:           req.Seed,
 		MaxSeconds:     req.MaxSeconds,
-		CFGScale:       b.render.CFGScale,
-		TopK:           b.render.TopK,
-		Steps:          b.render.Steps,
-		DiffusionModel: b.models.DiffusionModel,
-		TextEncoder:    b.models.TextEncoder,
-		VAE:            b.models.VAE,
+		CFGScale:       cfg.Render.CFGScale,
+		TopK:           cfg.Render.TopK,
+		Steps:          cfg.Render.Steps,
+		Sampler:        cfg.Render.Sampler,
+		Scheduler:      cfg.Render.Scheduler,
+		DiffusionModel: cfg.ComfyUI.DiffusionModel,
+		TextEncoder:    cfg.ComfyUI.TextEncoder,
+		VAE:            cfg.ComfyUI.VAE,
 		FilenamePrefix: "songsmith/" + req.ID,
 	})
 

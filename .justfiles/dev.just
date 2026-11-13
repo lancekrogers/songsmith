@@ -17,3 +17,14 @@ fmt:
 # Record the TUI demo GIF (needs Ollama; uses a throwaway library in /tmp)
 demo: build
     PATH="$PWD/bin:$PATH" vhs demos/tui.tape
+
+# Record demos/shell.gif: launcher, library and setup report (throwaway config in /tmp, no Ollama or ComfyUI needed)
+demo-shell: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    env -u NO_COLOR -u CLICOLOR \
+        CLICOLOR_FORCE=1 FORCE_COLOR=1 \
+        TERM=xterm-256color COLORTERM=truecolor \
+        SONGSMITH_COLOR_PROFILE=ansi \
+        vhs demos/shell.tape
+    ls -lh demos/shell.gif

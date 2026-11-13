@@ -33,7 +33,7 @@ func command(path string) (*exec.Cmd, error) {
 			return exec.Command(p, path), nil
 		}
 	}
-	return nil, errors.New("no audio player found; install ffmpeg (ffplay)")
+	return nil, errors.New("no audio player found; install ffmpeg (ffplay). Playback on Linux is untested")
 }
 
 // Play stops anything playing and starts path.

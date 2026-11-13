@@ -28,7 +28,7 @@ writing.
 - Room for about 22 GB of MiniMax Music 3 model files in GPU memory, plus your Ollama model
 - ComfyUI with the MiniMax Music 3 model files: see [docs/setup.md](docs/setup.md)
 - [Ollama](https://ollama.com) with a chat model, for drafting lyrics (optional: you can write them yourself)
-- `ffprobe` (from ffmpeg) to record song lengths; `ffplay` for playback on Linux
+- `ffprobe` (from ffmpeg) to record song lengths; `ffplay` for playback on Linux (untested)
 
 ## Install
 
@@ -105,7 +105,7 @@ optional; `songsmith config` prints the effective values.
 
 ```yaml
 comfyui:
-  dir: /Volumes/fast/ComfyUI
+  dir: ~/.local/share/songsmith/ComfyUI
   host: 127.0.0.1
   port: 8188
   diffusion_model: minimax_music3_dit_fp16.safetensors
@@ -114,10 +114,15 @@ comfyui:
 ollama:
   url: http://127.0.0.1:11434
   model: qwen3.8:latest
+  temperature: 0.8
+  instructions_file: ""   # a text file that replaces the built-in writing instructions
 render:
   steps: 30
   cfg_scale: 1.7
   top_k: 50
+  default_seconds: 120    # length a new song starts with
+  sampler: euler
+  scheduler: simple
 library_dir: ~/Music/Songsmith
 state_dir: ~/.local/state/songsmith
 ```
@@ -134,7 +139,7 @@ just build          # bin/songsmith
 just test unit      # unit tests
 just test race      # with the race detector
 just test lint      # go vet + gofmt
-just test hardware  # renders a 20 s song on the real ComfyUI install
+just test hardware  # renders a 20 s song on the ComfyUI install your config names
 ```
 
 ## License

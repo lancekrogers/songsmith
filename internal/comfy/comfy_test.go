@@ -290,3 +290,16 @@ func TestWaitHistoryDetectsLostPrompt(t *testing.T) {
 		t.Fatal("took too long to notice")
 	}
 }
+
+func TestMiniMaxGraphSamplerSettings(t *testing.T) {
+	in := MiniMaxGraph(MiniMaxParams{}).sampler()
+	if in["sampler_name"] != "euler" || in["scheduler"] != "simple" {
+		t.Fatalf("defaults = %v / %v", in["sampler_name"], in["scheduler"])
+	}
+	in = MiniMaxGraph(MiniMaxParams{Sampler: "dpmpp_2m", Scheduler: "karras"}).sampler()
+	if in["sampler_name"] != "dpmpp_2m" || in["scheduler"] != "karras" {
+		t.Fatalf("configured = %v / %v", in["sampler_name"], in["scheduler"])
+	}
+}
+
+func (g Graph) sampler() map[string]any { return g[NodeSampler].Inputs }

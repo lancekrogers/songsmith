@@ -19,10 +19,7 @@ func newConfigCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			path := a.configPath
-			if path == "" {
-				path = config.DefaultPath()
-			}
+			path := config.Path(a.configPath)
 			out, err := yaml.Marshal(cfg)
 			if err != nil {
 				return fmt.Errorf("encode config: %w", err)

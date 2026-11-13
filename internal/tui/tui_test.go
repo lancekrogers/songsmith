@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/lancekrogers/songsmith/internal/backend"
+	"github.com/lancekrogers/songsmith/internal/config"
+	"github.com/lancekrogers/songsmith/internal/health"
 	"github.com/lancekrogers/songsmith/internal/library"
 	"github.com/lancekrogers/songsmith/internal/player"
 	"github.com/lancekrogers/songsmith/internal/queue"
@@ -41,14 +44,39 @@ var sampleDraft = writer.Draft{
 	Seconds: 45,
 }
 
-func newTestModel(t *testing.T, d Drafter) (model, *library.Store) {
+// testConfig keeps every path in a temp dir, so nothing reaches a real install.
+func testConfig(t *testing.T) *config.Live {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.LibraryDir = filepath.Join(dir, "library")
+	cfg.StateDir = filepath.Join(dir, "state")
+	cfg.ComfyUI.Dir = filepath.Join(dir, "comfyui")
+	cfg.ComfyUI.Port = 18188
+	return config.NewLive(filepath.Join(dir, "config.yaml"), cfg)
+}
+
+func testDeps(t *testing.T, store *library.Store, q *queue.Queue, d Drafter) Deps {
+	return Deps{
+		Store: store, Queue: q, Drafter: d, Player: player.New(), Config: testConfig(t),
+		Checks: func(context.Context, config.Config) []health.Check { return readyChecks() },
+	}
+}
+
+func newTestApp(t *testing.T, deps Deps, updates <-chan queue.Update) app {
+	a := newApp(t.Context(), deps, updates)
+	a, _ = send(t, a, tea.WindowSizeMsg{Width: 120, Height: 40})
+	return a
+}
+
+// newTestModel opens the library screen, where the song tests start.
+func newTestModel(t *testing.T, d Drafter) (app, *library.Store) {
 	store := library.NewStore(t.TempDir())
 	q := queue.New(store, nopBackend{})
 	updates, stop := q.Subscribe()
 	t.Cleanup(stop)
-	m := newModel(t.Context(), Deps{Store: store, Queue: q, Drafter: d, Player: player.New()}, updates)
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	return next.(model), store
+	a := newTestApp(t, testDeps(t, store, q, d), updates)
+	a, _ = send(t, a, switchScreenMsg(screenLibrary))
+	return a, store
 }
 
 func key(s string) tea.KeyMsg {
@@ -59,6 +87,12 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyEsc}
 	case "tab":
 		return tea.KeyMsg{Type: tea.KeyTab}
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
+	case "ctrl+c":
+		return tea.KeyMsg{Type: tea.KeyCtrlC}
 	case "ctrl+s":
 		return tea.KeyMsg{Type: tea.KeyCtrlS}
 	case "ctrl+d":
@@ -67,23 +101,40 @@ func key(s string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
 
-func send(t *testing.T, m model, msgs ...tea.Msg) (model, tea.Cmd) {
+func send(t *testing.T, a app, msgs ...tea.Msg) (app, tea.Cmd) {
 	t.Helper()
 	var cmd tea.Cmd
 	for _, msg := range msgs {
 		var next tea.Model
-		next, cmd = m.Update(msg)
-		m = next.(model)
+		next, cmd = a.Update(msg)
+		a = next.(app)
 	}
-	return m, cmd
+	return a, cmd
 }
 
-// runCmd executes cmd and feeds the messages it produces back into m,
+// nav presses k and delivers the screen-switch message it returns.
+func nav(t *testing.T, a app, k string) app {
+	t.Helper()
+	a, cmd := send(t, a, key(k))
+	if cmd == nil {
+		t.Fatalf("%s: no command", k)
+	}
+	msg := cmd()
+	switch msg.(type) {
+	case switchScreenMsg, openComposeMsg, openLibraryMsg:
+	default:
+		t.Fatalf("%s: got %T, want a screen switch", k, msg)
+	}
+	a, _ = send(t, a, msg)
+	return a
+}
+
+// runCmd executes cmd and feeds the messages it produces back into a,
 // skipping ticks and blocking waits.
-func runCmd(t *testing.T, m model, cmd tea.Cmd) model {
+func runCmd(t *testing.T, a app, cmd tea.Cmd) app {
 	t.Helper()
 	if cmd == nil {
-		return m
+		return a
 	}
 	msg := cmd()
 	if batch, ok := msg.(tea.BatchMsg); ok {
@@ -93,26 +144,28 @@ func runCmd(t *testing.T, m model, cmd tea.Cmd) model {
 			}
 			if r := c(); r != nil {
 				if _, isDraft := r.(draftDoneMsg); isDraft {
-					m, _ = send(t, m, r)
+					a, _ = send(t, a, r)
 				}
 				if _, isSongs := r.(songsMsg); isSongs {
-					m, _ = send(t, m, r)
+					a, _ = send(t, a, r)
 				}
 			}
 		}
-		return m
+		return a
 	}
 	if msg != nil {
-		m, _ = send(t, m, msg)
+		a, _ = send(t, a, msg)
 	}
-	return m
+	return a
 }
+
+func plain(a app) string { return ansi.Strip(a.View()) }
 
 func TestComposeDraftAndQueue(t *testing.T) {
 	m, store := newTestModel(t, fakeDrafter{draft: sampleDraft})
-	m, _ = send(t, m, key("n"))
-	if m.mode != modeIdea {
-		t.Fatalf("mode = %v", m.mode)
+	m = nav(t, m, "n")
+	if m.screen != screenCompose || m.compose.step != stepIdea {
+		t.Fatalf("screen %v step %v", m.screen, m.compose.step)
 	}
 	m, _ = send(t, m, key("a cat who steals socks"))
 	m, cmd := send(t, m, key("enter"))
@@ -120,38 +173,39 @@ func TestComposeDraftAndQueue(t *testing.T) {
 		t.Fatal("not drafting")
 	}
 	m = runCmd(t, m, cmd)
-	if m.mode != modeEdit || m.compose.title.Value() != "Sock Thief" || !strings.Contains(m.compose.caption.Value(), "Vocal Details: Shouted") {
-		t.Fatalf("mode %v title %q", m.mode, m.compose.title.Value())
+	if m.compose.step != stepEdit || m.compose.title.Value() != "Sock Thief" || !strings.Contains(m.compose.caption.Value(), "Vocal Details: Shouted") {
+		t.Fatalf("step %v title %q", m.compose.step, m.compose.title.Value())
 	}
 	if v := m.View(); !strings.Contains(v, "ctrl+s save & queue") {
 		t.Fatalf("edit view missing help:\n%s", v)
 	}
 
 	m, cmd = send(t, m, key("ctrl+s"))
-	if m.mode != modeLibrary {
-		t.Fatalf("mode after save = %v (err %q)", m.mode, m.compose.err)
+	if m.screen != screenLibrary {
+		t.Fatalf("screen after save = %v (err %q)", m.screen, m.compose.err)
 	}
 	m = runCmd(t, m, cmd)
 	songs, _ := store.List()
 	if len(songs) != 1 || songs[0].Status != library.StatusQueued || songs[0].Idea != "a cat who steals socks" || songs[0].Seconds != 45 {
 		t.Fatalf("songs = %+v", songs)
 	}
-	if len(m.songs) != 1 || !strings.Contains(m.View(), "Sock Thief") {
+	if len(m.library.songs) != 1 || !strings.Contains(m.View(), "Sock Thief") {
 		t.Fatalf("library view:\n%s", m.View())
 	}
 }
 
 func TestDraftFailureFallsBackToManualEdit(t *testing.T) {
 	m, store := newTestModel(t, fakeDrafter{err: errors.New("connection refused")})
-	m, _ = send(t, m, key("n"), key("idea"))
+	m = nav(t, m, "n")
+	m, _ = send(t, m, key("idea"))
 	m, cmd := send(t, m, key("enter"))
 	m = runCmd(t, m, cmd)
-	if m.mode != modeEdit || !strings.Contains(m.compose.err, "connection refused") {
-		t.Fatalf("mode %v err %q", m.mode, m.compose.err)
+	if m.compose.step != stepEdit || !strings.Contains(m.compose.err, "connection refused") {
+		t.Fatalf("step %v err %q", m.compose.step, m.compose.err)
 	}
 	m, _ = send(t, m, key("ctrl+s"))
-	if m.mode != modeEdit || !strings.Contains(m.compose.err, "lyrics are empty") {
-		t.Fatalf("empty form should not save: mode %v err %q", m.mode, m.compose.err)
+	if m.screen != screenCompose || !strings.Contains(m.compose.err, "lyrics are empty") {
+		t.Fatalf("empty form should not save: screen %v err %q", m.screen, m.compose.err)
 	}
 	if songs, _ := store.List(); len(songs) != 0 {
 		t.Fatalf("saved %d songs", len(songs))
@@ -168,9 +222,9 @@ func TestEditingDoneSongMakesACopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	m = runCmd(t, m, m.loadSongs())
-	m, _ = send(t, m, key("e"))
-	if m.mode != modeEdit || m.compose.base.ID != "" {
-		t.Fatalf("mode %v base %q", m.mode, m.compose.base.ID)
+	m = nav(t, m, "e")
+	if m.compose.step != stepEdit || m.compose.base.ID != "" {
+		t.Fatalf("step %v base %q", m.compose.step, m.compose.base.ID)
 	}
 	m, cmd := send(t, m, key("ctrl+d"))
 	runCmd(t, m, cmd)
@@ -186,16 +240,34 @@ func TestEditingDoneSongMakesACopy(t *testing.T) {
 
 func TestLibraryKeysOnEmptyLibrary(t *testing.T) {
 	m, _ := newTestModel(t, fakeDrafter{})
-	for _, k := range []string{"enter", "e", "r", "x", "j", "k"} {
+	for _, k := range []string{"enter", "e", "r", "x", "j", "k", "q"} {
 		m, _ = send(t, m, key(k))
 	}
-	if !strings.Contains(m.View(), "Press n to write one") {
+	if m.screen != screenLibrary {
+		t.Fatalf("q left the library: screen %v", m.screen)
+	}
+	if !strings.Contains(plain(m), "Press n to write one") {
 		t.Fatalf("view:\n%s", m.View())
+	}
+	if _, cmd := send(t, m, key("ctrl+c")); cmd == nil || !isQuit(cmd) {
+		t.Fatal("ctrl+c should quit from the library")
+	}
+	m = nav(t, m, "esc")
+	if m.screen != screenLauncher {
+		t.Fatalf("esc went to %v", m.screen)
 	}
 	_, cmd := send(t, m, key("q"))
 	if cmd == nil {
-		t.Fatal("q should quit")
+		t.Fatal("q should quit from the launcher")
 	}
+	if _, cmd := send(t, m, cmd()); !isQuit(cmd) {
+		t.Fatal("quit message did not quit")
+	}
+}
+
+func isQuit(cmd tea.Cmd) bool {
+	_, ok := cmd().(tea.QuitMsg)
+	return ok
 }
 
 func TestWideTitlesFitTheList(t *testing.T) {
@@ -224,12 +296,13 @@ func TestSelectionSurvivesStaleReload(t *testing.T) {
 	m = runCmd(t, m, m.loadSongs())
 	stale := m.loadSongs()()
 
-	m, _ = send(t, m, key("n"), key("idea"))
+	m = nav(t, m, "n")
+	m, _ = send(t, m, key("idea"))
 	m, cmd := send(t, m, key("enter"))
 	m = runCmd(t, m, cmd)
 	m, cmd = send(t, m, key("ctrl+d"))
 	m, _ = send(t, m, stale)
-	if s, _ := m.selected(); s.ID != old.ID && m.selectID == "" {
+	if s, _ := m.selected(); s.ID != old.ID && m.library.selectID == "" {
 		t.Fatal("stale reload consumed the pending selection")
 	}
 	m = runCmd(t, m, cmd)
@@ -254,12 +327,12 @@ func TestSavingEditsToASongThatStartedRenderingMakesACopy(t *testing.T) {
 	q := queue.New(store, bb)
 	updates, stop := q.Subscribe()
 	defer stop()
-	m := newModel(t.Context(), Deps{Store: store, Queue: q, Drafter: fakeDrafter{}, Player: player.New()}, updates)
-	m, _ = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m := newTestApp(t, testDeps(t, store, q, fakeDrafter{}), updates)
+	m, _ = send(t, m, switchScreenMsg(screenLibrary))
 
 	song, _ := store.Create(library.Song{Title: "Queued", Lyrics: sampleDraft.Lyrics, Caption: sampleDraft.Caption, Seconds: 30, Status: library.StatusQueued})
 	m = runCmd(t, m, m.loadSongs())
-	m, _ = send(t, m, key("e"))
+	m = nav(t, m, "e")
 	if m.compose.base.ID != song.ID {
 		t.Fatal("queued song should be edited in place")
 	}
@@ -299,5 +372,21 @@ func TestEditorCommand(t *testing.T) {
 		if got != c.want {
 			t.Errorf("VISUAL=%q EDITOR=%q: %q, want %q", c.visual, c.editor, got, c.want)
 		}
+	}
+}
+
+func TestNewSongsUseConfiguredDefaultLength(t *testing.T) {
+	m, _ := newTestModel(t, fakeDrafter{})
+	cfg := m.d.Config.Get()
+	cfg.Render.DefaultSeconds = 75
+	m.d.Config.Replace(cfg)
+	m = nav(t, m, "n")
+	m, _ = send(t, m, key("tab"))
+	if m.compose.step != stepEdit || m.compose.seconds.Value() != "75" {
+		t.Fatalf("step %v seconds %q", m.compose.step, m.compose.seconds.Value())
+	}
+	m, _ = send(t, m, key("esc"))
+	if m.screen != screenLibrary {
+		t.Fatalf("esc from the form went to %v, want the library that opened it", m.screen)
 	}
 }

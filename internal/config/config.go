@@ -27,14 +27,21 @@ func (c ComfyUI) BaseURL() string {
 }
 
 type Ollama struct {
-	URL   string `yaml:"url"`
-	Model string `yaml:"model"`
+	URL         string  `yaml:"url"`
+	Model       string  `yaml:"model"`
+	Temperature float64 `yaml:"temperature"`
+	// InstructionsFile replaces the built-in system prompt when set.
+	InstructionsFile string `yaml:"instructions_file"`
 }
 
 type Render struct {
 	Steps    int     `yaml:"steps"`
 	CFGScale float64 `yaml:"cfg_scale"`
 	TopK     int     `yaml:"top_k"`
+	// DefaultSeconds is the length a new song starts with.
+	DefaultSeconds int    `yaml:"default_seconds"`
+	Sampler        string `yaml:"sampler"`
+	Scheduler      string `yaml:"scheduler"`
 }
 
 type Config struct {
@@ -49,7 +56,7 @@ func Default() Config {
 	home, _ := os.UserHomeDir()
 	return Config{
 		ComfyUI: ComfyUI{
-			Dir:            "/Volumes/fast/ComfyUI",
+			Dir:            filepath.Join(home, ".local", "share", "songsmith", "ComfyUI"),
 			Host:           "127.0.0.1",
 			Port:           8188,
 			DiffusionModel: "minimax_music3_dit_fp16.safetensors",
@@ -57,13 +64,17 @@ func Default() Config {
 			VAE:            "minimax_music3_dav.safetensors",
 		},
 		Ollama: Ollama{
-			URL:   "http://127.0.0.1:11434",
-			Model: "qwen3.8:latest",
+			URL:         "http://127.0.0.1:11434",
+			Model:       "qwen3.8:latest",
+			Temperature: 0.8,
 		},
 		Render: Render{
-			Steps:    30,
-			CFGScale: 1.7,
-			TopK:     50,
+			Steps:          30,
+			CFGScale:       1.7,
+			TopK:           50,
+			DefaultSeconds: 120,
+			Sampler:        "euler",
+			Scheduler:      "simple",
 		},
 		LibraryDir: filepath.Join(home, "Music", "Songsmith"),
 		StateDir:   filepath.Join(home, ".local", "state", "songsmith"),
@@ -79,12 +90,19 @@ func DefaultPath() string {
 	return filepath.Join(home, ".config", "songsmith", "config.yaml")
 }
 
+// Path returns explicit, or DefaultPath when it is empty: the file a process
+// started with --config, $SONGSMITH_CONFIG or neither reads and writes.
+func Path(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	return DefaultPath()
+}
+
 // Load reads the config at path (DefaultPath when empty). A missing file
 // yields the defaults; keys present in the file override them.
 func Load(path string) (Config, error) {
-	if path == "" {
-		path = DefaultPath()
-	}
+	path = Path(path)
 	cfg := Default()
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -99,6 +117,7 @@ func Load(path string) (Config, error) {
 	cfg.LibraryDir = expandHome(cfg.LibraryDir)
 	cfg.StateDir = expandHome(cfg.StateDir)
 	cfg.ComfyUI.Dir = expandHome(cfg.ComfyUI.Dir)
+	cfg.Ollama.InstructionsFile = expandHome(cfg.Ollama.InstructionsFile)
 	return cfg, nil
 }
 

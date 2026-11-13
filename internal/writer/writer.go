@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 
@@ -111,13 +112,49 @@ type Chatter interface {
 	Chat(ctx context.Context, req ollama.ChatRequest) (string, error)
 }
 
+// DefaultTemperature is the sampling temperature drafts use unless configured.
+const DefaultTemperature = 0.8
+
 type Writer struct {
-	llm   Chatter
-	model string
+	llm         Chatter
+	model       string
+	temperature float64
+	system      string
 }
 
 func New(llm Chatter, model string) *Writer {
-	return &Writer{llm: llm, model: model}
+	return &Writer{llm: llm, model: model, temperature: DefaultTemperature, system: BuiltinInstructions}
+}
+
+func (w *Writer) WithTemperature(t float64) *Writer {
+	w.temperature = t
+	return w
+}
+
+// WithInstructions replaces the system prompt; blank keeps the built-in one.
+func (w *Writer) WithInstructions(prompt string) *Writer {
+	if strings.TrimSpace(prompt) != "" {
+		w.system = prompt
+	}
+	return w
+}
+
+// Instructions returns the system prompt for an instructions file: the
+// file's text, or the built-in prompt when path is blank. An unreadable or
+// empty file also gives the built-in prompt, with the error for the caller to
+// report.
+func Instructions(path string) (string, error) {
+	if path == "" {
+		return BuiltinInstructions, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return BuiltinInstructions, fmt.Errorf("read writing instructions: %w", err)
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return BuiltinInstructions, fmt.Errorf("writing instructions %s are empty", path)
+	}
+	return string(data), nil
 }
 
 type Options struct {
@@ -146,7 +183,8 @@ var draftSchema = map[string]any{
 	"required": []string{"title", "lyrics", "caption", "seconds"},
 }
 
-const systemPrompt = `You write songs for MiniMax Music 3, a model that sings the lyrics it is given and follows a structured style caption.
+// BuiltinInstructions is the system prompt drafts use unless configured.
+const BuiltinInstructions = `You write songs for MiniMax Music 3, a model that sings the lyrics it is given and follows a structured style caption.
 
 Return JSON with:
 - title: a short song title.
@@ -176,12 +214,12 @@ func (w *Writer) Write(ctx context.Context, idea string, opts Options) (Draft, e
 	reply, err := w.llm.Chat(ctx, ollama.ChatRequest{
 		Model: w.model,
 		Messages: []ollama.Message{
-			{Role: "system", Content: systemPrompt},
+			{Role: "system", Content: w.system},
 			{Role: "user", Content: user.String()},
 		},
 		Format:  draftSchema,
 		Think:   &think,
-		Options: map[string]any{"temperature": 0.8},
+		Options: map[string]any{"temperature": w.temperature},
 	})
 	if err != nil {
 		return Draft{}, fmt.Errorf("draft song with %s: %w", w.model, err)

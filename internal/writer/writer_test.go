@@ -3,6 +3,8 @@ package writer
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -80,6 +82,53 @@ func TestWrite(t *testing.T) {
 			t.Fatal("want error")
 		}
 	})
+}
+
+func TestWriteSettings(t *testing.T) {
+	llm := &fakeLLM{reply: goodReply}
+	if _, err := New(llm, "m").Write(t.Context(), "idea", Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if llm.got.Options["temperature"] != DefaultTemperature || llm.got.Messages[0].Content != BuiltinInstructions {
+		t.Fatalf("defaults: %+v", llm.got)
+	}
+	if _, err := New(llm, "m").WithTemperature(1.2).WithInstructions("Write only haiku.").Write(t.Context(), "idea", Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if llm.got.Options["temperature"] != 1.2 || llm.got.Messages[0].Content != "Write only haiku." {
+		t.Fatalf("configured: %+v", llm.got)
+	}
+	if New(llm, "m").WithInstructions("  \n").system != BuiltinInstructions {
+		t.Fatal("blank instructions replaced the built-in prompt")
+	}
+}
+
+func TestInstructions(t *testing.T) {
+	dir := t.TempDir()
+	custom := filepath.Join(dir, "prompt.md")
+	empty := filepath.Join(dir, "empty.md")
+	if err := os.WriteFile(custom, []byte("Write sea shanties."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(empty, []byte("\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		path    string
+		want    string
+		wantErr bool
+	}{
+		{"", BuiltinInstructions, false},
+		{custom, "Write sea shanties.", false},
+		{empty, BuiltinInstructions, true},
+		{filepath.Join(dir, "missing.md"), BuiltinInstructions, true},
+	}
+	for _, c := range cases {
+		got, err := Instructions(c.path)
+		if got != c.want || (err != nil) != c.wantErr {
+			t.Errorf("Instructions(%q) = %.20q, %v", c.path, got, err)
+		}
+	}
 }
 
 func TestCaptionString(t *testing.T) {

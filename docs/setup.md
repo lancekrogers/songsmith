@@ -15,8 +15,9 @@ uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python torch torchvision torchaudio -r requirements.txt
 ```
 
-songsmith expects the virtualenv at `<comfyui dir>/.venv`. Set `comfyui.dir` in the
-config if ComfyUI is not at `/Volumes/fast/ComfyUI`.
+songsmith expects the virtualenv at `<comfyui dir>/.venv`. The default folder is
+`~/.local/share/songsmith/ComfyUI`; if your ComfyUI is elsewhere, set `comfyui.dir` in
+the config, for example `dir: /path/to/ComfyUI`.
 
 ## 2. Download the model files
 

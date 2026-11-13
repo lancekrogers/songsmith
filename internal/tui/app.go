@@ -1,0 +1,313 @@
+// Package tui is songsmith's terminal interface: a launcher that shows what is
+// ready, and screens to write, queue, watch and play songs.
+package tui
+
+import (
+	"cmp"
+	"context"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/lancekrogers/songsmith/internal/backend"
+	"github.com/lancekrogers/songsmith/internal/config"
+	"github.com/lancekrogers/songsmith/internal/health"
+	"github.com/lancekrogers/songsmith/internal/library"
+	"github.com/lancekrogers/songsmith/internal/player"
+	"github.com/lancekrogers/songsmith/internal/queue"
+	"github.com/lancekrogers/songsmith/internal/writer"
+)
+
+// Drafter drafts a song from an idea.
+type Drafter interface {
+	Write(ctx context.Context, idea string, opts writer.Options) (writer.Draft, error)
+}
+
+// Deps are the services the screens share.
+type Deps struct {
+	Store   *library.Store
+	Queue   *queue.Queue
+	Drafter Drafter
+	Player  *player.Player
+	// Config holds the running settings and the file they were loaded from.
+	Config *config.Live
+	// Checks runs the setup checks. It is called off the UI goroutine;
+	// nil means health.Run.
+	Checks func(context.Context, config.Config) []health.Check
+	// WorkerNote explains why this process is not rendering, or "" when it is.
+	WorkerNote func() string
+}
+
+type screen int
+
+const (
+	screenLauncher screen = iota
+	screenLibrary
+	screenCompose
+	screenSettings
+	screenSetup
+)
+
+type (
+	// switchScreenMsg shows another screen.
+	switchScreenMsg screen
+	// openComposeMsg opens the song form on song, or on a new idea when nil.
+	// The form returns to the screen that opened it.
+	openComposeMsg struct{ song *library.Song }
+	// openLibraryMsg opens the library with songID selected.
+	openLibraryMsg struct{ songID string }
+	quitMsg        struct{}
+	// runHealthMsg starts the setup checks; a newer run supersedes an older one.
+	runHealthMsg struct{}
+
+	songsMsg struct {
+		songs []library.Song
+		err   error
+	}
+	updateMsg   queue.Update
+	playDoneMsg string
+	tickMsg     time.Time
+)
+
+type app struct {
+	d       Deps
+	ctx     context.Context
+	updates <-chan queue.Update
+	events  *bridge
+
+	width, height int
+	screen        screen
+
+	health   healthState
+	launcher launcherModel
+	library  libraryModel
+	compose  composeModel
+	report   reportModel
+
+	// notice and err are the latest outcome, shown on the launcher and library.
+	notice, err string
+	ticks       int
+}
+
+func newApp(ctx context.Context, d Deps, updates <-chan queue.Update) app {
+	if d.Checks == nil {
+		d.Checks = health.Run
+	}
+	return app{
+		d:        d,
+		ctx:      ctx,
+		updates:  updates,
+		events:   newBridge(bridgeCapacity),
+		launcher: newLauncher(),
+		library:  newLibrary(),
+		compose:  newCompose(),
+	}
+}
+
+// Run starts the TUI and blocks until the user quits.
+func Run(ctx context.Context, d Deps) error {
+	forceColorProfile()
+	updates, stop := d.Queue.Subscribe()
+	defer stop()
+	defer d.Player.Stop()
+	p := tea.NewProgram(newApp(ctx, d, updates), tea.WithAltScreen(), tea.WithContext(ctx))
+	_, err := p.Run()
+	if err != nil && ctx.Err() != nil {
+		return nil
+	}
+	return err
+}
+
+// Background subscriptions are armed here and re-armed only by the handler
+// of their own message, so a key handler never returns a blocking command.
+func (a app) Init() tea.Cmd {
+	return tea.Batch(
+		a.loadSongs(),
+		waitUpdate(a.updates),
+		waitPlayDone(a.d.Player),
+		tick(),
+		a.events.wait(a.ctx),
+		func() tea.Msg { return runHealthMsg{} },
+	)
+}
+
+func (a app) loadSongs() tea.Cmd {
+	store := a.d.Store
+	return func() tea.Msg {
+		songs, err := store.List()
+		return songsMsg{songs, err}
+	}
+}
+
+func waitUpdate(ch <-chan queue.Update) tea.Cmd {
+	return func() tea.Msg {
+		u, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return updateMsg(u)
+	}
+}
+
+func waitPlayDone(p *player.Player) tea.Cmd {
+	return func() tea.Msg { return playDoneMsg(<-p.Done) }
+}
+
+func tick() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+func (a app) cfg() config.Config { return a.d.Config.Get() }
+
+func (a app) defaultSeconds() float64 {
+	return float64(cmp.Or(a.cfg().Render.DefaultSeconds, 120))
+}
+
+// Update keeps the launcher's selection valid after every message, since
+// health results and queue changes add and remove its items.
+func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := a.update(msg)
+	next.launcher = next.launcher.sync(next.launcherState())
+	return next, cmd
+}
+
+func (a app) update(msg tea.Msg) (app, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		a.width, a.height = msg.Width, msg.Height
+		a.compose.resize(msg.Width, msg.Height)
+		a.layoutDetail()
+		return a, nil
+	case bridgeMsg:
+		next, cmd := a.update(msg.msg)
+		return next, tea.Batch(cmd, a.events.wait(a.ctx))
+	case runHealthMsg:
+		return a.startHealth()
+	case healthDoneMsg:
+		if msg.seq != a.health.seq {
+			return a, nil
+		}
+		a.health.running = false
+		a.health.done = true
+		a.health.checks = msg.checks
+		return a, nil
+	case songsMsg:
+		a.applySongs(msg)
+		return a, nil
+	case updateMsg:
+		cmds := []tea.Cmd{waitUpdate(a.updates)}
+		if msg.Status == library.StatusRendering && msg.Progress.Stage != "" {
+			a.library.progress[msg.SongID] = msg.Progress
+			a.layoutDetail()
+		} else {
+			delete(a.library.progress, msg.SongID)
+			if msg.Err != "" && msg.Status == library.StatusFailed {
+				a.err = "render failed: " + msg.Err
+			}
+			cmds = append(cmds, a.loadSongs())
+		}
+		return a, tea.Batch(cmds...)
+	case playDoneMsg:
+		a.layoutDetail()
+		return a, waitPlayDone(a.d.Player)
+	case tickMsg:
+		a.ticks++
+		if a.d.Queue.Current() != "" {
+			a.layoutDetail()
+		}
+		// Other processes can change the library; refresh now and then.
+		if a.ticks%5 == 0 {
+			return a, tea.Batch(tick(), a.loadSongs())
+		}
+		return a, tick()
+	case switchScreenMsg:
+		return a.show(screen(msg))
+	case openComposeMsg:
+		a.err = ""
+		a.compose.returnTo = a.screen
+		a.screen = screenCompose
+		if msg.song != nil {
+			return a, a.compose.startEdit(*msg.song, a.defaultSeconds())
+		}
+		return a, a.compose.startIdea()
+	case openLibraryMsg:
+		a.library.selectID = msg.songID
+		a.selectPending()
+		return a.show(screenLibrary)
+	case quitMsg:
+		return a.quit()
+	case tea.KeyMsg:
+		if msg.String() == "ctrl+c" {
+			return a.quit()
+		}
+	}
+
+	switch a.screen {
+	case screenLauncher:
+		return a.updateLauncher(msg)
+	case screenLibrary:
+		return a.updateLibrary(msg)
+	case screenCompose:
+		return a.updateCompose(msg)
+	case screenSettings, screenSetup:
+		return a.updateReport(msg)
+	}
+	return a, nil
+}
+
+// show switches to s, preparing the screen it enters.
+func (a app) show(s screen) (app, tea.Cmd) {
+	a.screen = s
+	switch s {
+	case screenLibrary:
+		a.layoutDetail()
+	case screenSettings:
+		a.report = reportModel{title: "Settings"}
+	case screenSetup:
+		a.report = reportModel{title: "Finish setup", setup: true}
+	}
+	return a, nil
+}
+
+func (a app) quit() (app, tea.Cmd) {
+	if a.compose.cancel != nil {
+		a.compose.cancel()
+	}
+	return a, tea.Quit
+}
+
+// back is the screen esc returns to.
+func (a app) back() screen {
+	switch a.screen {
+	case screenCompose:
+		return a.compose.returnTo
+	default:
+		return screenLauncher
+	}
+}
+
+func (a app) View() string {
+	if a.width == 0 {
+		return ""
+	}
+	switch a.screen {
+	case screenLibrary:
+		return a.libraryView()
+	case screenCompose:
+		return a.compose.view(a.width)
+	case screenSettings, screenSetup:
+		return a.reportView()
+	default:
+		return a.launcher.view(a.launcherState(), a.width, a.height)
+	}
+}
+
+// renderingSong is the song being rendered here or in another process.
+func (a app) renderingSong() (library.Song, backend.Progress, bool) {
+	for _, s := range a.library.songs {
+		if s.Status == library.StatusRendering {
+			return s, a.library.progress[s.ID], true
+		}
+	}
+	return library.Song{}, backend.Progress{}, false
+}
