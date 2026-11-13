@@ -9,16 +9,18 @@ import (
 )
 
 type renderer struct {
-	cfg     config.Config
 	store   *library.Store
 	server  *server.Manager
 	backend backend.Backend
 	queue   *queue.Queue
 }
 
-func newRenderer(cfg config.Config) *renderer {
+// newRenderer builds the render stack. The folders, host and port come from
+// live once; the backend reads the rest of live at the start of each render.
+func newRenderer(live *config.Live) *renderer {
+	cfg := live.Get()
 	m := server.New(cfg.ComfyUI, cfg.StateDir)
-	b := backend.NewComfyMiniMax(m.Client(), backend.StarterFunc(m.Ensure), cfg.ComfyUI, cfg.Render)
+	b := backend.NewComfyMiniMax(m.Client(), backend.StarterFunc(m.Ensure), live.Get)
 	store := library.NewStore(cfg.LibraryDir)
-	return &renderer{cfg: cfg, store: store, server: m, backend: b, queue: queue.New(store, b)}
+	return &renderer{store: store, server: m, backend: b, queue: queue.New(store, b)}
 }

@@ -18,7 +18,7 @@ lint:
     go vet ./...
     @test -z "$(gofmt -l .)" || (gofmt -l . && echo "gofmt needed" && exit 1)
 
-# Render a short song on the real ComfyUI install (about 3 minutes)
+# Render a short song on the ComfyUI install your config names (about 3 minutes)
 [no-cd]
 hardware:
     SONGSMITH_HARDWARE=1 go test -run TestHardware -v -timeout 30m ./...

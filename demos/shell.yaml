@@ -1,0 +1,10 @@
+# Throwaway settings for demos/shell.tape: a fresh machine with nothing
+# installed. Every path is under /tmp/songsmith-demo-shell and nothing listens
+# on these ports, so the recording never touches a real install.
+library_dir: /tmp/songsmith-demo-shell/library
+state_dir: /tmp/songsmith-demo-shell/state
+comfyui:
+  dir: /tmp/songsmith-demo-shell/ComfyUI
+  port: 18188
+ollama:
+  url: http://127.0.0.1:18434

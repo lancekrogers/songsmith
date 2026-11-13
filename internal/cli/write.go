@@ -2,6 +2,7 @@ package cli
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -26,8 +27,33 @@ func (f *writeFlags) register(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&f.instrumental, "instrumental", false, "write an instrumental with no sung lines")
 }
 
-func (f *writeFlags) writer(cfg config.Config) *writer.Writer {
-	return writer.New(ollama.NewClient(cfg.Ollama.URL), cmp.Or(f.model, cfg.Ollama.Model))
+// writer drafts with cfg's writer settings, warning on stderr when the
+// instructions file cannot be used.
+func (f *writeFlags) writer(cmd *cobra.Command, cfg config.Config) *writer.Writer {
+	w, err := newWriter(cfg, f.model)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v; using the built-in instructions\n", err)
+	}
+	return w
+}
+
+// newWriter builds a writer from cfg, with model overriding the configured
+// one when set. The error reports an unusable instructions file; the writer
+// is still usable and falls back to the built-in instructions.
+func newWriter(cfg config.Config, model string) (*writer.Writer, error) {
+	prompt, err := writer.Instructions(cfg.Ollama.InstructionsFile)
+	w := writer.New(ollama.NewClient(cfg.Ollama.URL), cmp.Or(model, cfg.Ollama.Model)).
+		WithTemperature(cfg.Ollama.Temperature).
+		WithInstructions(prompt)
+	return w, err
+}
+
+// liveDrafter drafts with the settings current when each draft starts.
+type liveDrafter struct{ live *config.Live }
+
+func (d liveDrafter) Write(ctx context.Context, idea string, opts writer.Options) (writer.Draft, error) {
+	w, _ := newWriter(d.live.Get(), "")
+	return w.Write(ctx, idea, opts)
 }
 
 func (f *writeFlags) options() writer.Options {
@@ -48,7 +74,7 @@ func newWriteCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			d, err := f.writer(cfg).Write(cmd.Context(), strings.Join(args, " "), f.options())
+			d, err := f.writer(cmd, cfg).Write(cmd.Context(), strings.Join(args, " "), f.options())
 			if err != nil {
 				return err
 			}

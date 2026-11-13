@@ -30,7 +30,18 @@ const (
 	fieldCount
 )
 
+type composeStep int
+
+const (
+	stepIdea composeStep = iota
+	stepEdit
+)
+
 type composeModel struct {
+	step composeStep
+	// returnTo is the screen that opened the form; leaving goes back there.
+	returnTo screen
+
 	idea     textinput.Model
 	spinner  spinner.Model
 	drafting bool
@@ -91,13 +102,17 @@ func (c *composeModel) resize(w, h int) {
 }
 
 func (c *composeModel) startIdea() tea.Cmd {
+	c.step = stepIdea
 	c.err = ""
 	c.drafting = false
 	c.idea.SetValue("")
 	return c.idea.Focus()
 }
 
-func (c *composeModel) startEdit(song library.Song) tea.Cmd {
+// startEdit fills the form from song; newSeconds is the length a song
+// without one starts with.
+func (c *composeModel) startEdit(song library.Song, newSeconds float64) tea.Cmd {
+	c.step = stepEdit
 	c.err = ""
 	c.drafting = false
 	if song.Status == library.StatusDone || song.Status == library.StatusRendering {
@@ -106,10 +121,9 @@ func (c *composeModel) startEdit(song library.Song) tea.Cmd {
 	}
 	c.base = song
 	c.title.SetValue(song.Title)
-	c.seconds.SetValue(strconv.Itoa(int(cmp.Or(song.Seconds, 120))))
+	c.seconds.SetValue(strconv.Itoa(int(cmp.Or(song.Seconds, newSeconds))))
 	c.lyrics.SetValue(song.Lyrics)
-	caption := song.Caption.String()
-	c.caption.SetValue(caption)
+	c.caption.SetValue(song.Caption.String())
 	c.focus = fieldLyrics
 	return c.applyFocus()
 }
@@ -155,37 +169,40 @@ func (c *composeModel) song() (library.Song, error) {
 	return s, (writer.Draft{Lyrics: s.Lyrics, Caption: s.Caption, Seconds: s.Seconds}).Validate()
 }
 
-func (m model) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
-	c := &m.compose
+// leaveCompose returns to the screen that opened the form.
+func (a app) leaveCompose() (app, tea.Cmd) {
+	return a.show(a.back())
+}
+
+func (a app) updateCompose(msg tea.Msg) (app, tea.Cmd) {
+	c := &a.compose
 	switch msg := msg.(type) {
 	case draftDoneMsg:
 		c.drafting = false
 		c.cancel = nil
-		song := library.Song{Idea: msg.idea, Seconds: 120}
+		song := library.Song{Idea: msg.idea}
 		if msg.err != nil {
-			cmd := c.startEdit(song)
+			cmd := c.startEdit(song, a.defaultSeconds())
 			c.err = "Draft failed: " + msg.err.Error() + ". Write the lyrics and style yourself, or esc to go back."
 			if msg.draft.Lyrics != "" {
 				c.lyrics.SetValue(msg.draft.Lyrics)
 				c.caption.SetValue(msg.draft.Caption.String())
 				c.title.SetValue(msg.draft.Title)
 			}
-			m.mode = modeEdit
-			return m, cmd
+			return a, cmd
 		}
 		song.Title, song.Lyrics, song.Caption, song.Seconds = msg.draft.Title, msg.draft.Lyrics, msg.draft.Caption, msg.draft.Seconds
-		m.mode = modeEdit
-		return m, c.startEdit(song)
+		return a, c.startEdit(song, a.defaultSeconds())
 	case editorDoneMsg:
 		defer os.Remove(msg.path)
 		if msg.err != nil {
 			c.err = "Editor: " + msg.err.Error()
-			return m, nil
+			return a, nil
 		}
 		data, err := os.ReadFile(msg.path)
 		if err != nil {
 			c.err = err.Error()
-			return m, nil
+			return a, nil
 		}
 		text := strings.TrimRight(string(data), "\n")
 		if msg.field == fieldLyrics {
@@ -193,50 +210,49 @@ func (m model) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			c.caption.SetValue(text)
 		}
-		return m, nil
+		return a, nil
 	case spinner.TickMsg:
 		if !c.drafting {
-			return m, nil
+			return a, nil
 		}
 		var cmd tea.Cmd
 		c.spinner, cmd = c.spinner.Update(msg)
-		return m, cmd
+		return a, cmd
 	case tea.KeyMsg:
-		if m.mode == modeIdea {
-			return m.ideaKey(msg)
+		if c.step == stepIdea {
+			return a.ideaKey(msg)
 		}
-		return m.editKey(msg)
+		return a.editKey(msg)
 	}
-	return m.forwardCompose(msg)
+	return a.forwardCompose(msg)
 }
 
-func (m model) ideaKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	c := &m.compose
+func (a app) ideaKey(key tea.KeyMsg) (app, tea.Cmd) {
+	c := &a.compose
 	switch key.String() {
-	case "esc", "ctrl+c":
+	case "esc":
 		if c.cancel != nil {
 			c.cancel()
+			c.cancel = nil
 		}
 		c.drafting = false
-		m.mode = modeLibrary
-		return m, nil
+		return a.leaveCompose()
 	case "tab":
 		if c.drafting {
-			return m, nil
+			return a, nil
 		}
-		m.mode = modeEdit
-		return m, c.startEdit(library.Song{Idea: strings.TrimSpace(c.idea.Value()), Seconds: 120})
+		return a, c.startEdit(library.Song{Idea: strings.TrimSpace(c.idea.Value())}, a.defaultSeconds())
 	case "enter":
 		idea := strings.TrimSpace(c.idea.Value())
 		if c.drafting || idea == "" {
-			return m, nil
+			return a, nil
 		}
-		ctx, cancel := context.WithCancel(m.ctx)
+		ctx, cancel := context.WithCancel(a.ctx)
 		c.cancel = cancel
 		c.drafting = true
 		c.err = ""
-		drafter := m.d.Drafter
-		return m, tea.Batch(c.spinner.Tick, func() tea.Msg {
+		drafter := a.d.Drafter
+		return a, tea.Batch(c.spinner.Tick, func() tea.Msg {
 			d, err := drafter.Write(ctx, idea, writer.Options{})
 			if ctx.Err() != nil {
 				return nil
@@ -245,81 +261,87 @@ func (m model) ideaKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		})
 	}
 	if c.drafting {
-		return m, nil
+		return a, nil
 	}
 	var cmd tea.Cmd
 	c.idea, cmd = c.idea.Update(key)
-	return m, cmd
+	return a, cmd
 }
 
-func (m model) editKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	c := &m.compose
+func (a app) editKey(key tea.KeyMsg) (app, tea.Cmd) {
+	c := &a.compose
 	switch key.String() {
 	case "esc":
-		m.mode = modeLibrary
-		return m, nil
+		return a.leaveCompose()
 	case "tab":
 		c.focus = (c.focus + 1) % fieldCount
-		return m, c.applyFocus()
+		return a, c.applyFocus()
 	case "shift+tab":
 		c.focus = (c.focus + fieldCount - 1) % fieldCount
-		return m, c.applyFocus()
+		return a, c.applyFocus()
 	case "ctrl+e":
 		if c.focus != fieldLyrics && c.focus != fieldCaption {
 			c.err = "Move to Lyrics or Style (tab) to open them in $EDITOR."
-			return m, nil
+			return a, nil
 		}
-		return m, c.openEditor()
+		return a, c.openEditor()
 	case "ctrl+s", "ctrl+d":
-		song, err := c.song()
-		if err != nil {
-			c.err = err.Error()
-			return m, nil
-		}
-		song.Status = library.StatusDraft
-		if m.d.Store.HasAudio(song) {
-			song.Status = library.StatusDone
-		}
-		copied := false
-		if song.ID != "" {
-			err = m.d.Queue.SaveEdit(song)
-			if errors.Is(err, queue.ErrBusy) {
-				// It started rendering while being edited: keep the edits as a new song.
-				song = asCopy(song)
-				copied = true
-			}
-		}
-		if song.ID == "" {
-			song, err = m.d.Store.Create(song)
-		}
-		if err != nil {
-			c.err = err.Error()
-			return m, nil
-		}
-		m.notice = "Saved " + song.Title + "."
-		if copied {
-			m.notice = "That song started rendering, so your edits were saved as a new song."
-		}
-		if key.String() == "ctrl+s" {
-			if _, err := m.d.Queue.Enqueue(song); err != nil {
-				m.err = "queue " + song.Title + ": " + err.Error()
-			} else {
-				m.notice = "Queued " + song.Title + ". Rendering takes several minutes per minute of song."
-			}
-		}
-		m.mode = modeLibrary
-		m.selectID = song.ID
-		return m, m.loadSongs()
+		return a.saveCompose(key.String() == "ctrl+s")
 	}
-	return m.forwardCompose(key)
+	return a.forwardCompose(key)
 }
 
-func (m model) forwardCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
-	c := &m.compose
+// saveCompose saves the form, queues it when render is set, and goes back to
+// the screen that opened the form with the song selected in the library.
+func (a app) saveCompose(render bool) (app, tea.Cmd) {
+	c := &a.compose
+	song, err := c.song()
+	if err != nil {
+		c.err = err.Error()
+		return a, nil
+	}
+	song.Status = library.StatusDraft
+	if a.d.Store.HasAudio(song) {
+		song.Status = library.StatusDone
+	}
+	copied := false
+	if song.ID != "" {
+		err = a.d.Queue.SaveEdit(song)
+		if errors.Is(err, queue.ErrBusy) {
+			// It started rendering while being edited: keep the edits as a new song.
+			song = asCopy(song)
+			copied = true
+		}
+	}
+	if song.ID == "" {
+		song, err = a.d.Store.Create(song)
+	}
+	if err != nil {
+		c.err = err.Error()
+		return a, nil
+	}
+	a.notice = "Saved " + song.Title + "."
+	if copied {
+		a.notice = "That song started rendering, so your edits were saved as a new song."
+	}
+	if render {
+		if _, err := a.d.Queue.Enqueue(song); err != nil {
+			a.err = "queue " + song.Title + ": " + err.Error()
+		} else {
+			a.notice = "Queued " + song.Title + ". Rendering takes several minutes per minute of song."
+		}
+	}
+	a.library.selectID = song.ID
+	a, cmd := a.leaveCompose()
+	return a, tea.Batch(cmd, a.loadSongs())
+}
+
+func (a app) forwardCompose(msg tea.Msg) (app, tea.Cmd) {
+	c := &a.compose
 	var cmd tea.Cmd
-	if m.mode == modeIdea {
+	if c.step == stepIdea {
 		c.idea, cmd = c.idea.Update(msg)
-		return m, cmd
+		return a, cmd
 	}
 	switch c.focus {
 	case fieldTitle:
@@ -331,7 +353,7 @@ func (m model) forwardCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 	default:
 		c.caption, cmd = c.caption.Update(msg)
 	}
-	return m, cmd
+	return a, cmd
 }
 
 func (c *composeModel) openEditor() tea.Cmd {
@@ -357,16 +379,16 @@ func (c *composeModel) openEditor() tea.Cmd {
 	return tea.ExecProcess(cmd, func(err error) tea.Msg { return editorDoneMsg{field: field, path: path, err: err} })
 }
 
-func (c composeModel) view(ideaMode bool, w int) string {
+func (c composeModel) view(w int) string {
 	var b strings.Builder
-	if ideaMode {
-		b.WriteString(titleStyle.Render("♪ New song") + "\n\n")
+	if c.step == stepIdea {
+		b.WriteString(headerStyle.Render("♪ New song") + "\n\n")
 		b.WriteString("Describe the song: genre, mood, subject, anything.\n\n")
 		b.WriteString(c.idea.View() + "\n\n")
 		if c.drafting {
 			b.WriteString(c.spinner.View() + " Drafting lyrics and style… (esc cancels)\n")
 		} else {
-			b.WriteString(mutedStyle.Render("enter draft with the local LLM · tab write it yourself · esc back") + "\n")
+			b.WriteString(dimStyle.Render("enter draft with the local LLM · tab write it yourself · esc back") + "\n")
 		}
 		return lipgloss.NewStyle().Padding(1, 2).Render(b.String())
 	}
@@ -381,17 +403,17 @@ func (c composeModel) view(ideaMode bool, w int) string {
 	if c.base.ID == "" {
 		header = "♪ New song"
 	}
-	b.WriteString(titleStyle.Render(header) + "\n")
+	b.WriteString(headerStyle.Render(header) + "\n")
 	b.WriteString(label(fieldTitle, "Title  ") + " " + c.title.View() + "\n")
-	b.WriteString(label(fieldSeconds, "Seconds") + " " + c.seconds.View() + mutedStyle.Render("  max length; the model may end sooner") + "\n")
-	b.WriteString(label(fieldLyrics, "Lyrics") + mutedStyle.Render("  tags like [Verse] [Chorus] on their own lines") + "\n")
+	b.WriteString(label(fieldSeconds, "Seconds") + " " + c.seconds.View() + dimStyle.Render("  max length; the model may end sooner") + "\n")
+	b.WriteString(label(fieldLyrics, "Lyrics") + dimStyle.Render("  tags like [Verse] [Chorus] on their own lines") + "\n")
 	b.WriteString(c.lyrics.View() + "\n")
-	b.WriteString(label(fieldCaption, "Style") + mutedStyle.Render("  Global Metadata: … / Vocal Details: … / Arrangement: …") + "\n")
+	b.WriteString(label(fieldCaption, "Style") + dimStyle.Render("  Global Metadata: … / Vocal Details: … / Arrangement: …") + "\n")
 	b.WriteString(c.caption.View() + "\n")
 	if c.err != "" {
-		b.WriteString(lipgloss.NewStyle().Width(w-2).Render(errStyle.Render(c.err)) + "\n")
+		b.WriteString(lipgloss.NewStyle().Width(w-2).Render(errorStyle.Render(c.err)) + "\n")
 	}
-	b.WriteString(mutedStyle.Render("ctrl+s save & queue · ctrl+d save draft · tab next field · ctrl+e open in $EDITOR · esc discard"))
+	b.WriteString(dimStyle.Render("ctrl+s save & queue · ctrl+d save draft · tab next field · ctrl+e open in $EDITOR · esc discard"))
 	return b.String()
 }
 

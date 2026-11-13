@@ -16,6 +16,13 @@ func TestLoad(t *testing.T) {
 		return p
 	}
 
+	t.Run("defaults live under the home directory", func(t *testing.T) {
+		home, _ := os.UserHomeDir()
+		if got := Default().ComfyUI.Dir; got != filepath.Join(home, ".local", "share", "songsmith", "ComfyUI") {
+			t.Fatalf("comfyui.dir default = %s", got)
+		}
+	})
+
 	t.Run("missing file gives defaults", func(t *testing.T) {
 		cfg, err := Load(filepath.Join(dir, "nope.yaml"))
 		if err != nil {

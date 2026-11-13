@@ -7,12 +7,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/lancekrogers/songsmith/internal/config"
+	"github.com/lancekrogers/songsmith/internal/health"
 	"github.com/lancekrogers/songsmith/internal/library"
-	"github.com/lancekrogers/songsmith/internal/ollama"
 	"github.com/lancekrogers/songsmith/internal/player"
 	"github.com/lancekrogers/songsmith/internal/queue"
 	"github.com/lancekrogers/songsmith/internal/tui"
-	"github.com/lancekrogers/songsmith/internal/writer"
 )
 
 const waitingNote = "another songsmith is rendering; queued songs render when it finishes"
@@ -22,15 +22,17 @@ func (a *app) runTUI(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	r := newRenderer(cfg)
+	live := config.NewLive(a.configPath, cfg)
+	r := newRenderer(live)
 	var note atomic.Value
 	note.Store("")
 	deps := tui.Deps{
 		Store:      r.store,
 		Queue:      r.queue,
-		Drafter:    writer.New(ollama.NewClient(cfg.Ollama.URL), cfg.Ollama.Model),
+		Drafter:    liveDrafter{live},
 		Player:     player.New(),
-		DraftModel: cfg.Ollama.Model,
+		Config:     live,
+		Checks:     health.Run,
 		WorkerNote: func() string { return note.Load().(string) },
 	}
 

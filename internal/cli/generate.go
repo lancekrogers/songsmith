@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/lancekrogers/songsmith/internal/backend"
+	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/library"
 	"github.com/lancekrogers/songsmith/internal/writer"
 )
@@ -53,11 +54,11 @@ func newGenerateCmd(a *app) *cobra.Command {
 				}
 				song.Lyrics = strings.TrimSpace(string(lyrics))
 				song.Caption = writer.ParseCaption(string(caption))
-				song.Seconds = cmp.Or(song.Seconds, 120)
+				song.Seconds = cmp.Or(song.Seconds, float64(cfg.Render.DefaultSeconds))
 				song.Title = cmp.Or(song.Title, "Untitled")
 			case idea != "":
 				fmt.Fprintf(out, "Drafting lyrics with %s...\n", cmp.Or(f.model, cfg.Ollama.Model))
-				d, err := f.writer(cfg).Write(cmd.Context(), idea, f.options())
+				d, err := f.writer(cmd, cfg).Write(cmd.Context(), idea, f.options())
 				if err != nil {
 					return err
 				}
@@ -71,7 +72,7 @@ func newGenerateCmd(a *app) *cobra.Command {
 				return err
 			}
 
-			r := newRenderer(cfg)
+			r := newRenderer(config.NewLive(a.configPath, cfg))
 			lock, err := r.store.TryLock()
 			if err != nil {
 				if errors.Is(err, library.ErrLocked) {

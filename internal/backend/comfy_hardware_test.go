@@ -10,7 +10,8 @@ import (
 	"github.com/lancekrogers/songsmith/internal/config"
 )
 
-// TestHardwareRender renders a short song on the real ComfyUI install.
+// TestHardwareRender renders a short song on the ComfyUI install named by the
+// config ($SONGSMITH_CONFIG, else ~/.config/songsmith/config.yaml).
 // Run with SONGSMITH_HARDWARE=1 (just test hardware).
 func TestHardwareRender(t *testing.T) {
 	if os.Getenv("SONGSMITH_HARDWARE") == "" {
@@ -20,8 +21,11 @@ func TestHardwareRender(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(filepath.Join(cfg.ComfyUI.Dir, "main.py")); err != nil {
+		t.Fatalf("no ComfyUI in %s: set comfyui.dir in %s (or point SONGSMITH_CONFIG at a config that does)", cfg.ComfyUI.Dir, config.Path(""))
+	}
 	m := server.New(cfg.ComfyUI, cfg.StateDir)
-	b := NewComfyMiniMax(m.Client(), starterFunc(m.Ensure), cfg.ComfyUI, cfg.Render)
+	b := NewComfyMiniMax(m.Client(), starterFunc(m.Ensure), func() config.Config { return cfg })
 
 	out := filepath.Join(t.TempDir(), "smoke.flac")
 	last := map[Stage]int{}
