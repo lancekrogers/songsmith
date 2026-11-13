@@ -1,0 +1,33 @@
+{
+  "id": "20261113-094500-lantern-road-v2",
+  "created": "2026-11-13T09:45:00Z",
+  "updated": "2026-11-13T10:09:30Z",
+  "idea": "a slow folk song about walking home by lantern light",
+  "title": "Lantern Road (v2)",
+  "lyrics": "[Verse]\nLantern swinging, gravel road\nEvery window gold\nI count the gates I used to climb\nBefore the night got cold\n[Chorus]\nCarry me home, carry me home\nThe long way round the hill\n[Verse]\nThe river keeps its own slow time\nThe mill wheel standing still\n[Chorus]\nCarry me home, carry me home\nThe long way round the hill\n[Outro]\nLantern low, the gate swings wide",
+  "caption": {
+    "global_metadata": "Slow acoustic folk, 72 BPM, D major, warm and close, a quiet build into the last chorus.",
+    "vocal_details": "Soft male lead with a low harmony in the chorus, breathy on the verses.",
+    "arrangement": "Verse: fingerpicked guitar and room tone. Chorus: brushed drums and upright bass. Outro: guitar alone, slowing."
+  },
+  "seconds": 120,
+  "seed": 281474976710,
+  "status": "done",
+  "audio": "song.flac",
+  "duration": 120,
+  "backend": "minimax-music3 (comfyui)",
+  "started": "2026-11-13T09:45:00Z",
+  "finished": "2026-11-13T10:09:30Z",
+  "timings": {
+    "composing": 1470
+  },
+  "derived_from": "20261113-090000-lantern-road",
+  "takes": [
+    {
+      "file": "song.flac",
+      "kind": "render",
+      "created": "2026-11-13T10:09:30Z",
+      "duration": 120
+    }
+  ]
+}

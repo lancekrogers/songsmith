@@ -14,9 +14,16 @@ run *args:
 fmt:
     gofmt -w .
 
-# Record the TUI demo GIF (needs Ollama; uses a throwaway library in /tmp)
+# Record demos/tui.gif, the README's hero: launcher, a draft from the writer, versions and takes, the Master screen (throwaway config in /tmp; no real Ollama or ComfyUI, nothing plays)
 demo: build
-    PATH="$PWD/bin:$PATH" vhs demos/tui.tape
+    #!/usr/bin/env bash
+    set -euo pipefail
+    env -u NO_COLOR -u CLICOLOR \
+        CLICOLOR_FORCE=1 FORCE_COLOR=1 \
+        TERM=xterm-256color COLORTERM=truecolor \
+        SONGSMITH_COLOR_PROFILE=ansi \
+        demos/with-setupfake.sh vhs demos/tui.tape
+    ls -lh demos/tui.gif
 
 # Record demos/shell.gif: launcher, library and setup report (throwaway config in /tmp, no Ollama or ComfyUI needed)
 demo-shell: build
