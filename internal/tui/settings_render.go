@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,9 @@ import (
 	"strconv"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/lancekrogers/songsmith/internal/backend"
+	"github.com/lancekrogers/songsmith/internal/config"
 )
 
 type samplersState struct {
@@ -70,7 +74,7 @@ func (a app) renderRows() []settingRow {
 		lengths[i] = minSec(s)
 	}
 	const quality, songs = "Quality", "New songs"
-	return []settingRow{
+	rows := []settingRow{
 		{key: "render.steps", name: "Steps", kind: rowSlider, group: quality, value: fmt.Sprint(r.Steps), applies: appliesNextRender,
 			lo: 10, hi: 60, at: float64(r.Steps), scale: "10–60",
 			help: "More steps render slower and can come out cleaner",
@@ -105,6 +109,7 @@ func (a app) renderRows() []settingRow {
 				return nil
 			}},
 	}
+	return append(rows, a.lowMemoryRows()...)
 }
 
 // advancedRows are the expert knobs: the sampler and scheduler the running
@@ -162,6 +167,41 @@ func (a app) advancedRows() []settingRow {
 		return nil
 	}
 	return append(rows, url, host, port, unload)
+}
+
+// lowMemoryRows choose whether renders free the language model before
+// decoding. On auto a note under the choice says what auto chose for the
+// running server.
+func (a app) lowMemoryRows() []settingRow {
+	mode := a.cfg().Render.LowMemory
+	options := make([]string, len(config.LowMemoryModes))
+	for i, m := range config.LowMemoryModes {
+		options[i] = string(m)
+	}
+	row := settingRow{key: "render.low_memory", name: "Low-memory rendering", kind: rowChoice, group: "Memory",
+		options: options, current: slices.Index(config.LowMemoryModes, cmp.Or(mode, config.LowMemoryAuto)), applies: appliesNextRender,
+		desc: "Frees the language model before decoding. Slower by a model reload; needed on machines with about 32 GB.",
+		help: "Renders in two prompts and frees the models between them; auto turns it on below " + backend.GB(backend.LowMemoryBelow)}
+	row.set = func(a *app, i int) tea.Cmd {
+		a.saved("render.low_memory", config.LowMemoryModes[i], "Low-memory rendering: "+options[i], appliesNextRender)
+		return nil
+	}
+	if row.current != 0 {
+		return []settingRow{row}
+	}
+	return []settingRow{row, {name: "Low-memory rendering · auto", kind: rowNote, indent: true, value: autoLowMemory(a.settings.server)}}
+}
+
+// autoLowMemory is what auto comes to on the running server.
+func autoLowMemory(sv serverState) string {
+	switch {
+	case !sv.known:
+		return "auto · asking the server…"
+	case !sv.status.Running:
+		return "auto · decided at each render"
+	}
+	_, why := backend.ResolveLowMemory(config.LowMemoryAuto, sv.status.Memory)
+	return why
 }
 
 // comboRow is a list read from the server, ✓ on the configured value. A

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/lancekrogers/songsmith/internal/backend"
 	"github.com/lancekrogers/songsmith/internal/comfy"
 	"github.com/lancekrogers/songsmith/internal/comfy/server"
 	"github.com/lancekrogers/songsmith/internal/config"
@@ -52,6 +53,7 @@ const (
 	IDFFprobe          = "ffprobe"
 	IDFFmpeg           = "ffmpeg"
 	IDInstructions     = "writer-instructions"
+	IDLowMemory        = "low-memory"
 )
 
 // Install actions that can fix a failing check.
@@ -126,6 +128,9 @@ func Run(ctx context.Context, cfg config.Config) []Check {
 	out = append(out, serverCheck(cfg.ComfyUI, st))
 	if st.Running {
 		out = append(out, nodeChecks(ctx, m.Client(), cfg.ComfyUI)...)
+	}
+	if ch, ok := lowMemoryCheck(cfg.Render.LowMemory, st); ok {
+		out = append(out, ch)
 	}
 
 	names, err := ollama.NewClient(cfg.Ollama.URL).Models(ctx)
@@ -211,6 +216,24 @@ func serverCheck(c config.ComfyUI, st server.Status) Check {
 		ch.Result, ch.Detail = OK, fmt.Sprintf("running at %s on %s", c.BaseURL(), st.Device)
 	}
 	return ch
+}
+
+// lowMemoryCheck warns, only when low-memory rendering is turned off on a
+// server that would turn it on by itself. It never blocks: short songs
+// still render.
+func lowMemoryCheck(mode config.LowMemoryMode, st server.Status) (Check, bool) {
+	if !st.Running || mode != config.LowMemoryOff {
+		return Check{}, false
+	}
+	if on, _ := backend.ResolveLowMemory(config.LowMemoryAuto, st.Memory); !on {
+		return Check{}, false
+	}
+	detail := fmt.Sprintf("the ComfyUI server has %s of memory and low-memory rendering is off, so long songs may fail at the last step (decoding). "+
+		"Turn it on in Settings → Render → Low-memory rendering (config key render.low_memory: auto or on)", backend.GB(st.Memory))
+	if st.Device == "mps" {
+		detail += ". Raising PyTorch's MPS limit with PYTORCH_MPS_HIGH_WATERMARK_RATIO also avoids the error, but can freeze the machine"
+	}
+	return Check{ID: IDLowMemory, Name: "Render memory", Result: Warn, Detail: detail}, true
 }
 
 type objectInfoer interface {

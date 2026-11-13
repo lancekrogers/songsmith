@@ -62,9 +62,13 @@ func parseEvent(data []byte) (Event, bool) {
 	ev := Event{Type: t, PromptID: m.Data.PromptID, Node: m.Data.Node, Value: m.Data.Value, Max: m.Data.Max}
 	if t == EventError {
 		ev.Node = m.Data.NodeID
-		ev.Message = strings.TrimSpace(m.Data.ExceptionType + ": " + m.Data.ExceptionMessage)
+		ev.Message = errorMessage(m)
 	}
 	return ev, true
+}
+
+func errorMessage(m wsMessage) string {
+	return strings.TrimSpace(m.Data.ExceptionType + ": " + m.Data.ExceptionMessage)
 }
 
 func newClientID() string {
@@ -176,11 +180,39 @@ func (c *Client) Run(ctx context.Context, g Graph, opts RunOptions) (HistoryEntr
 	}
 }
 
+// OutOfMemory reports whether err is ComfyUI running out of memory at node.
+// It matches PyTorch's wording for CUDA and for Apple's MPS backend.
+func OutOfMemory(err error, node string) bool {
+	var ee *ExecutionError
+	if !errors.As(err, &ee) || ee.Node != node {
+		return false
+	}
+	msg := strings.ToLower(ee.Message)
+	return strings.Contains(msg, "out of memory") || strings.Contains(msg, "outofmemory")
+}
+
 func finished(h HistoryEntry) (HistoryEntry, error) {
 	if h.Status.StatusStr == "error" {
-		return h, &ExecutionError{Node: "?", Message: "see ComfyUI log"}
+		return h, historyError(h)
 	}
 	return h, nil
+}
+
+// historyError is the failure a finished prompt recorded, for a prompt
+// whose events were not followed.
+func historyError(h HistoryEntry) *ExecutionError {
+	for _, raw := range h.Status.Messages {
+		var msg []json.RawMessage
+		var event string
+		if json.Unmarshal(raw, &msg) != nil || len(msg) != 2 || json.Unmarshal(msg[0], &event) != nil || event != string(EventError) {
+			continue
+		}
+		var m wsMessage
+		if json.Unmarshal(msg[1], &m.Data) == nil {
+			return &ExecutionError{Node: m.Data.NodeID, Message: errorMessage(m)}
+		}
+	}
+	return &ExecutionError{Node: "?", Message: "see ComfyUI log"}
 }
 
 // waitHistory polls until the prompt appears in history. It also covers a

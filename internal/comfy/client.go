@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -46,14 +49,80 @@ type SystemStats struct {
 		PythonVersion  string   `json:"python_version"`
 		PyTorchVersion string   `json:"pytorch_version"`
 		Argv           []string `json:"argv"`
+		RAMTotal       int64    `json:"ram_total"`
 	} `json:"system"`
 	Devices []Device `json:"devices"`
+}
+
+// Memory is what the server renders in, in bytes: the GPU's own memory on a
+// device that has it, otherwise system memory, which Apple Silicon shares
+// with its GPU. It is 0 when the server does not say.
+func (s SystemStats) Memory() int64 {
+	if len(s.Devices) > 0 {
+		if d := s.Devices[0]; d.Type != "mps" && d.Type != "cpu" && d.VRAMTotal > 0 {
+			return d.VRAMTotal
+		}
+	}
+	return s.System.RAMTotal
 }
 
 func (c *Client) SystemStats(ctx context.Context) (SystemStats, error) {
 	var s SystemStats
 	err := c.getJSON(ctx, "/system_stats", &s)
 	return s, err
+}
+
+// Free asks the server to unload its models and, with freeMemory, to drop
+// its cached node outputs, which is what releases a model it keeps on the
+// GPU. The server applies it once the prompt running now finishes, or at
+// once when it is idle.
+func (c *Client) Free(ctx context.Context, unloadModels, freeMemory bool) error {
+	return c.postJSON(ctx, "/free", map[string]any{"unload_models": unloadModels, "free_memory": freeMemory})
+}
+
+// OutputDir is the folder a server on this machine saves outputs to, or ""
+// when it cannot tell.
+func (c *Client) OutputDir(ctx context.Context) (string, error) {
+	stats, err := c.SystemStats(ctx)
+	if err != nil {
+		return "", err
+	}
+	argv := stats.System.Argv
+	for i, arg := range argv {
+		dir, ok := strings.CutPrefix(arg, "--output-directory=")
+		if arg == "--output-directory" && i+1 < len(argv) {
+			dir, ok = argv[i+1], true
+		}
+		if ok {
+			if !filepath.IsAbs(dir) {
+				return "", nil
+			}
+			return filepath.Clean(dir), nil
+		}
+	}
+	paths, err := c.FolderPaths(ctx)
+	if err != nil {
+		return "", err
+	}
+	nodes := paths["custom_nodes"]
+	if len(nodes) == 0 || !filepath.IsAbs(nodes[0]) {
+		return "", nil
+	}
+	return filepath.Join(filepath.Dir(filepath.Clean(nodes[0])), "output"), nil
+}
+
+// Local reports whether the server runs on this machine.
+func (c *Client) Local() bool {
+	u, err := url.Parse(c.base)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // FolderPaths returns the folders the server reads each kind of file from,
@@ -171,7 +240,8 @@ type HistoryEntry struct {
 		Messages  []json.RawMessage `json:"messages"`
 	} `json:"status"`
 	Outputs map[string]struct {
-		Audio []OutputFile `json:"audio"`
+		Audio   []OutputFile `json:"audio"`
+		Latents []OutputFile `json:"latents"`
 	} `json:"outputs"`
 }
 
@@ -180,6 +250,15 @@ func (h HistoryEntry) AudioFiles() []OutputFile {
 	var files []OutputFile
 	for _, o := range h.Outputs {
 		files = append(files, o.Audio...)
+	}
+	return files
+}
+
+// LatentFiles lists every latent a SaveLatent node wrote.
+func (h HistoryEntry) LatentFiles() []OutputFile {
+	var files []OutputFile
+	for _, o := range h.Outputs {
+		files = append(files, o.Latents...)
 	}
 	return files
 }

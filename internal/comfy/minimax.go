@@ -1,6 +1,10 @@
 package comfy
 
-import "cmp"
+import (
+	"cmp"
+	"path"
+	"strings"
+)
 
 // Node IDs in the MiniMax graph. Progress events carry the executing node ID,
 // so these double as stage names.
@@ -83,8 +87,65 @@ func MiniMaxGraph(p MiniMaxParams) Graph {
 	}
 }
 
-// RequiredNodes lists node classes and inputs the MiniMax graph depends on.
+// Node IDs only the two-prompt render uses.
+const (
+	NodeSaveLatent = "save_latent"
+	NodeLoadLatent = "load_latent"
+)
+
+// MiniMaxSampleGraph is the first prompt of a render split in two to save
+// memory: MiniMaxGraph up to the sampler, whose latent it saves under
+// latentPrefix in the output folder instead of decoding it.
+func MiniMaxSampleGraph(p MiniMaxParams, latentPrefix string) Graph {
+	g := MiniMaxGraph(p)
+	delete(g, NodeVAE)
+	delete(g, NodeDecode)
+	delete(g, NodeSave)
+	g[NodeSaveLatent] = Node{ClassType: "SaveLatent", Inputs: map[string]any{
+		"samples": Link(NodeSampler, 0), "filename_prefix": latentPrefix,
+	}}
+	return g
+}
+
+// MiniMaxDecodeGraph is the second prompt: it decodes the latent the first
+// one saved, named as LatentRef names it, with only the VAE loaded.
+func MiniMaxDecodeGraph(vae, latent, filenamePrefix string) Graph {
+	return Graph{
+		NodeVAE: {ClassType: "VAELoader", Inputs: map[string]any{
+			"vae_name": vae,
+		}},
+		NodeLoadLatent: {ClassType: "LoadLatent", Inputs: map[string]any{
+			"latent": latent,
+		}},
+		NodeDecode: {ClassType: "VAEDecodeAudio", Inputs: map[string]any{
+			"samples": Link(NodeLoadLatent, 0), "vae": Link(NodeVAE, 0),
+		}},
+		NodeSave: {ClassType: "SaveAudio", Inputs: map[string]any{
+			"audio": Link(NodeDecode, 0), "filename_prefix": filenamePrefix,
+		}},
+	}
+}
+
+// LatentRef names a saved latent the way LoadLatent reads it: a path under
+// the folder its type names, which LoadLatent finds by the "[output]" tag.
+func LatentRef(f OutputFile) string {
+	return path.Join(f.Subfolder, f.Filename) + " [" + cmp.Or(f.Type, "output") + "]"
+}
+
+// ParseLatentRef turns a LatentRef back into the file it names.
+func ParseLatentRef(ref string) (OutputFile, bool) {
+	name, typ, ok := strings.Cut(strings.TrimSuffix(ref, "]"), " [")
+	if !ok || name == "" || typ == "" {
+		return OutputFile{}, false
+	}
+	dir, file := path.Split(name)
+	return OutputFile{Filename: file, Subfolder: strings.TrimSuffix(dir, "/"), Type: typ}, file != ""
+}
+
+// RequiredNodes lists node classes and inputs the MiniMax graphs depend on.
 var RequiredNodes = map[string][]string{
+	"SaveLatent":                    {"samples", "filename_prefix"},
+	"LoadLatent":                    {"latent"},
 	"CLIPLoader":                    {"clip_name", "type"},
 	"UNETLoader":                    {"unet_name", "weight_dtype"},
 	"VAELoader":                     {"vae_name"},
