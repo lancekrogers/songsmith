@@ -56,6 +56,14 @@ func (c *Client) SystemStats(ctx context.Context) (SystemStats, error) {
 	return s, err
 }
 
+// FolderPaths returns the folders the server reads each kind of file from,
+// such as "custom_nodes" or "vae". ComfyUI serves it for its own frontend.
+func (c *Client) FolderPaths(ctx context.Context) (map[string][]string, error) {
+	var p map[string][]string
+	err := c.getJSON(ctx, "/internal/folder_paths", &p)
+	return p, err
+}
+
 // NodeInfo is the subset of /object_info that songsmith checks.
 type NodeInfo struct {
 	Input struct {

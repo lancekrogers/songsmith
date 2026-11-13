@@ -20,6 +20,7 @@ func (a app) libraryRows() []settingRow {
 			})
 		}}
 	restartValue(&state, saved.StateDir, cfg.StateDir)
+	a.stopFirstHelp(&state, saved.StateDir, cfg.StateDir)
 	file := settingRow{name: "Config file", kind: rowInfo, value: a.d.Config.Path(),
 		help: "Every change here is saved to this file; its comments and other keys are kept"}
 	return []settingRow{lib, state, file}

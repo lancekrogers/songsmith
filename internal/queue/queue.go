@@ -43,6 +43,10 @@ type Queue struct {
 	current string
 	cancel  context.CancelCauseFunc
 
+	// beforeRender runs once a song is claimed and before the backend
+	// starts, such as freeing memory the render needs.
+	beforeRender func(ctx context.Context)
+
 	subMu   sync.Mutex
 	subs    map[int]chan Update
 	nextSub int
@@ -305,6 +309,14 @@ func (q *Queue) claim(song library.Song, cancel context.CancelCauseFunc) (librar
 	return song, true
 }
 
+// beforeRenderTimeout bounds the hook that runs before each render.
+var beforeRenderTimeout = 5 * time.Second
+
+// BeforeRender sets fn to run, best effort and for at most a few seconds,
+// each time a song is claimed and before the backend starts it. fn returns
+// nothing: whatever it does, the render goes ahead.
+func (q *Queue) BeforeRender(fn func(ctx context.Context)) { q.beforeRender = fn }
+
 // Render renders one queued song now and records the outcome in the library.
 // A song that is no longer queued is returned unchanged.
 func (q *Queue) Render(ctx context.Context, song library.Song) library.Song {
@@ -318,6 +330,12 @@ func (q *Queue) Render(ctx context.Context, song library.Song) library.Song {
 	song, ok := q.claim(song, cancel)
 	if !ok {
 		return song
+	}
+
+	if q.beforeRender != nil {
+		hookCtx, done := context.WithTimeout(ctx, beforeRenderTimeout)
+		q.beforeRender(hookCtx)
+		done()
 	}
 
 	hadTake := q.store.HasAudio(song)

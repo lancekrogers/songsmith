@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/health"
+	"github.com/lancekrogers/songsmith/internal/ollama"
+	"github.com/lancekrogers/songsmith/internal/tui/vim"
 	"github.com/lancekrogers/songsmith/internal/writer"
 )
 
@@ -73,7 +76,7 @@ func TestWriterListsOllamaModelsAndSavesOnlyTheModel(t *testing.T) {
 	base := fileLines(t, a.d.Config.Path())
 	a = openSettingsOn(t, a, sectionWriter)
 	view := plain(a)
-	for _, s := range []string{"Model\n", "alpha:1b", "▸ ✓ " + testModel, "zeta:3b", "Applies to the next draft"} {
+	for _, s := range []string{"Model · " + testModel + " · 3 installed", "alpha:1b", "▸ ✓ " + testModel, "zeta:3b", "Applies to the next draft"} {
 		if !strings.Contains(view, s) {
 			t.Fatalf("Writer missing %q:\n%s", s, view)
 		}
@@ -96,7 +99,7 @@ func TestWriterListsAConfiguredModelThatIsNotPulledDim(t *testing.T) {
 	a.settings.models.list = fakeModels("alpha:1b", "zeta:3b")
 	a = openSettingsOn(t, a, sectionWriter)
 	saves := recordSaves(&a)
-	row := a.writerModelRow()
+	row := a.writerModelRows()[0]
 	if !slices.Equal(row.options, []string{"alpha:1b", "zeta:3b", testModel + " · not pulled"}) || row.current != 2 || !row.muted[2] {
 		t.Fatalf("row %+v", row)
 	}
@@ -139,7 +142,7 @@ func TestWriterShowsLoadingAndDropsStaleLists(t *testing.T) {
 	}
 	_ = first
 	a = settle(t, a, second)
-	a, _ = send(t, a, modelsLoadedMsg{seq: a.settings.models.seq - 1, names: []string{"stale:1b"}})
+	a, _ = send(t, a, modelsLoadedMsg{seq: a.settings.models.seq - 1, infos: []ollama.ModelInfo{{Name: "stale:1b"}}})
 	if strings.Contains(plain(a), "stale:1b") || !strings.Contains(plain(a), "zeta:3b") {
 		t.Fatalf("stale list shown:\n%s", plain(a))
 	}
@@ -173,7 +176,7 @@ func TestWriterOtherModelSavesAPulledTagAndNeverAnUnpulledOne(t *testing.T) {
 
 func TestWriterURLIsValidatedAndReloadsTheList(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
-	a = openSettingsOn(t, a, sectionWriter)
+	a = openSettingsOn(t, a, sectionAdvanced)
 	saves := recordSaves(&a)
 	a = focus(t, a, "Ollama URL", -1)
 	a = pressSettings(t, a, "enter")
@@ -191,66 +194,129 @@ func TestWriterURLIsValidatedAndReloadsTheList(t *testing.T) {
 	if len(*saves) != 1 || (*saves)[0] != (savedKV{"ollama.url", ollama.URL}) || a.cfg().Ollama.URL != ollama.URL {
 		t.Fatalf("saves %v", *saves)
 	}
-	if !strings.Contains(plain(a), "fresh:1b") {
+	if a = pressSettings(t, a, "2"); !strings.Contains(plain(a), "fresh:1b") {
 		t.Fatalf("list not reloaded from the new URL:\n%s", plain(a))
 	}
 }
 
-func TestWritingInstructionsRoundTrip(t *testing.T) {
+// typeInSettings sends each rune of text as its own key press.
+func typeInSettings(t *testing.T, a app, text string) app {
+	t.Helper()
+	for _, r := range text {
+		a, _ = send(t, a, key(string(r)))
+	}
+	return a
+}
+
+func numberedInstructions(t *testing.T, dir string) []string {
+	t.Helper()
+	found, _ := filepath.Glob(filepath.Join(dir, "instructions-*.txt"))
+	return found
+}
+
+func TestWritingInstructionsEditOneFileInTheApp(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
 	a = openSettingsOn(t, a, sectionWriter)
 	dir := filepath.Dir(a.d.Config.Path())
-	earlier := filepath.Join(dir, "instructions.txt")
-	if err := os.WriteFile(earlier, []byte("keep me"), 0o644); err != nil {
+	path := filepath.Join(dir, "instructions.txt")
+
+	// No file yet: the built-in prompt is copied there and opened here.
+	a = focus(t, a, "Writing instructions", -1)
+	a = pressSettings(t, a, "enter")
+	if a.settings.text == nil || a.cfg().Ollama.InstructionsFile != path || a.settings.text.ed.text() != strings.TrimRight(writer.BuiltinInstructions, "\n") {
+		t.Fatalf("open: text %v key %q", a.settings.text != nil, a.cfg().Ollama.InstructionsFile)
+	}
+	if !strings.Contains(plain(a), "Writing instructions") || !strings.Contains(plain(a), "INSERT") {
+		t.Fatalf("editor not drawn:\n%s", plain(a))
+	}
+	if err := os.WriteFile(path, []byte("keep me"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	a = focus(t, a, "Writing instructions", -1)
-	a, cmd := send(t, a, key("enter"))
-	path := filepath.Join(dir, "instructions-2.txt")
-	if cmd == nil || a.cfg().Ollama.InstructionsFile != path {
-		t.Fatalf("cmd %v, instructions file %q", cmd, a.cfg().Ollama.InstructionsFile)
+	a = pressSettings(t, a, "esc")
+	a = typeInSettings(t, a, ":q")
+	a = pressSettings(t, a, "enter")
+
+	a = pressSettings(t, a, "enter")
+	if a.settings.text == nil || a.settings.text.ed.text() != "keep me" {
+		t.Fatalf("reopen should read the file")
 	}
-	if data, _ := os.ReadFile(path); string(data) != writer.BuiltinInstructions {
-		t.Fatalf("new file does not hold the built-in prompt:\n%s", data)
+	a = typeInSettings(t, a, " now")
+	a, cmd := send(t, a, key("ctrl+c"))
+	if quits(cmd) || a.settings.text == nil || a.settings.text.ed.ed.Mode() == vim.ModeInsert {
+		t.Fatal("ctrl+c in the editor should act like esc, not quit")
 	}
-	if data, _ := os.ReadFile(earlier); string(data) != "keep me" {
-		t.Fatalf("earlier file overwritten: %q", data)
+	a = pressSettings(t, a, "enter")
+	if a.settings.text != nil {
+		t.Fatal("normal-mode enter should save and return")
+	}
+	if data, _ := os.ReadFile(path); string(data) != "keep me now\n" {
+		t.Fatalf("file %q", data)
+	}
+	if !strings.Contains(a.settings.message, "Writing instructions saved in "+path) {
+		t.Fatalf("message %q", a.settings.message)
 	}
 
+	a = pressSettings(t, a, "enter")
+	a = typeInSettings(t, a, " zzz")
+	a = pressSettings(t, a, "esc")
+	a = typeInSettings(t, a, ":q")
+	a = pressSettings(t, a, "enter")
+	if data, _ := os.ReadFile(path); a.settings.text != nil || string(data) != "keep me now\n" {
+		t.Fatalf(":q should discard: %q", data)
+	}
+
+	// Reset clears only the key; the next edit brings the same file back.
+	a = focus(t, a, "Reset instructions", -1)
+	a = pressSettings(t, a, "enter")
+	if a.cfg().Ollama.InstructionsFile != "" || !strings.Contains(a.settings.message, "your file is kept at "+path) {
+		t.Fatalf("reset: %q %q", a.cfg().Ollama.InstructionsFile, a.settings.message)
+	}
+	if !strings.Contains(plain(a), "Writing instructions  built-in") {
+		t.Fatalf("row after reset:\n%s", plain(a))
+	}
+	a = focus(t, a, "Writing instructions", -1)
+	a = pressSettings(t, a, "enter")
+	if a.settings.text == nil || a.settings.text.ed.text() != "keep me now" || a.cfg().Ollama.InstructionsFile != path {
+		t.Fatalf("after reset the user's file should come back")
+	}
+	if n := numberedInstructions(t, dir); len(n) != 0 {
+		t.Fatalf("numbered copies made: %v", n)
+	}
+
+	// An empty file is saved but drafts keep the built-in prompt.
+	a = pressSettings(t, a, "esc")
+	a = typeInSettings(t, a, "ggVGd:w")
+	a = pressSettings(t, a, "enter")
+	if a.settings.text != nil || !a.settings.failed || !strings.Contains(a.settings.message, "drafts use the built-in instructions until it has text") {
+		t.Fatalf("empty file: %q", a.settings.message)
+	}
+
+	// $EDITOR still reports back.
 	if err := os.WriteFile(path, []byte("Write short punk songs."), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	a, _ = send(t, a, instructionsEditedMsg{path: path})
-	if !strings.Contains(a.settings.message, "Applies to the next draft · Writing instructions saved in "+path) {
-		t.Fatalf("message %q", a.settings.message)
-	}
 	if got, err := writer.Instructions(a.cfg().Ollama.InstructionsFile); err != nil || got != "Write short punk songs." {
 		t.Fatalf("next draft would use %q, %v", got, err)
 	}
+}
 
-	a, cmd = send(t, a, key("enter"))
-	if cmd == nil || a.cfg().Ollama.InstructionsFile != path {
-		t.Fatalf("second open made a new file: %q", a.cfg().Ollama.InstructionsFile)
+func TestWritingInstructionsRemovesOnlyTheFileItJustMadeWhenSavingFails(t *testing.T) {
+	a, _ := newSettingsApp(t, readyChecks())
+	a = openSettingsOn(t, a, sectionWriter)
+	path := filepath.Join(filepath.Dir(a.d.Config.Path()), "instructions.txt")
+	a.settings.save = func(string, any) error { return errors.New("disk full") }
+	a = focus(t, a, "Writing instructions", -1)
+	a = pressSettings(t, a, "enter")
+	if _, err := os.Stat(path); !os.IsNotExist(err) || a.settings.text != nil || !a.settings.failed {
+		t.Fatalf("a file made for a failed save was left: %v", err)
 	}
-
-	if err := os.WriteFile(path, nil, 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("mine"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	a, _ = send(t, a, instructionsEditedMsg{path: path})
-	if !a.settings.failed || !strings.Contains(a.settings.message, "drafts use the built-in instructions until it has text") {
-		t.Fatalf("empty file message %q", a.settings.message)
-	}
-
-	a = focus(t, a, "Reset instructions", -1)
 	a = pressSettings(t, a, "enter")
-	if a.cfg().Ollama.InstructionsFile != "" || !strings.Contains(plain(a), "your file stays at") {
-		t.Fatalf("reset: %q\n%s", a.cfg().Ollama.InstructionsFile, plain(a))
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("reset removed the file: %v", err)
-	}
-	if !strings.Contains(plain(a), "Writing instructions  built-in") {
-		t.Fatalf("row after reset:\n%s", plain(a))
+	if data, err := os.ReadFile(path); err != nil || string(data) != "mine" {
+		t.Fatalf("the user's file was removed or changed: %q %v", data, err)
 	}
 }
 
@@ -275,5 +341,63 @@ func TestChoosingAWriterModelRefreshesTheChecks(t *testing.T) {
 	view := plain(a)
 	if a.screen != screenLauncher || strings.Contains(view, "not pulled") || !strings.Contains(view, "Writer zeta:3b") {
 		t.Fatalf("launcher after:\n%s", view)
+	}
+}
+
+// A model /api/tags says nothing about is asked about with /api/show; one
+// show cannot answer stays in the list.
+func TestModelListAsksShowAndKeepsModelsItCannotAsk(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			_, _ = w.Write([]byte(`{"models":[{"name":"writer:1b"},{"name":"vectors:1b"},{"name":"mystery:1b"},{"name":"tagged:1b","capabilities":["completion"]}]}`))
+		case "/api/show":
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			switch body["model"] {
+			case "writer:1b":
+				_, _ = w.Write([]byte(`{"capabilities":["completion"]}`))
+			case "vectors:1b":
+				_, _ = w.Write([]byte(`{"capabilities":["embedding"]}`))
+			case "tagged:1b":
+				t.Error("show asked about a model tags described")
+			default:
+				http.Error(w, "boom", http.StatusInternalServerError)
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	infos, err := listOllamaModels(t.Context(), srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chat []string
+	for _, m := range infos {
+		if m.CanChat() {
+			chat = append(chat, m.Name)
+		}
+	}
+	if !slices.Equal(chat, []string{"writer:1b", "mystery:1b", "tagged:1b"}) {
+		t.Fatalf("chat models %q", chat)
+	}
+}
+
+// With no model in Ollama, the configured one is a list of one that enter
+// still pulls.
+func TestAWriterListOfOneStillActs(t *testing.T) {
+	a, _ := newSettingsApp(t, readyChecks())
+	a.settings.models.list = fakeModels([]string{}...)
+	a = openSettingsOn(t, a, sectionWriter)
+	row := a.writerModelRows()[0]
+	if row.expands() || len(row.options) != 1 || !strings.Contains(plain(a), testModel+" · not pulled") {
+		t.Fatalf("row %+v:\n%s", row, plain(a))
+	}
+	a = focus(t, a, "Model", -1)
+	if !strings.Contains(footerLine(a), "enter choose") || !strings.Contains(plain(a), "enter pulls it through Ollama") {
+		t.Fatalf("footer %q:\n%s", footerLine(a), plain(a))
+	}
+	a = pressSettings(t, a, "enter")
+	if !strings.Contains(a.settings.message, testModel+" cannot be pulled from here") {
+		t.Fatalf("enter did nothing: %q", a.settings.message)
 	}
 }

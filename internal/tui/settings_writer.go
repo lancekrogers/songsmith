@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"io/fs"
 	"maps"
-	"math"
 	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -31,16 +32,56 @@ type modelsState struct {
 	seq     int
 	loading bool
 	loaded  bool
-	names   []string
-	err     error
+	// url is the Ollama the loaded list came from. names are every
+	// installed model; infos say what each is, in the same order.
+	url   string
+	names []string
+	infos []ollama.ModelInfo
+	err   error
 	// list replaces the Ollama client in tests.
-	list func(ctx context.Context, url string) ([]string, error)
+	list func(ctx context.Context, url string) ([]ollama.ModelInfo, error)
 }
 
 type modelsLoadedMsg struct {
 	seq   int
-	names []string
+	url   string
+	infos []ollama.ModelInfo
 	err   error
+}
+
+// listOllamaModels reads the installed models. A model /api/tags says
+// nothing about is asked about with /api/show, a few at a time; one that
+// does not answer in time stays unknown, which keeps it in the list.
+func listOllamaModels(ctx context.Context, url string) ([]ollama.ModelInfo, error) {
+	c := ollama.NewClient(url)
+	infos, err := c.ModelInfos(ctx)
+	if err != nil {
+		return nil, err
+	}
+	showCtx, cancel := context.WithTimeout(ctx, settingsLoadTimeout/2)
+	defer cancel()
+	sem := make(chan struct{}, 6)
+	var wg sync.WaitGroup
+	for i := range infos {
+		if infos[i].Capabilities != nil || !infos[i].CanChat() {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-showCtx.Done():
+				return
+			}
+			defer func() { <-sem }()
+			if caps, err := c.Capabilities(showCtx, infos[i].Name); err == nil && len(caps) > 0 {
+				infos[i].Capabilities = caps
+			}
+		}()
+	}
+	wg.Wait()
+	return infos, nil
 }
 
 func (modelsLoadedMsg) settingsAsync() {}
@@ -52,14 +93,14 @@ func (a *app) loadModels() tea.Cmd {
 	m.loading = true
 	list := m.list
 	if list == nil {
-		list = func(ctx context.Context, url string) ([]string, error) { return ollama.NewClient(url).Models(ctx) }
+		list = listOllamaModels
 	}
 	seq, url, ctx := m.seq, a.cfg().Ollama.URL, a.ctx
 	return a.events.run(func(send func(tea.Msg)) {
 		ctx, cancel := context.WithTimeout(ctx, settingsLoadTimeout)
 		defer cancel()
-		names, err := list(ctx, url)
-		send(modelsLoadedMsg{seq: seq, names: names, err: err})
+		infos, err := list(ctx, url)
+		send(modelsLoadedMsg{seq: seq, url: url, infos: infos, err: err})
 	})
 }
 
@@ -68,15 +109,34 @@ func (a *app) receiveModels(msg modelsLoadedMsg) {
 	if msg.seq != m.seq {
 		return
 	}
-	m.loading, m.loaded = false, true
-	m.names, m.err = slices.Sorted(slices.Values(msg.names)), msg.err
+	m.loading, m.loaded, m.url = false, true, msg.url
+	m.infos = slices.SortedFunc(slices.Values(msg.infos), func(x, y ollama.ModelInfo) int { return strings.Compare(x.Name, y.Name) })
+	m.names = make([]string, len(m.infos))
+	for i, info := range m.infos {
+		m.names[i] = info.Name
+	}
+	m.err = msg.err
+}
+
+// chatModels are the installed models that can draft, in name order, and
+// how many were left out. The configured model is never left out.
+func (a app) chatModels() (chat []ollama.ModelInfo, hidden int) {
+	model := setup.ModelTag(a.cfg().Ollama.Model)
+	for _, info := range a.settings.models.infos {
+		if info.CanChat() || setup.ModelTag(info.Name) == model {
+			chat = append(chat, info)
+		} else {
+			hidden++
+		}
+	}
+	return chat, hidden
 }
 
 func (a app) writerRows() []settingRow {
 	cfg := a.cfg()
-	width := a.settingsContentWidth() - 4
-	rows := []settingRow{a.writerModelRow()}
-	if a.settings.models.err != nil {
+	width := a.settingsContentWidth() - rowIndent
+	rows := a.writerModelRows()
+	if a.settings.models.err != nil && a.modelsCurrent() {
 		text := fmt.Sprintf("Ollama is not reachable at %s, so its models cannot be listed (configured: %s). "+
 			"Get Ollama from %s; lyrics can still be written by hand.", cfg.Ollama.URL, cfg.Ollama.Model, ollamaDownload)
 		rows = reportRows("Model", text, width)
@@ -87,60 +147,79 @@ func (a app) writerRows() []settingRow {
 	if cfg.Ollama.InstructionsFile != "" {
 		instructions = cfg.Ollama.InstructionsFile
 	}
+	const drafting = "Drafting"
 	return append(rows,
 		settingRow{
 			key: "ollama.model", name: "Other model", kind: rowText, value: dimStyle.Render("a tag not in the list"),
 			applies: appliesNextDraft,
+			desc:    "Type any Ollama model tag; one Ollama does not have is pulled first",
 			help:    "Type any Ollama model tag, such as name:tag. One Ollama does not have is pulled first, and used once the pull finishes",
 			run: func(a *app) tea.Cmd {
 				return a.beginEdit("Other model", "", (*app).commitOtherModel)
 			},
 		},
 		settingRow{
-			key: "ollama.url", name: "Ollama URL", kind: rowText, value: cfg.Ollama.URL,
-			applies: appliesNextDraft,
-			help:    "Where the Ollama server listens",
+			key: "ollama.context", name: "Context", kind: rowText, group: drafting,
+			value: contextValue(cfg.Ollama.Context), applies: appliesNextDraft,
+			help: "Leave blank to use the context Ollama is configured with. A smaller value uses less memory while drafting.",
 			run: func(a *app) tea.Cmd {
-				return a.beginEdit("Ollama URL", a.cfg().Ollama.URL, (*app).commitOllamaURL)
+				initial := ""
+				if n := a.cfg().Ollama.Context; n > 0 {
+					initial = strconv.Itoa(n)
+				}
+				return a.beginEdit("Context", initial, (*app).commitContext)
 			},
 		},
 		settingRow{
-			key: "ollama.temperature", name: "Temperature", kind: rowSlider,
-			value:   fmt.Sprintf("%.1f", cfg.Ollama.Temperature),
+			key: "ollama.temperature", name: "Temperature", kind: rowSlider, group: drafting,
+			value: fmt.Sprintf("%.1f", cfg.Ollama.Temperature), lo: 0, hi: 1.5, at: cfg.Ollama.Temperature, scale: "0.0–1.5",
 			applies: appliesNextDraft,
-			help:    "How adventurous drafts are, from 0.0 (predictable) to 1.5 (loose)",
+			help:    "Higher drafts are more adventurous, lower ones more predictable",
 			nudge:   (*app).nudgeTemperature,
+			run: func(a *app) tea.Cmd {
+				return a.typeFloat("ollama.temperature", "Temperature", a.cfg().Ollama.Temperature, 0, false, appliesNextDraft)
+			},
 		},
 		settingRow{
-			key: "ollama.instructions_file", name: "Writing instructions", kind: rowAction, verb: "edit",
+			key: "ollama.instructions_file", name: "Writing instructions", kind: rowAction, verb: "edit", group: drafting,
 			value: instructions, applies: appliesNextDraft,
-			help: "The system prompt the writer drafts with. The built-in one is copied to a file you can edit",
+			desc: "The system prompt drafts are written with; enter edits it here",
+			help: "The system prompt the writer drafts with. Enter edits it here; the first edit copies the built-in one to instructions.txt beside the config file",
 			run:  (*app).openInstructions,
 		},
 		settingRow{
-			key: "ollama.instructions_file", name: "Reset instructions", kind: rowAction, verb: "reset",
-			value: "use the built-in instructions", applies: appliesNextDraft,
+			key: "ollama.instructions_file", name: "Reset instructions", kind: rowAction, verb: "reset", group: drafting,
+			value: dimStyle.Render("use the built-in instructions"), applies: appliesNextDraft,
 			help: "Drafts go back to the built-in prompt; your instructions file is kept",
 			run:  (*app).resetInstructions,
 		},
 	)
 }
 
-// writerModelRow lists the installed models with ✓ on the configured one. A
-// configured model Ollama does not have is listed dim as not pulled.
-func (a app) writerModelRow() settingRow {
+// writerModelRows list the installed models that can draft, with ✓ on the
+// configured one and each model's size dim beside it. A configured model
+// Ollama does not have is listed dim as not pulled; models that cannot draft
+// are left out, with a note saying how many.
+func (a app) writerModelRows() []settingRow {
 	model := a.cfg().Ollama.Model
 	m := a.settings.models
 	row := settingRow{key: "ollama.model", name: "Model", kind: rowPick, applies: appliesNextDraft,
+		desc: "enter chooses this model for drafts",
 		help: "The Ollama model that drafts lyrics and the style"}
-	if !m.loaded {
+	if !a.modelsCurrent() {
 		row.kind, row.value = rowInfo, "loading installed models…"
-		return row
+		return []settingRow{row}
 	}
-	names := m.names
+	chat, hidden := a.chatModels()
+	names := make([]string, len(chat))
+	for i, info := range chat {
+		names[i] = info.Name
+		row.extras = append(row.extras, modelSize(info))
+	}
 	row.options = slices.Clone(names)
 	row.muted = make([]bool, len(names))
 	row.current = slices.IndexFunc(names, func(n string) bool { return setup.ModelTag(n) == setup.ModelTag(model) })
+	row.count = fmt.Sprintf("%d installed", len(names))
 	if m.loading {
 		row.detail = "refreshing…"
 	}
@@ -153,11 +232,17 @@ func (a app) writerModelRow() settingRow {
 		row.muted = append(row.muted, true)
 		row.details = make([]string, len(row.options))
 		row.details[len(names)] = notPulled(model)
+		row.optionDescs = make([]string, len(row.options))
+		row.optionDescs[len(names)] = "enter pulls it through Ollama, then drafts use it"
 		row.current = len(names)
+		row.value = model
 	}
 	if len(row.options) == 0 {
 		row.kind, row.value = rowInfo, "Ollama has no models installed"
-		return row
+		if hidden > 0 {
+			row.value = "Ollama has no models that can draft"
+		}
+		return []settingRow{row}
 	}
 	row.set = func(a *app, i int) tea.Cmd {
 		if i >= len(names) {
@@ -170,7 +255,33 @@ func (a app) writerModelRow() settingRow {
 		a.saved("ollama.model", names[i], "Writer model: "+names[i], appliesNextDraft)
 		return nil
 	}
-	return row
+	if len(names) == 1 && row.current == 0 {
+		row.desc = "The only installed model that can draft; Other model takes any tag"
+	}
+	rows := []settingRow{row}
+	if hidden > 0 {
+		rows = append(rows, settingRow{name: "Model · hidden", kind: rowNote,
+			value: fmt.Sprintf("%d hidden: not chat models", hidden)})
+	}
+	return rows
+}
+
+// modelSize is a model's parameter size and quantisation, when known.
+func modelSize(info ollama.ModelInfo) string {
+	var parts []string
+	for _, p := range []string{info.ParameterSize, info.Quantization} {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+// modelsCurrent reports whether the loaded model list is from the Ollama
+// the config names now; a list from an earlier URL is never offered.
+func (a app) modelsCurrent() bool {
+	m := a.settings.models
+	return m.loaded && m.url == a.cfg().Ollama.URL
 }
 
 func notPulled(model string) string {
@@ -228,7 +339,7 @@ func (a *app) commitOtherModel(tag string) (tea.Cmd, error) {
 		return a.pullWriter(tag), nil
 	}
 	if !a.saveSetting("ollama.model", tag) {
-		return nil, nil
+		return nil, errSaveFailed
 	}
 	if m.err != nil {
 		a.settingsNote(fmt.Sprintf("%s · Writer model: %s · Ollama is not reachable, so it was not checked or pulled", capitalize(appliesNextDraft), tag))
@@ -238,52 +349,69 @@ func (a *app) commitOtherModel(tag string) (tea.Cmd, error) {
 	return nil, nil
 }
 
+// commitOllamaURL accepts an http or https URL with a host and no path,
+// query or fragment, and saves it without a trailing slash.
 func (a *app) commitOllamaURL(raw string) (tea.Cmd, error) {
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "http" && u.Scheme != "https" || u.Host == "" {
+	if err != nil || u.Scheme != "http" && u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
 		return nil, errors.New("Type a URL such as http://127.0.0.1:11434")
 	}
+	if strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return nil, errors.New("Type only the server address, such as http://127.0.0.1:11434, with no path after it")
+	}
+	raw = strings.TrimRight(raw, "/")
 	if !a.saved("ollama.url", raw, "Ollama URL: "+raw, appliesNextDraft) {
-		return nil, nil
+		return nil, errSaveFailed
 	}
 	return a.loadModels(), nil
 }
 
-// nudgeTemperature moves the temperature in tenths between 0.0 and 1.5.
-func (a *app) nudgeTemperature(delta int) tea.Cmd {
-	cur := int(math.Round(a.cfg().Ollama.Temperature * 10))
-	next := min(max(cur+delta, 0), 15)
-	if next == cur {
-		a.settingsNote(fmt.Sprintf("Temperature is at its limit, %.1f", float64(cur)/10))
-		return nil
-	}
-	v := float64(next) / 10
-	a.saved("ollama.temperature", v, fmt.Sprintf("Temperature: %.1f", v), appliesNextDraft)
-	return nil
+// instructionsPath is the one writing instructions file songsmith makes,
+// beside the config file.
+func (a app) instructionsPath() string {
+	return filepath.Join(filepath.Dir(a.d.Config.Path()), "instructions.txt")
 }
 
-// openInstructions edits the writing instructions file. With none set, the
-// built-in prompt is copied into a new file beside the config file first.
+// openInstructions edits the writing instructions file. With none set it
+// uses instructions.txt beside the config file, writing the built-in prompt
+// there first when that file does not exist yet.
 func (a *app) openInstructions() tea.Cmd {
 	path := a.cfg().Ollama.InstructionsFile
 	if path == "" {
-		p, err := newInstructionsFile(filepath.Dir(a.d.Config.Path()), writer.BuiltinInstructions)
+		path = a.instructionsPath()
+		created, err := createInstructionsFile(path, writer.BuiltinInstructions)
 		if err != nil {
 			a.settingsError("Could not write the instructions file: " + err.Error())
 			return nil
 		}
-		if !a.saveSetting("ollama.instructions_file", p) {
+		if !a.saveSetting("ollama.instructions_file", path) {
+			if created {
+				os.Remove(path)
+			}
 			return nil
 		}
-		path = p
 	}
 	return a.editInstructions(path)
 }
 
-// editInstructions opens the instructions file at path in an editor and
-// reports back with instructionsEditedMsg. It is the one place that chooses
-// the editor.
+// editInstructions opens the instructions file at path in the text editor
+// inside Settings. It is the one place that chooses the editor.
 func (a *app) editInstructions(path string) tea.Cmd {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		a.settingsError("Could not read the instructions file: " + err.Error())
+		return nil
+	}
+	ed := newTextEditor("Writing instructions", strings.TrimRight(string(data), "\n"), false)
+	ed.normalKeys = settingsTextNormalKeys
+	a.settings.text = &settingsText{ed: ed, path: path}
+	a.layoutSettingsText()
+	a.clearSettingsNote()
+	return nil
+}
+
+// externalInstructions hands the instructions file to $VISUAL or $EDITOR.
+func (a *app) externalInstructions(path string) tea.Cmd {
 	return tea.ExecProcess(editorCommand(path), func(err error) tea.Msg {
 		return instructionsEditedMsg{path: path, err: err}
 	})
@@ -301,39 +429,31 @@ func (a *app) receiveInstructions(msg instructionsEditedMsg) {
 		a.settingsError("The editor failed: " + msg.err.Error())
 		return
 	}
-	if _, err := writer.Instructions(msg.path); err != nil {
-		a.settingsError(err.Error() + "; drafts use the built-in instructions until it has text")
-		return
-	}
-	a.settingsNote(capitalize(appliesNextDraft) + " · Writing instructions saved in " + msg.path)
+	a.checkInstructions(msg.path)
 }
 
-// newInstructionsFile writes text to instructions.txt in dir, or to the
-// first free instructions-N.txt, so an earlier file is never overwritten.
-func newInstructionsFile(dir, text string) (string, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
+// createInstructionsFile writes text to path unless a file is already
+// there, which is kept as it is. created says whether this call made it.
+func createInstructionsFile(path, text string) (created bool, err error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, err
 	}
-	for n := 1; n < 100; n++ {
-		name := "instructions.txt"
-		if n > 1 {
-			name = fmt.Sprintf("instructions-%d.txt", n)
-		}
-		path := filepath.Join(dir, name)
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-		if errors.Is(err, fs.ErrExist) {
-			continue
-		}
-		if err != nil {
-			return "", err
-		}
-		if _, err := f.WriteString(text); err != nil {
-			f.Close()
-			return "", err
-		}
-		return path, f.Close()
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if errors.Is(err, fs.ErrExist) {
+		return false, nil
 	}
-	return "", fmt.Errorf("no free instructions file name in %s", dir)
+	if err != nil {
+		return false, err
+	}
+	_, werr := f.WriteString(text)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		os.Remove(path)
+		return false, werr
+	}
+	return true, nil
 }
 
 func (a *app) resetInstructions() tea.Cmd {
@@ -342,6 +462,6 @@ func (a *app) resetInstructions() tea.Cmd {
 		a.settingsNote("Drafts already use the built-in instructions")
 		return nil
 	}
-	a.saved("ollama.instructions_file", "", "Writing instructions: built-in (your file stays at "+path+")", appliesNextDraft)
+	a.saved("ollama.instructions_file", "", "Writing instructions: built-in (your file is kept at "+path+")", appliesNextDraft)
 	return nil
 }

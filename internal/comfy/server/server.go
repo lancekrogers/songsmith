@@ -47,10 +47,17 @@ type Status struct {
 	PID     int
 	GPUOnly bool
 	Device  string
+	// OtherPort is the port of a server songsmith started that still runs
+	// on a port other than the configured one; Stop stops it.
+	OtherPort int
 }
 
 func (m *Manager) Status(ctx context.Context) (Status, error) {
 	var st Status
+	pid, port, ours := m.ourPID()
+	if ours && port != m.cfg.Port {
+		st.OtherPort, st.PID = port, pid
+	}
 	stats, err := m.client.SystemStats(ctx)
 	if err != nil {
 		return st, nil
@@ -60,25 +67,51 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 	if len(stats.Devices) > 0 {
 		st.Device = stats.Devices[0].Type
 	}
-	if pid, ok := m.ourPID(); ok {
+	if ours && port == m.cfg.Port {
 		st.Managed, st.PID = true, pid
 	}
 	return st, nil
 }
 
-// ourPID returns the pid from the pid file when that process is still the
-// ComfyUI songsmith started, guarding against pid reuse after a crash or reboot.
-func (m *Manager) ourPID() (int, bool) {
-	pid, ok := m.readPID()
+// InstallDir asks the server on the configured port which folder it runs
+// from: the parent of its first custom_nodes folder. It is "" when the
+// server does not say, or was started with --base-directory, which moves
+// that folder away from the install.
+func (m *Manager) InstallDir(ctx context.Context) (string, error) {
+	stats, err := m.client.SystemStats(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, arg := range stats.System.Argv {
+		if arg == "--base-directory" || strings.HasPrefix(arg, "--base-directory=") {
+			return "", nil
+		}
+	}
+	paths, err := m.client.FolderPaths(ctx)
+	if err != nil {
+		return "", err
+	}
+	nodes := paths["custom_nodes"]
+	if len(nodes) == 0 || !filepath.IsAbs(nodes[0]) {
+		return "", nil
+	}
+	return filepath.Dir(filepath.Clean(nodes[0])), nil
+}
+
+// ourPID returns the pid and port from the pid file when that process is
+// still the ComfyUI songsmith started, guarding against pid reuse after a
+// crash or reboot.
+func (m *Manager) ourPID() (pid, port int, ok bool) {
+	pid, port, ok = m.readPID()
 	if !ok || !alive(pid) {
-		return 0, false
+		return 0, 0, false
 	}
 	out, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
-		return 0, false
+		return 0, 0, false
 	}
 	cmdline := string(out)
-	return pid, strings.Contains(cmdline, "main.py") && strings.Contains(cmdline, "--port "+strconv.Itoa(m.cfg.Port))
+	return pid, port, strings.Contains(cmdline, "main.py") && strings.Contains(cmdline, "--port "+strconv.Itoa(port))
 }
 
 // Start launches ComfyUI unless one is already listening, then waits until
@@ -88,7 +121,7 @@ func (m *Manager) Start(ctx context.Context) (Status, error) {
 	if st, _ := m.Status(ctx); st.Running {
 		return st, nil
 	}
-	if _, ok := m.ourPID(); ok {
+	if _, port, ok := m.ourPID(); ok && port == m.cfg.Port {
 		// A server songsmith started is still loading; wait for it instead of
 		// launching a second one.
 		return m.waitReady(ctx, nil)
@@ -121,7 +154,7 @@ func (m *Manager) Start(ctx context.Context) (Status, error) {
 	pid := cmd.Process.Pid
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
-	if err := os.WriteFile(m.pidPath(), []byte(strconv.Itoa(pid)), 0o644); err != nil {
+	if err := os.WriteFile(m.pidPath(), fmt.Appendf(nil, "%d %d", pid, m.cfg.Port), 0o644); err != nil {
 		_ = cmd.Process.Kill()
 		return Status{}, fmt.Errorf("write pid file: %w", err)
 	}
@@ -167,9 +200,10 @@ func (m *Manager) Ensure(ctx context.Context) error {
 // ErrNotManaged means a server is running that songsmith did not start.
 var ErrNotManaged = errors.New("comfyui is running but was not started by songsmith; stop it yourself")
 
-// Stop terminates a server that songsmith started.
+// Stop terminates a server that songsmith started, on the configured port
+// or the one it was started on.
 func (m *Manager) Stop(ctx context.Context) error {
-	pid, ok := m.ourPID()
+	pid, _, ok := m.ourPID()
 	if !ok {
 		_ = os.Remove(m.pidPath())
 		if st, _ := m.Status(ctx); st.Running {
@@ -194,13 +228,28 @@ func (m *Manager) Stop(ctx context.Context) error {
 	return os.Remove(m.pidPath())
 }
 
-func (m *Manager) readPID() (int, bool) {
+// readPID reads "pid port" from the pid file. A file from before the port
+// was recorded holds only the pid, and counts as the configured port.
+func (m *Manager) readPID() (pid, port int, ok bool) {
 	data, err := os.ReadFile(m.pidPath())
 	if err != nil {
-		return 0, false
+		return 0, 0, false
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	return pid, err == nil && pid > 0
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 || len(fields) > 2 {
+		return 0, 0, false
+	}
+	pid, err = strconv.Atoi(fields[0])
+	if err != nil || pid <= 0 {
+		return 0, 0, false
+	}
+	port = m.cfg.Port
+	if len(fields) == 2 {
+		if port, err = strconv.Atoi(fields[1]); err != nil || port <= 0 {
+			return 0, 0, false
+		}
+	}
+	return pid, port, true
 }
 
 func alive(pid int) bool {

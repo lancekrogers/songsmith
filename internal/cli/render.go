@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"context"
+
 	"github.com/lancekrogers/songsmith/internal/backend"
 	"github.com/lancekrogers/songsmith/internal/comfy/server"
 	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/library"
+	"github.com/lancekrogers/songsmith/internal/ollama"
 	"github.com/lancekrogers/songsmith/internal/queue"
 )
 
@@ -22,5 +25,17 @@ func newRenderer(live *config.Live) *renderer {
 	m := server.New(cfg.ComfyUI, cfg.StateDir)
 	b := backend.NewComfyMiniMax(m.Client(), backend.StarterFunc(m.Ensure), live.Get)
 	store := library.NewStore(cfg.LibraryDir)
-	return &renderer{store: store, server: m, backend: b, queue: queue.New(store, b)}
+	q := queue.New(store, b)
+	q.BeforeRender(func(ctx context.Context) { unloadWriter(ctx, live.Get().Ollama) })
+	return &renderer{store: store, server: m, backend: b, queue: q}
+}
+
+// unloadWriter asks Ollama to drop the writer model before a render, when
+// the config says to. It is best effort: an Ollama that is not running, or
+// one that does not answer, changes nothing.
+func unloadWriter(ctx context.Context, o config.Ollama) {
+	if !o.UnloadBeforeRender || o.Model == "" {
+		return
+	}
+	_ = ollama.NewClient(o.URL).Unload(ctx, o.Model)
 }

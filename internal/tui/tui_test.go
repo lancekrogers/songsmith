@@ -52,6 +52,7 @@ func testConfig(t *testing.T) *config.Live {
 	cfg.StateDir = filepath.Join(dir, "state")
 	cfg.ComfyUI.Dir = filepath.Join(dir, "comfyui")
 	cfg.ComfyUI.Port = 18188
+	cfg.Ollama.URL = "http://127.0.0.1:1"
 	return config.NewLive(filepath.Join(dir, "config.yaml"), cfg)
 }
 
@@ -214,7 +215,7 @@ func TestDraftFailureFallsBackToManualEdit(t *testing.T) {
 		t.Fatalf("drafting %v msg %q", m.compose.drafting, m.compose.msg)
 	}
 	m, _ = send(t, m, key("ctrl+s"))
-	if m.screen != screenCompose || !strings.Contains(m.compose.msg, "lyrics are empty") {
+	if m.screen != screenCompose || !strings.Contains(m.compose.msg, "Nothing to render yet: ctrl+g drafts lyrics and style from your idea") {
 		t.Fatalf("empty form should not save: screen %v msg %q", m.screen, m.compose.msg)
 	}
 	if songs, _ := store.List(); len(songs) != 0 {
@@ -391,6 +392,7 @@ func TestNewSongsUseConfiguredDefaultLength(t *testing.T) {
 	cfg.Render.DefaultSeconds = 75
 	m.d.Config.Replace(cfg)
 	m = nav(t, m, "n")
+	m, _ = send(t, m, key("tab"))
 	m, _ = send(t, m, key("tab"))
 	if m.compose.focus != rowTitle || m.compose.seconds != 75 {
 		t.Fatalf("focus %v seconds %v", m.compose.focus, m.compose.seconds)

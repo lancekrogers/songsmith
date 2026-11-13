@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -17,7 +20,7 @@ type Client struct {
 }
 
 func NewClient(baseURL string) *Client {
-	return &Client{base: baseURL, http: &http.Client{Timeout: 10 * time.Minute}}
+	return &Client{base: strings.TrimRight(baseURL, "/"), http: &http.Client{Timeout: 10 * time.Minute}}
 }
 
 type Message struct {
@@ -33,6 +36,9 @@ type ChatRequest struct {
 	Think   *bool          `json:"think,omitempty"`
 	Options map[string]any `json:"options,omitempty"`
 	Stream  bool           `json:"stream"`
+	// KeepAlive is how long the model stays loaded after the request: a
+	// duration string such as "5m", or seconds. nil leaves it to Ollama.
+	KeepAlive any `json:"keep_alive,omitempty"`
 }
 
 type chatResponse struct {
@@ -53,8 +59,70 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (string, error) {
 	return resp.Message.Content, nil
 }
 
+// KeepAlive turns a keep_alive setting into what the API takes: a number of
+// seconds for a bare number, the duration string otherwise. Blank, or a value
+// Ollama would reject, is nil, which leaves it to Ollama.
+func KeepAlive(s string) any {
+	s = strings.TrimSpace(s)
+	if s == "" || !ValidKeepAlive(s) {
+		return nil
+	}
+	if n, err := strconv.Atoi(s); err == nil {
+		return n
+	}
+	return s
+}
+
+// ValidKeepAlive reports whether s is a keep_alive Ollama accepts: a whole
+// number of seconds or a Go duration such as "5m" or "-1m".
+func ValidKeepAlive(s string) bool {
+	s = strings.TrimSpace(s)
+	if _, err := strconv.Atoi(s); err == nil {
+		return true
+	}
+	_, err := time.ParseDuration(s)
+	return err == nil
+}
+
+// Unload asks Ollama to drop model from memory now: a chat request with no
+// messages and keep_alive 0.
+func (c *Client) Unload(ctx context.Context, model string) error {
+	var resp chatResponse
+	if err := c.post(ctx, "/api/chat", map[string]any{"model": model, "messages": []Message{}, "keep_alive": 0, "stream": false}, &resp); err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("ollama: %s", resp.Error)
+	}
+	return nil
+}
+
 // Models lists the installed model names.
 func (c *Client) Models(ctx context.Context) ([]string, error) {
+	infos, err := c.ModelInfos(ctx)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(infos))
+	for _, m := range infos {
+		names = append(names, m.Name)
+	}
+	return names, nil
+}
+
+// ModelInfo is one installed model as /api/tags describes it. Older servers
+// leave Capabilities out; nil means unknown.
+type ModelInfo struct {
+	Name          string
+	Family        string
+	Families      []string
+	ParameterSize string
+	Quantization  string
+	Capabilities  []string
+}
+
+// ModelInfos lists the installed models with what /api/tags says of them.
+func (c *Client) ModelInfos(ctx context.Context) ([]ModelInfo, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/api/tags", nil)
 	if err != nil {
 		return nil, err
@@ -69,17 +137,56 @@ func (c *Client) Models(ctx context.Context) ([]string, error) {
 	}
 	var tags struct {
 		Models []struct {
-			Name string `json:"name"`
+			Name    string `json:"name"`
+			Details struct {
+				Family            string   `json:"family"`
+				Families          []string `json:"families"`
+				ParameterSize     string   `json:"parameter_size"`
+				QuantizationLevel string   `json:"quantization_level"`
+			} `json:"details"`
+			Capabilities []string `json:"capabilities"`
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
 		return nil, fmt.Errorf("decode ollama tags: %w", err)
 	}
-	names := make([]string, 0, len(tags.Models))
+	out := make([]ModelInfo, 0, len(tags.Models))
 	for _, m := range tags.Models {
-		names = append(names, m.Name)
+		out = append(out, ModelInfo{Name: m.Name, Family: m.Details.Family, Families: m.Details.Families,
+			ParameterSize: m.Details.ParameterSize, Quantization: m.Details.QuantizationLevel, Capabilities: m.Capabilities})
 	}
-	return names, nil
+	return out, nil
+}
+
+// Capabilities asks /api/show what model can do, such as "completion" or
+// "embedding". A server that does not say returns nil.
+func (c *Client) Capabilities(ctx context.Context, model string) ([]string, error) {
+	var resp struct {
+		Capabilities []string `json:"capabilities"`
+	}
+	if err := c.post(ctx, "/api/show", map[string]string{"model": model}, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Capabilities, nil
+}
+
+// CanChat reports whether m can write text. Capabilities decide when known:
+// a model without "completion" cannot. Without them, an embedding family or
+// name marks a model that cannot; anything else is assumed to.
+func (m ModelInfo) CanChat() bool {
+	if m.Capabilities != nil {
+		return slices.Contains(m.Capabilities, "completion")
+	}
+	if strings.Contains(strings.ToLower(m.Name), "embed") {
+		return false
+	}
+	for _, f := range append([]string{m.Family}, m.Families...) {
+		f = strings.ToLower(f)
+		if strings.Contains(f, "embed") || strings.Contains(f, "bert") {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Client) post(ctx context.Context, path string, body, out any) error {

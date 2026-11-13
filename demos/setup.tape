@@ -38,8 +38,11 @@ Sleep 3.5s
 Enter
 Sleep 3.5s
 
-# Install everything missing runs the plan in order.
-Down@400ms 8
+# Install everything missing runs the plan in order: G goes to the last
+# row, Re-run checks, and the install row is just above it.
+Type "G"
+Sleep 600ms
+Up
 Sleep 2s
 Enter
 Sleep 6s

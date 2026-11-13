@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"slices"
+	"strconv"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -69,50 +69,108 @@ func (a app) renderRows() []settingRow {
 	for i, s := range defaultLengths {
 		lengths[i] = minSec(s)
 	}
-	rows := []settingRow{
-		{key: "render.steps", name: "Steps", kind: rowSlider, value: fmt.Sprint(r.Steps), applies: appliesNextRender,
-			help: "Diffusion steps, 10 to 60: more can add detail and take longer",
+	const quality, songs = "Quality", "New songs"
+	return []settingRow{
+		{key: "render.steps", name: "Steps", kind: rowSlider, group: quality, value: fmt.Sprint(r.Steps), applies: appliesNextRender,
+			lo: 10, hi: 60, at: float64(r.Steps), scale: "10–60",
+			help: "More steps render slower and can come out cleaner",
 			nudge: func(a *app, d int) tea.Cmd {
-				return a.nudgeInt("render.steps", "Steps", a.cfg().Render.Steps, 10, 60, 1, d)
+				return a.nudgeInt("render.steps", "Steps", a.cfg().Render.Steps, 10, 60, 1, 1, d, appliesNextRender)
+			},
+			run: func(a *app) tea.Cmd {
+				return a.typeInt("render.steps", "Steps", a.cfg().Render.Steps, 1, appliesNextRender)
 			}},
-		{key: "render.cfg_scale", name: "CFG scale", kind: rowSlider, value: fmt.Sprintf("%.1f", r.CFGScale), applies: appliesNextRender,
-			help:  "How closely the render follows the style, 1.0 to 4.0",
-			nudge: (*app).nudgeCFG},
-		{key: "render.top_k", name: "Top-k", kind: rowSlider, value: fmt.Sprint(r.TopK), applies: appliesNextRender,
-			help: "How many candidates the model samples from, 10 to 200",
+		{key: "render.cfg_scale", name: "CFG scale", kind: rowSlider, group: quality, value: fmt.Sprintf("%.1f", r.CFGScale), applies: appliesNextRender,
+			lo: 1, hi: 4, at: r.CFGScale, scale: "1.0–4.0",
+			help:  "Higher follows the style more closely; lower leaves the model freer",
+			nudge: (*app).nudgeCFG,
+			run: func(a *app) tea.Cmd {
+				return a.typeFloat("render.cfg_scale", "CFG scale", a.cfg().Render.CFGScale, 0, true, appliesNextRender)
+			}},
+		{key: "render.top_k", name: "Top-k", kind: rowSlider, group: quality, value: fmt.Sprint(r.TopK), applies: appliesNextRender,
+			lo: 10, hi: 200, at: float64(r.TopK), scale: "10–200",
+			help: "How many candidates each step picks from: higher varies more, lower plays safe",
 			nudge: func(a *app, d int) tea.Cmd {
-				return a.nudgeInt("render.top_k", "Top-k", a.cfg().Render.TopK, 10, 200, 5, d)
+				return a.nudgeInt("render.top_k", "Top-k", a.cfg().Render.TopK, 10, 200, 1, 5, d, appliesNextRender)
+			},
+			run: func(a *app) tea.Cmd {
+				return a.typeInt("render.top_k", "Top-k", a.cfg().Render.TopK, 1, appliesNextRender)
 			}},
-		{key: "render.default_seconds", name: "Default length", kind: rowChoice, value: minSec(r.DefaultSeconds),
+		{key: "render.default_seconds", name: "Default length", kind: rowChoice, group: songs, value: minSec(r.DefaultSeconds),
 			options: lengths, current: slices.Index(defaultLengths, r.DefaultSeconds), applies: appliesNewSong,
-			help: "The length a new song starts with; each song can change it",
+			help: "The length a new song starts with; each song can change it. Enter types any length from 0:10 to 5:00",
+			run:  (*app).typeLength,
 			set: func(a *app, i int) tea.Cmd {
 				a.saved("render.default_seconds", defaultLengths[i], "Default length: "+minSec(defaultLengths[i]), appliesNewSong)
 				return nil
 			}},
 	}
+}
+
+// advancedRows are the expert knobs: the sampler and scheduler the running
+// ComfyUI server offers, and where Ollama and the server are.
+func (a app) advancedRows() []settingRow {
+	cfg, saved := a.cfg(), a.settings.saved
+	var rows []settingRow
 	s := a.settings.samplers
-	if !s.loaded || s.err != nil {
-		row := settingRow{name: "Sampler, scheduler", kind: rowInfo, value: r.Sampler + ", " + r.Scheduler,
-			detail: "start the server in Settings → Music engine to list the choices",
-			help:   "The choices come from the running ComfyUI server; start it in Settings → Music engine"}
+	if s.loaded && s.err == nil && len(s.samplers)+len(s.schedulers) > 0 {
+		rows = append(rows,
+			comboRow("Sampler", "render.sampler", s.samplers, cfg.Render.Sampler),
+			comboRow("Scheduler", "render.scheduler", s.schedulers, cfg.Render.Scheduler))
+	} else {
+		row := settingRow{name: "Sampler", kind: rowInfo, value: cfg.Render.Sampler + ", scheduler " + cfg.Render.Scheduler, group: "Sampling",
+			desc: "Which sampler and scheduler renders use",
+			help: "The choices come from the running ComfyUI server; start it in Settings → Server"}
+		note := "start the server in Settings → Server to list the choices"
 		if !s.loaded {
-			row.detail = "asking the ComfyUI server…"
+			note = "asking the ComfyUI server…"
 		}
-		return append(rows, row)
+		rows = append(rows, row, settingRow{name: "Sampler · note", kind: rowNote, value: note})
 	}
-	return append(rows,
-		comboRow("Sampler", "render.sampler", s.samplers, r.Sampler),
-		comboRow("Scheduler", "render.scheduler", s.schedulers, r.Scheduler),
-	)
+	const conn = "Connections"
+	url := settingRow{
+		key: "ollama.url", name: "Ollama URL", kind: rowText, value: cfg.Ollama.URL, group: conn,
+		applies: appliesNextDraft,
+		help:    "Where the Ollama server listens",
+		run: func(a *app) tea.Cmd {
+			return a.beginEdit("Ollama URL", a.cfg().Ollama.URL, (*app).commitOllamaURL)
+		},
+	}
+	host := settingRow{key: "comfyui.host", name: "ComfyUI host", kind: rowText, group: conn,
+		help: "The address the ComfyUI server listens on and songsmith connects to",
+		run: func(a *app) tea.Cmd {
+			return a.beginEdit("ComfyUI host", a.settings.saved.ComfyUI.Host, (*app).commitHost)
+		}}
+	restartValue(&host, saved.ComfyUI.Host, cfg.ComfyUI.Host)
+	port := settingRow{key: "comfyui.port", name: "ComfyUI port", kind: rowText, group: conn,
+		help: "The port the ComfyUI server listens on",
+		run: func(a *app) tea.Cmd {
+			return a.beginEdit("ComfyUI port", strconv.Itoa(a.settings.saved.ComfyUI.Port), (*app).commitPort)
+		}}
+	restartValue(&port, strconv.Itoa(saved.ComfyUI.Port), strconv.Itoa(cfg.ComfyUI.Port))
+	a.stopFirstHelp(&port, strconv.Itoa(saved.ComfyUI.Port), strconv.Itoa(cfg.ComfyUI.Port))
+	unload := settingRow{key: "ollama.unload_before_render", name: "Unload the writer before rendering", kind: rowToggle,
+		group: "Memory", options: []string{"OFF", "ON"}, applies: appliesNextRender,
+		desc: "frees the writer model's memory while a song renders",
+		help: "When a song starts rendering, songsmith asks Ollama to unload the writer model, so the music model has its memory"}
+	if cfg.Ollama.UnloadBeforeRender {
+		unload.current = 1
+	}
+	unload.set = func(a *app, i int) tea.Cmd {
+		on := i == 1
+		a.saved("ollama.unload_before_render", on, "Unload the writer before rendering: "+unload.options[i], appliesNextRender)
+		return nil
+	}
+	return append(rows, url, host, port, unload)
 }
 
 // comboRow is a list read from the server, ✓ on the configured value. A
 // configured value the server does not offer is listed dim.
 func comboRow(name, key string, options []string, current string) settingRow {
 	row := settingRow{key: key, name: name, kind: rowPick, options: slices.Clone(options), muted: make([]bool, len(options)),
-		current: slices.Index(options, current), applies: appliesNextRender,
-		help: "Listed by the running ComfyUI server"}
+		current: slices.Index(options, current), applies: appliesNextRender, value: current,
+		count: fmt.Sprintf("%d on this server", len(options)),
+		help:  "Listed by the running ComfyUI server"}
 	if row.current < 0 && current != "" {
 		row.options = append(row.options, current+" · not on this server")
 		row.muted = append(row.muted, true)
@@ -130,29 +188,4 @@ func comboRow(name, key string, options []string, current string) settingRow {
 		return nil
 	}
 	return row
-}
-
-// nudgeInt steps an integer setting within [lo, hi], first snapping a value
-// saved outside the range back into it.
-func (a *app) nudgeInt(key, name string, cur, lo, hi, step, delta int) tea.Cmd {
-	next := min(max(cur+delta*step, lo), hi)
-	if next == cur {
-		a.settingsNote(fmt.Sprintf("%s is at its limit, %d", name, cur))
-		return nil
-	}
-	a.saved(key, next, fmt.Sprintf("%s: %d", name, next), appliesNextRender)
-	return nil
-}
-
-// nudgeCFG steps the CFG scale in tenths between 1.0 and 4.0.
-func (a *app) nudgeCFG(delta int) tea.Cmd {
-	cur := int(math.Round(a.cfg().Render.CFGScale * 10))
-	next := min(max(cur+delta, 10), 40)
-	if next == cur {
-		a.settingsNote(fmt.Sprintf("CFG scale is at its limit, %.1f", float64(cur)/10))
-		return nil
-	}
-	v := float64(next) / 10
-	a.saved("render.cfg_scale", v, fmt.Sprintf("CFG scale: %.1f", v), appliesNextRender)
-	return nil
 }

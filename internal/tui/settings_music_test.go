@@ -101,14 +101,15 @@ func TestMusicModelListsVariantsAndSavesOnlyInstalledOnes(t *testing.T) {
 	a = openSettingsOn(t, a, sectionMusicModel)
 	view := plain(a)
 	for _, s := range []string{
-		"Text encoder",
-		"▸ ✓ Text encoder bf16 (pruned) · 16.7 GB · installed · recommended",
-		"Text encoder int8 (pruned) · 9.2 GB · installed · for NVIDIA 16 GB",
-		"Text encoder bf16 (full) · 18.5 GB · not on disk",
-		"Diffusion model",
-		"✓ DiT fp16 · 4.9 GB · installed · recommended",
-		"DiT fp32 · 9.8 GB · not on disk",
-		"VAE           VAE · 0.2 GB · installed",
+		"Text encoder · bf16 (pruned)",
+		"▸ ✓ bf16 (pruned) · 16.7 GB · installed · recommended",
+		"minimax_music3_text_encoder_pruned_bf16.safetensors",
+		"int8 (pruned) · 9.2 GB · installed · for NVIDIA 16 GB",
+		"bf16 (full) · 18.5 GB · not on disk",
+		"Diffusion model · fp16",
+		"✓ fp16 · 4.9 GB · installed · recommended",
+		"fp32 · 9.8 GB · not on disk",
+		"VAE · 0.2 GB · installed · files in",
 	} {
 		if !strings.Contains(view, s) {
 			t.Fatalf("Music model missing %q:\n%s", s, view)
@@ -134,7 +135,7 @@ func TestMusicModelListsVariantsAndSavesOnlyInstalledOnes(t *testing.T) {
 	if len(*saves) != 1 || (*saves)[0] != want || a.cfg().ComfyUI.TextEncoder != want.value {
 		t.Fatalf("saves %v", *saves)
 	}
-	if !strings.Contains(plain(a), "Applies to the next render · Text encoder:") || !strings.Contains(plain(a), "✓ Text encoder int8 (pruned)") {
+	if !strings.Contains(plain(a), "Applies to the next render · Text encoder:") || !strings.Contains(plain(a), "✓ int8 (pruned)") {
 		t.Fatalf("after choosing:\n%s", plain(a))
 	}
 }
@@ -167,13 +168,13 @@ func objectInfoServer(t *testing.T) func(context.Context, string) (comfy.NodeInf
 	return comfy.NewClient(srv.URL).ObjectInfo
 }
 
-func TestRenderListsSamplersFromTheRunningServer(t *testing.T) {
+func TestAdvancedListsSamplersFromTheRunningServer(t *testing.T) {
 	a, srv := newSettingsApp(t, readyChecks())
 	srv.objectInfo = objectInfoServer(t)
 	a, _ = send(t, a, tea.WindowSizeMsg{Width: 100, Height: 40})
-	a = openSettingsOn(t, a, sectionRender)
+	a = openSettingsOn(t, a, sectionAdvanced)
 	view := plain(a)
-	for _, s := range []string{"Sampler\n", "✓ euler", "euler_ancestral", "dpmpp_2m", "Scheduler", "✓ simple", "karras"} {
+	for _, s := range []string{"Sampler · euler · 3 on this server", "✓ euler", "euler_ancestral", "dpmpp_2m", "Scheduler", "✓ simple", "karras"} {
 		if !strings.Contains(view, s) {
 			t.Fatalf("Render missing %q:\n%s", s, view)
 		}
@@ -198,17 +199,17 @@ func TestRenderListsSamplersFromTheRunningServer(t *testing.T) {
 	}
 }
 
-func TestRenderWithoutAServerSaysToStartIt(t *testing.T) {
+func TestAdvancedWithoutAServerSaysToStartIt(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
 	a, _ = send(t, a, tea.WindowSizeMsg{Width: 140, Height: 30})
 	a, cmd := send(t, a, switchScreenMsg(screenSettings))
-	a, load := send(t, a, settingsKey("4"))
+	a, load := send(t, a, settingsKey("6"))
 	if !strings.Contains(plain(a), "asking the ComfyUI server…") {
 		t.Fatalf("no loading line:\n%s", plain(a))
 	}
 	a = settle(t, a, tea.Batch(cmd, load))
 	view := plain(a)
-	if !strings.Contains(view, "Sampler, scheduler  euler, simple  start the server in Settings → Music engine to list the choices") || strings.Contains(view, "Scheduler") {
+	if !strings.Contains(view, "Sampler       euler, scheduler simple") || !strings.Contains(view, "start the server in Settings → Server to list the choices") || strings.Contains(view, "Scheduler ·") {
 		t.Fatalf("no-server line:\n%s", view)
 	}
 	a, _ = send(t, a, samplersLoadedMsg{seq: a.settings.samplers.seq - 1, samplers: []string{"stale"}})

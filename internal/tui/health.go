@@ -26,20 +26,24 @@ type healthState struct {
 	// planned is false until a run with an Installer has finished.
 	plan    setup.Plan
 	planned bool
+	// serverDir is the ComfyUI folder of a server running on the configured
+	// port, found while the install folder has no ComfyUI; "" otherwise.
+	serverDir string
 }
 
 type healthDoneMsg struct {
-	seq     int
-	checks  []health.Check
-	plan    setup.Plan
-	planned bool
+	seq       int
+	checks    []health.Check
+	plan      setup.Plan
+	planned   bool
+	serverDir string
 }
 
 // startHealth runs the checks in the background against the current settings.
 func (a app) startHealth() (app, tea.Cmd) {
 	a.health.seq++
 	a.health.running = true
-	seq, run, cfg, ctx, in := a.health.seq, a.d.Checks, a.cfg(), a.ctx, a.d.Installer
+	seq, run, cfg, ctx, in, srv := a.health.seq, a.d.Checks, a.cfg(), a.ctx, a.d.Installer, a.comfyServer()
 	return a, a.events.run(func(send func(tea.Msg)) {
 		ctx, cancel := context.WithTimeout(ctx, healthTimeout)
 		defer cancel()
@@ -47,6 +51,9 @@ func (a app) startHealth() (app, tea.Cmd) {
 		var wg sync.WaitGroup
 		if in != nil {
 			wg.Go(func() { msg.plan, msg.planned = in.Plan(ctx, cfg), true })
+		}
+		if !hasComfyUI(cfg.ComfyUI.Dir) {
+			wg.Go(func() { msg.serverDir = runningServerDir(ctx, srv, cfg.ComfyUI.Dir) })
 		}
 		msg.checks = run(ctx, cfg)
 		wg.Wait()

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -41,6 +42,37 @@ func TestStatusReportsGPUOnly(t *testing.T) {
 	}
 	if err := m.Stop(t.Context()); err != ErrNotManaged {
 		t.Fatalf("stop on foreign server = %v", err)
+	}
+}
+
+func TestInstallDirIsTheParentOfTheCustomNodesFolder(t *testing.T) {
+	argv := `["main.py"]`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/system_stats":
+			io.WriteString(w, `{"system":{"argv":`+argv+`}}`)
+		case "/internal/folder_paths":
+			io.WriteString(w, `{"custom_nodes":["/srv/comfy/custom_nodes"],"vae":["/srv/comfy/models/vae"]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	host, port := hostPort(t, srv.URL)
+	m := New(config.ComfyUI{Host: host, Port: port}, t.TempDir())
+	if dir, err := m.InstallDir(t.Context()); err != nil || dir != "/srv/comfy" {
+		t.Fatalf("dir %q, err %v", dir, err)
+	}
+	argv = `["main.py","--base-directory","/data"]`
+	if dir, err := m.InstallDir(t.Context()); err != nil || dir != "" {
+		t.Fatalf("with --base-directory: dir %q, err %v", dir, err)
+	}
+	l, _ := net.Listen("tcp", "127.0.0.1:0")
+	_, closed := hostPort(t, "http://"+l.Addr().String())
+	l.Close()
+	m = New(config.ComfyUI{Host: "127.0.0.1", Port: closed}, t.TempDir())
+	if dir, err := m.InstallDir(t.Context()); err == nil || dir != "" {
+		t.Fatalf("no server: dir %q, err %v", dir, err)
 	}
 }
 
@@ -86,7 +118,7 @@ func TestStopIgnoresReusedPID(t *testing.T) {
 	if err := os.WriteFile(m.pidPath(), []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := m.ourPID(); ok {
+	if _, _, ok := m.ourPID(); ok {
 		t.Fatal("test process mistaken for ComfyUI")
 	}
 	if err := m.Stop(t.Context()); err != nil {
@@ -134,5 +166,78 @@ func TestStartWaitsForOurStartingServer(t *testing.T) {
 	}
 	if _, err := os.Stat(launched); err == nil {
 		t.Fatal("launched a second ComfyUI while ours was still starting")
+	}
+}
+
+// startFakeComfy runs a process whose command line looks like a ComfyUI
+// listening on port, in its own process group so Stop can signal it.
+func startFakeComfy(t *testing.T, port int) *exec.Cmd {
+	t.Helper()
+	fake := exec.Command("/bin/sh", "-c", "sleep 30; true", "main.py", "--port", strconv.Itoa(port))
+	fake.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := fake.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { fake.Wait(); close(done) }()
+	t.Cleanup(func() {
+		fake.Process.Kill()
+		<-done
+	})
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		out, _ := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(fake.Process.Pid)).Output()
+		if strings.Contains(string(out), "main.py") {
+			return fake
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("fake ComfyUI did not start")
+		}
+	}
+}
+
+func closedPort(t *testing.T) int {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+	return port
+}
+
+func TestAServerStartedOnAnEarlierPortIsStillOurs(t *testing.T) {
+	oldPort, newPort := closedPort(t), closedPort(t)
+	fake := startFakeComfy(t, oldPort)
+	state := t.TempDir()
+	m := New(config.ComfyUI{Host: "127.0.0.1", Port: newPort}, state)
+	if err := os.WriteFile(m.pidPath(), []byte(strconv.Itoa(fake.Process.Pid)+" "+strconv.Itoa(oldPort)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := m.Status(t.Context())
+	if st.Running || st.Managed || st.OtherPort != oldPort {
+		t.Fatalf("status %+v", st)
+	}
+	if err := m.Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if alive(fake.Process.Pid) {
+		if out, _ := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(fake.Process.Pid)).Output(); !strings.HasPrefix(strings.TrimSpace(string(out)), "Z") {
+			t.Fatal("the server on the earlier port is still running")
+		}
+	}
+	if _, err := os.Stat(m.pidPath()); !os.IsNotExist(err) {
+		t.Fatal("pid file kept")
+	}
+}
+
+func TestAPidFileWithoutAPortCountsAsTheConfiguredOne(t *testing.T) {
+	port := closedPort(t)
+	fake := startFakeComfy(t, port)
+	m := New(config.ComfyUI{Host: "127.0.0.1", Port: port}, t.TempDir())
+	if err := os.WriteFile(m.pidPath(), []byte(strconv.Itoa(fake.Process.Pid)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if pid, p, ok := m.ourPID(); !ok || pid != fake.Process.Pid || p != port {
+		t.Fatalf("ourPID = %d %d %v", pid, p, ok)
 	}
 }

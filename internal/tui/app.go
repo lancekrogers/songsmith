@@ -63,7 +63,11 @@ type (
 	switchScreenMsg screen
 	// openComposeMsg opens the song form on song, or on a new idea when nil.
 	// The form returns to the screen that opened it.
-	openComposeMsg struct{ song *library.Song }
+	// draft starts drafting from the song's idea as the form opens.
+	openComposeMsg struct {
+		song  *library.Song
+		draft bool
+	}
 	// openLibraryMsg opens the library with songID selected.
 	openLibraryMsg struct{ songID string }
 	quitMsg        struct{}
@@ -215,6 +219,7 @@ func (a app) update(msg tea.Msg) (app, tea.Cmd) {
 		a.health.running = false
 		a.health.done = true
 		a.health.checks = msg.checks
+		a.health.serverDir = msg.serverDir
 		if msg.planned {
 			a.health.plan, a.health.planned = msg.plan, true
 		}
@@ -258,10 +263,22 @@ func (a app) update(msg tea.Msg) (app, tea.Cmd) {
 		a.err = ""
 		a.compose.returnTo = a.screen
 		a.screen = screenCompose
-		if msg.song != nil {
-			return a, a.compose.startEdit(*msg.song, a.defaultSeconds())
+		var models tea.Cmd
+		if !a.settings.models.loading {
+			models = a.loadModels()
 		}
-		return a, a.compose.startEdit(library.Song{}, a.defaultSeconds())
+		song := library.Song{}
+		if msg.song != nil {
+			song = *msg.song
+		}
+		edit := a.compose.startEdit(song, a.defaultSeconds())
+		a.refreshFormSkips()
+		if msg.draft {
+			var draft tea.Cmd
+			a, draft = a.draftKeepingTitle()
+			edit = tea.Batch(edit, draft)
+		}
+		return a, tea.Batch(edit, models)
 	case openLibraryMsg:
 		a.library.selectID = msg.songID
 		a.selectPending()
@@ -270,10 +287,12 @@ func (a app) update(msg tea.Msg) (app, tea.Cmd) {
 		return a.quit()
 	case settingsAsync:
 		return a.receiveSettings(msg)
+	case useServerFolderMsg:
+		return a.receiveUseServerFolder(msg)
 	case tea.KeyMsg:
 		// The song form and the text editors handle ctrl+c themselves, so a
 		// reflex copy or cancel there never loses work.
-		if msg.String() == "ctrl+c" && a.screen != screenCompose {
+		if msg.String() == "ctrl+c" && a.screen != screenCompose && !(a.screen == screenSettings && a.settings.text != nil) {
 			return a.quit()
 		}
 	}

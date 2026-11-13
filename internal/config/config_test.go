@@ -109,3 +109,24 @@ func TestLoadFallsBackForNonPositiveDefaultSeconds(t *testing.T) {
 		}
 	}
 }
+
+func TestBaseURLBracketsAnIPv6Host(t *testing.T) {
+	for host, want := range map[string]string{"::1": "http://[::1]:8188", "127.0.0.1": "http://127.0.0.1:8188", "studio.local": "http://studio.local:8188"} {
+		if got := (ComfyUI{Host: host, Port: 8188}).BaseURL(); got != want {
+			t.Errorf("%s: %s, want %s", host, got, want)
+		}
+	}
+}
+
+func TestLoadExpandsABareTilde(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("library_dir: \"~\"\nstate_dir: ~/state\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil || cfg.LibraryDir != home || cfg.StateDir != filepath.Join(home, "state") {
+		t.Fatalf("%v %q %q", err, cfg.LibraryDir, cfg.StateDir)
+	}
+}

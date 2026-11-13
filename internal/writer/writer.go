@@ -184,6 +184,8 @@ type Writer struct {
 	model       string
 	temperature float64
 	system      string
+	numCtx      int
+	keepAlive   string
 }
 
 func New(llm Chatter, model string) *Writer {
@@ -192,6 +194,19 @@ func New(llm Chatter, model string) *Writer {
 
 func (w *Writer) WithTemperature(t float64) *Writer {
 	w.temperature = t
+	return w
+}
+
+// WithContext asks for a context of n tokens; 0 leaves it to Ollama.
+func (w *Writer) WithContext(n int) *Writer {
+	w.numCtx = n
+	return w
+}
+
+// WithKeepAlive sets how long Ollama keeps the model loaded after a draft;
+// blank leaves it to Ollama.
+func (w *Writer) WithKeepAlive(d string) *Writer {
+	w.keepAlive = d
 	return w
 }
 
@@ -284,15 +299,20 @@ func (w *Writer) Write(ctx context.Context, idea string, opts Options) (Draft, e
 		user.WriteString("\nThis is an instrumental: use only [Intro], [Instrumental], [Solo] and [Outro] tags with no sung lines.")
 	}
 	think := false
+	options := map[string]any{"temperature": w.temperature}
+	if w.numCtx > 0 {
+		options["num_ctx"] = w.numCtx
+	}
 	reply, err := w.llm.Chat(ctx, ollama.ChatRequest{
 		Model: w.model,
 		Messages: []ollama.Message{
 			{Role: "system", Content: w.system},
 			{Role: "user", Content: user.String()},
 		},
-		Format:  draftSchema,
-		Think:   &think,
-		Options: map[string]any{"temperature": w.temperature},
+		Format:    draftSchema,
+		Think:     &think,
+		Options:   options,
+		KeepAlive: ollama.KeepAlive(w.keepAlive),
 	})
 	if err != nil {
 		return Draft{}, fmt.Errorf("draft song with %s: %w", w.model, err)

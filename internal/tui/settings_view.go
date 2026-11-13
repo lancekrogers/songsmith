@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"math"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -42,43 +44,107 @@ func (a app) settingsContentWidth() int {
 // statusLines is how many lines the status takes under the section.
 const statusLines = 2
 
+// settingsChrome is what surrounds the section lines. Full: title, rule,
+// status and footer. Compact: title and one bottom line. On a narrow
+// terminal a section strip stands in for the sidebar. A screen too short
+// for all of it drops the rule, the title, the bottom lines, then the strip,
+// so at least one section line is always drawn.
+type settingsChrome struct {
+	title, rule, strip bool
+	bottom             int
+}
+
+func (c settingsChrome) lines() int {
+	n := c.bottom
+	for _, on := range []bool{c.title, c.rule, c.strip} {
+		if on {
+			n++
+		}
+	}
+	return n
+}
+
+func (a app) settingsHeight() int {
+	if a.height <= 0 {
+		return 24
+	}
+	return a.height
+}
+
+func (a app) settingsChrome() settingsChrome {
+	h := a.settingsHeight()
+	c := settingsChrome{title: true, rule: !a.settingsCompact(), strip: a.settingsSidebarWidth() == 0, bottom: statusLines + 1}
+	if a.settingsCompact() {
+		c.bottom = 1
+	}
+	if c.lines() >= h {
+		c.rule = false
+	}
+	if c.lines() >= h {
+		c.title = false
+	}
+	for c.lines() >= h && c.bottom > 0 {
+		c.bottom--
+	}
+	if c.lines() >= h {
+		c.strip = false
+	}
+	return c
+}
+
 // settingsBodyRows is the height of the sidebar and section area.
 func (a app) settingsBodyRows() int {
-	h := a.height
-	if h <= 0 {
-		h = 24
-	}
-	// Full: title, rule, status, footer. Compact: title and one bottom line.
-	chrome := 3 + statusLines
-	if a.settingsCompact() {
-		chrome = 2
-	}
-	if a.settingsSidebarWidth() == 0 {
-		chrome++
-	}
-	return max(h-chrome, 1)
+	return max(a.settingsHeight()-a.settingsChrome().lines(), 1)
 }
 
 // settingsListRows is how many section lines fit under the editor, if open.
 func (a app) settingsListRows() int {
 	rows := a.settingsBodyRows()
 	if a.settings.edit.active {
-		rows -= 2
+		rows -= len(a.editorLines())
 	}
 	return max(rows, 1)
 }
 
+// editorLines are the one-line editor and what is under it: why the value
+// was not saved, wrapped so a long path is read whole, or what the typed
+// value is, or a blank line.
+func (a app) editorLines() []string {
+	e := a.settings.edit
+	out := []string{"  " + selectedStyle.Render(e.label+": ") + e.input.View()}
+	switch {
+	case e.note != "":
+		style := warningStyle
+		if e.noteFailed {
+			style = errorStyle
+		}
+		for _, l := range wrapText(e.note, a.settingsContentWidth()-4) {
+			out = append(out, "    "+style.Render(l))
+		}
+	case e.hint != "":
+		out = append(out, "    "+dimStyle.Render(e.hint))
+	}
+	return append(out, "")
+}
+
 func (a app) settingsView() string {
+	if a.settings.text != nil {
+		return a.settingsTextView()
+	}
 	width := a.settingsWidth()
 	compact := a.settingsCompact()
 	body := a.settingsBodyRows()
+	chrome := a.settingsChrome()
 
-	parts := []string{headerStyle.Render("  ♪ Settings")}
-	if !compact {
+	var parts []string
+	if chrome.title {
+		parts = append(parts, headerStyle.Render("  ♪ Settings"))
+	}
+	if chrome.rule {
 		parts = append(parts, dimStyle.Render(strings.Repeat("─", width)))
 	}
 	side := a.settingsSidebarWidth()
-	if side == 0 {
+	if chrome.strip {
 		parts = append(parts, a.sectionStrip())
 	}
 
@@ -98,17 +164,21 @@ func (a app) settingsView() string {
 	parts = append(parts, content...)
 
 	keys := a.settingsKeys()
+	var bottom []string
 	switch {
 	case compact && a.settings.message != "":
-		parts = append(parts, a.messageStyle().Render("  "+a.settings.message))
+		bottom = []string{a.messageStyle().Render("  " + a.settings.message)}
+	case compact && a.focusedHelp() != "":
+		// Without room for the status area, say when a change applies here.
+		bottom = []string{dimStyle.Render("  " + a.focusedHelp())}
 	case compact:
-		parts = append(parts, footer(width, "  ", keys...))
+		bottom = []string{footer(width, "  ", keys...)}
 	default:
-		parts = append(parts, a.statusArea(width)...)
-		parts = append(parts, footer(width, "  ", keys...))
+		bottom = append(a.statusArea(width), footer(width, "  ", keys...))
 	}
+	parts = append(parts, bottom[:min(chrome.bottom, len(bottom))]...)
 	for i := range parts {
-		parts[i] = ansi.Truncate(parts[i], width, "…")
+		parts[i] = ansi.Truncate(parts[i], max(a.width, 0), "…")
 	}
 	return strings.Join(parts, "\n")
 }
@@ -120,23 +190,32 @@ func (a app) messageStyle() lipgloss.Style {
 	return statusStyle
 }
 
-// statusArea is the latest message or, without one, what the focused line
-// does and when a change applies, wrapped to statusLines lines.
+// statusArea is the latest message or, without one, when a change to the
+// focused line applies, with whatever of its help the line under it could
+// not show, wrapped to statusLines lines.
+// A new install folder waiting for a restart takes the first line until then.
 func (a app) statusArea(width int) []string {
+	var out []string
+	if a.settings.restartDir != "" {
+		line := "↻ " + restartNote + " · after restart: " + a.afterRestart()
+		out = append(out, "  "+warningStyle.Render(ansi.Truncate(line, max(width-4, 1), "…")))
+	}
 	text, style := a.settings.message, a.messageStyle()
 	if text == "" {
-		text, style = a.focusedHelp(), dimStyle
+		text, style = a.statusHelp(), dimStyle
 	}
+	n := statusLines - len(out)
 	wrapped := strings.Split(lipgloss.NewStyle().Width(max(width-4, 10)).Render(text), "\n")
-	out := make([]string, statusLines)
-	for i := range out {
-		if i < len(wrapped) {
-			line := strings.TrimRight(wrapped[i], " ")
-			if i == statusLines-1 && len(wrapped) > statusLines {
-				line = ansi.Truncate(line+" "+wrapped[i+1], width-4, "…")
-			}
-			out[i] = "  " + style.Render(line)
+	for i := range n {
+		if i >= len(wrapped) {
+			out = append(out, "")
+			continue
 		}
+		line := strings.TrimRight(wrapped[i], " ")
+		if i == n-1 && len(wrapped) > n {
+			line = ansi.Truncate(line+" "+strings.Join(wrapped[i+1:], " "), width-4, "…")
+		}
+		out = append(out, "  "+style.Render(line))
 	}
 	return out
 }
@@ -147,18 +226,42 @@ func (a app) focusedHelp() string {
 	if !ok {
 		return ""
 	}
-	help := row.help
-	if line.option >= 0 && line.option < len(row.details) && row.details[line.option] != "" {
-		help = row.details[line.option]
+	return joinHelp(row.applies, optionHelp(row, line.option))
+}
+
+func optionHelp(row settingRow, option int) string {
+	if option < 0 && row.kind == rowPick && len(row.options) == 1 {
+		option = 0
 	}
+	if option >= 0 && option < len(row.details) && row.details[option] != "" {
+		return row.details[option]
+	}
+	return row.help
+}
+
+func joinHelp(applies, help string) string {
 	var parts []string
-	if row.applies != "" {
-		parts = append(parts, capitalize(row.applies))
+	if applies != "" {
+		parts = append(parts, capitalize(applies))
 	}
 	if help != "" {
 		parts = append(parts, help)
 	}
 	return strings.Join(parts, " · ")
+}
+
+// statusHelp is focusedHelp less what the line under the row already says.
+func (a app) statusHelp() string {
+	row, line, ok := a.focusedSetting()
+	if !ok {
+		return ""
+	}
+	help := optionHelp(row, line.option)
+	rows, lines := a.settingsLayout()
+	if desc := a.focusedDescription(rows, lines); desc == help && a.descFits(desc, row.indent) {
+		help = ""
+	}
+	return joinHelp(row.applies, help)
 }
 
 func capitalize(s string) string {
@@ -171,19 +274,30 @@ func capitalize(s string) string {
 // settingsKeys names the keys that do something on the focused line.
 func (a app) settingsKeys() []string {
 	if a.settings.edit.active {
+		if a.settings.edit.complete != nil {
+			return []string{"enter save", "tab complete", "esc cancel"}
+		}
 		return []string{"enter save", "esc cancel"}
+	}
+	if a.settings.filter.on {
+		return []string{"type to filter", "↑/↓ move", "enter choose", "esc clear"}
 	}
 	keys := []string{"↑/↓ move", "←/→ section"}
 	if row, line, ok := a.focusedSetting(); ok {
 		switch {
-		case line.option >= 0:
+		case line.option >= 0 || row.kind == rowPick && len(row.options) == 1 && row.set != nil:
 			keys = append(keys, "enter choose")
+			if row.long() {
+				keys = append(keys, "/ filter")
+			}
+		case row.kind == rowChoice && row.run != nil:
+			keys = append(keys, "space/+/- step", "enter type")
 		case row.kind == rowChoice:
 			keys = append(keys, "enter/space/+/- step")
 		case row.kind == rowToggle:
 			keys = append(keys, "enter/space toggle")
 		case row.kind == rowSlider:
-			keys = append(keys, "+/- adjust")
+			keys = append(keys, "+/- adjust", "enter type")
 		case row.kind == rowText:
 			keys = append(keys, "enter edit")
 		case row.kind == rowAction && row.run != nil:
@@ -230,45 +344,100 @@ func padRight(s string, width int) string {
 	return s + strings.Repeat(" ", max(width-lipgloss.Width(s), 0))
 }
 
-// settingsContent is the visible window of the section, under the editor
+// settingsContent is the visible part of the section, under the editor
 // while one is open.
 func (a app) settingsContent() []string {
 	var out []string
 	if a.settings.edit.active {
-		out = append(out, "  "+selectedStyle.Render(a.settings.edit.label+": ")+a.settings.edit.input.View(), "")
+		out = append(out, a.editorLines()...)
 	}
 	rows, lines := a.settingsLayout()
-	nameWidth := nameColumn(rows)
-	valueWidth := a.settingsValueWidth(rows)
+	disp, _ := a.settingsDisplay(rows, lines)
+	nameWidth := nameColumns(rows)
+	valueWidth := a.settingsValueWidths(rows)
 	visible := a.settingsListRows()
-	start := min(max(a.settings.offset, 0), max(len(lines)-visible, 0))
-	end := min(start+visible, len(lines))
+	start := min(max(a.settings.offset, 0), max(len(disp)-visible, 0))
+	end := min(start+visible, len(disp))
 	cw := a.settingsContentWidth()
-	for i := start; i < end; i++ {
-		l := lines[i]
-		focused := i == a.settings.cursor && !a.settings.edit.active
+	pad := strings.Repeat(" ", rowIndent)
+	for _, d := range disp[start:end] {
 		var s string
-		switch {
-		case l.blank:
-		case l.header:
-			s = headerLine(rows[l.row])
-		case l.option >= 0:
-			s = optionLine(rows[l.row], l.option, focused)
-		case l.wrap > 0:
-			s = wrapLine(rows[l.row], l.wrap, nameWidth, valueWidth)
+		switch d.kind {
+		case displayMore:
+			s = pad + dimStyle.Render(d.text)
+		case displayDesc:
+			p := pad
+			if d.indent {
+				p += "  "
+			}
+			s = p + dimStyle.Render(ansi.Truncate(d.text, max(cw-len(p), 1), "…"))
 		default:
-			s = rowLine(rows[l.row], focused, nameWidth, valueWidth)
+			s = a.settingLineView(rows, lines, d.line, nameWidth, valueWidth)
 		}
 		out = append(out, ansi.Truncate(s, cw, "…"))
 	}
 	return out
 }
 
-// headerLine heads a list with its name, its value and its detail.
-func headerLine(row settingRow) string {
+func (a app) settingLineView(rows []settingRow, lines []settingLine, i int, nameWidths, valueWidths []int) string {
+	l := lines[i]
+	row := rows[l.row]
+	nameWidth, valueWidth := nameWidths[l.row], valueWidths[l.row]
+	focused := i == a.settings.cursor && !a.settings.edit.active
+	pad := strings.Repeat(" ", rowIndent)
+	switch {
+	case l.blank:
+		return ""
+	case l.header:
+		return headerLine(row, len(row.options))
+	case l.group:
+		return "  " + groupStyle.Render(row.group)
+	case l.filter:
+		f := a.settings.filter
+		n := 0
+		for _, o := range row.options {
+			if f.matches(row, o) {
+				n++
+			}
+		}
+		return pad + selectedStyle.Render("/ "+f.text) + normalStyle.Render("▏") +
+			dimStyle.Render(fmt.Sprintf("  %d of %d", n, len(row.options)))
+	case l.empty:
+		cursor := "  "
+		if focused {
+			cursor = selectedStyle.Render("▸ ")
+		}
+		return "  " + cursor + "  " + dimStyle.Render("nothing matches "+quoted(a.settings.filter.text))
+	case l.note:
+		style := dimStyle
+		if row.style != nil {
+			style = *row.style
+		}
+		if row.indent {
+			pad += "  "
+		}
+		return pad + style.Render(row.value)
+	case l.option >= 0:
+		return optionLine(row, l.option, focused)
+	case l.wrap > 0:
+		return wrapLine(row, l.wrap, nameWidth, valueWidth)
+	}
+	return rowLine(row, focused, nameWidth, valueWidth)
+}
+
+// headerLine heads a list with its name, its current value, how many
+// options it has and its detail.
+func headerLine(row settingRow, n int) string {
 	line := "  " + groupStyle.Render(row.name)
-	if row.value != "" {
-		line += dimStyle.Render(" · " + row.value)
+	value := row.value
+	if value == "" && row.current >= 0 && row.current < n {
+		value = row.options[row.current]
+	}
+	if value != "" {
+		line += dimStyle.Render(" · " + value)
+	}
+	if row.count != "" {
+		line += dimStyle.Render(" · " + row.count)
 	}
 	if row.detail != "" {
 		line += "  " + dimStyle.Render(row.detail)
@@ -276,49 +445,61 @@ func headerLine(row settingRow) string {
 	return line
 }
 
-// optionLine is one option of a list: ✓ on the current one, dim when muted.
+// optionLine is one option of a list: ✓ on the current one, dim when muted,
+// with its dim extra after it.
 func optionLine(row settingRow, idx int, focused bool) string {
 	cursor, style := "  ", normalStyle
 	if idx < len(row.muted) && row.muted[idx] {
 		style = dimStyle
 	}
 	if focused {
-		cursor, style = "▸ ", selectedStyle
+		cursor, style = selectedStyle.Render("▸ "), selectedStyle
 	}
 	mark := "  "
 	if idx == row.current {
 		mark = statusStyle.Render("✓ ")
 	}
-	return "  " + cursor + mark + style.Render(row.options[idx])
+	line := "  " + cursor + mark + style.Render(row.options[idx])
+	if idx < len(row.extras) && row.extras[idx] != "" {
+		line += "  " + dimStyle.Render(row.extras[idx])
+	}
+	return line
 }
 
-// rowLine is a one-line row: its name, then its value drawn so the verb is
-// clear before a key is pressed.
+// rowLine is a one-line row: its mark, its name, then its value drawn so the
+// verb is clear before a key is pressed.
 func rowLine(row settingRow, focused bool, nameWidth, valueWidth int) string {
 	cursor, nameStyle := "  ", normalStyle
 	if row.kind == rowInfo {
 		nameStyle = dimStyle
 	}
 	if focused {
-		cursor, nameStyle = "▸ ", selectedStyle
+		cursor, nameStyle = selectedStyle.Render("▸ "), selectedStyle
+	}
+	mark := "  "
+	if row.mark != "" {
+		mark = row.mark + " "
 	}
 	if row.kind == rowReport {
 		style := dimStyle
 		if row.style != nil {
 			style = *row.style
 		}
-		return "  " + cursor + style.Render(row.value)
+		return "  " + cursor + mark + style.Render(row.value)
 	}
-	name := row.name
-	if lipgloss.Width(name) > nameWidth-1 {
-		name = ansi.Truncate(name, nameWidth-2, "…")
+	name, nw := row.name, nameWidth
+	if row.indent {
+		name, nw = "  "+name, nameWidth
 	}
-	pad := max(nameWidth-lipgloss.Width(name), 1)
+	if lipgloss.Width(name) > nw-1 {
+		name = ansi.Truncate(name, nw-2, "…")
+	}
+	gap := max(nw-lipgloss.Width(name), 1)
 	values := row.valueLines(valueWidth)
 	if row.kind != rowChoice {
 		values = []string{rowValue(row)}
 	}
-	line := "  " + cursor + nameStyle.Render(name) + strings.Repeat(" ", pad) + values[0]
+	line := "  " + cursor + mark + nameStyle.Render(name) + strings.Repeat(" ", gap) + values[0]
 	if row.detail != "" && len(values) == 1 {
 		line += "  " + dimStyle.Render(row.detail)
 	}
@@ -330,7 +511,7 @@ func wrapLine(row settingRow, wrap, nameWidth, valueWidth int) string {
 	if wrap >= len(values) {
 		return ""
 	}
-	line := strings.Repeat(" ", 4+nameWidth) + values[wrap]
+	line := strings.Repeat(" ", rowIndent+nameWidth) + values[wrap]
 	if row.detail != "" && wrap == len(values)-1 {
 		line += "  " + dimStyle.Render(row.detail)
 	}
@@ -340,18 +521,60 @@ func wrapLine(row settingRow, wrap, nameWidth, valueWidth int) string {
 func rowValue(row settingRow) string {
 	switch row.kind {
 	case rowPick:
-		return dimStyle.Render(row.value)
-	case rowToggle:
-		if row.value == "on" {
-			return statusStyle.Render("on")
+		if len(row.options) == 1 {
+			if len(row.muted) > 0 && row.muted[0] {
+				return dimStyle.Render(row.options[0])
+			}
+			return normalStyle.Render(row.options[0])
 		}
-		return dimStyle.Render("off")
-	case rowSlider:
-		return normalStyle.Render(row.value) + dimStyle.Render("  - / +")
-	case rowInfo:
 		return dimStyle.Render(row.value)
+	case rowSlider:
+		return sliderValue(row)
+	case rowToggle:
+		if row.current == 1 {
+			return statusStyle.Render("ON")
+		}
+		return dimStyle.Render("OFF")
+	case rowInfo:
+		return dimStyle.Render(shortPath(row.value))
+	case rowText:
+		if looksLikePath(row.value) {
+			return dimStyle.Render(shortPath(row.value))
+		}
 	}
 	return normalStyle.Render(row.value)
+}
+
+// sliderBar is the width of a slider's bar.
+const sliderBar = 13
+
+// sliderValue is a slider's value, a bar showing where it sits in its
+// range, and the range.
+func sliderValue(row settingRow) string {
+	pos := 0
+	if row.hi > row.lo {
+		f := min(max((row.at-row.lo)/(row.hi-row.lo), 0), 1)
+		pos = int(math.Round(f * float64(sliderBar-1)))
+	}
+	bar := normalStyle.Render(strings.Repeat("━", pos)) + headerStyle.Render("●") +
+		dimStyle.Render(strings.Repeat("━", sliderBar-1-pos))
+	return normalStyle.Render(padRight(row.value, 5)) + bar + "  " + dimStyle.Render(row.scale)
+}
+
+func looksLikePath(v string) bool {
+	return strings.HasPrefix(v, "/") || strings.HasPrefix(v, "~") || strings.Contains(v, "://")
+}
+
+// shortPath writes a path under the home folder with ~.
+func shortPath(v string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || home == "/" {
+		return v
+	}
+	if rest, ok := strings.CutPrefix(v, home+string(os.PathSeparator)); ok {
+		return "~/" + rest
+	}
+	return v
 }
 
 // valueLines is a choice row's options with [current] marked, wrapped to

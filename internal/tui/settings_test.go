@@ -23,8 +23,8 @@ func TestSettingsSwitchesSectionsWithEveryKey(t *testing.T) {
 		{"right", sectionWriter}, {"l", sectionMusicModel}, {"tab", sectionRender},
 		{"left", sectionMusicModel}, {"h", sectionWriter}, {"shift+tab", sectionSetup},
 		{"left", sectionLibrary}, {"right", sectionSetup},
-		{"5", sectionEngine}, {"6", sectionLibrary}, {"1", sectionSetup}, {"3", sectionMusicModel},
-		{"7", sectionMusicModel}, {"0", sectionMusicModel},
+		{"5", sectionServer}, {"6", sectionAdvanced}, {"7", sectionLibrary}, {"1", sectionSetup}, {"3", sectionMusicModel},
+		{"8", sectionMusicModel}, {"0", sectionMusicModel},
 	}
 	for _, s := range steps {
 		a = pressSettings(t, a, s.key)
@@ -76,7 +76,7 @@ func TestSettingsRemembersEachSectionsCursorAndLastSection(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
 	a = openSettingsOn(t, a, sectionRender)
 	a = pressSettings(t, a, "down", "down")
-	a = pressSettings(t, a, "6", "down", "4")
+	a = pressSettings(t, a, "7", "down", "4")
 	if name, _ := focusedName(a); name != "Top-k" {
 		t.Fatalf("back in Render on %q, want Top-k", name)
 	}
@@ -89,7 +89,7 @@ func TestSettingsRemembersEachSectionsCursorAndLastSection(t *testing.T) {
 	if a.settings.section != sectionRender {
 		t.Fatalf("Settings reopened on %s, want the last used section", sectionNames[a.settings.section])
 	}
-	a = pressSettings(t, a, "6")
+	a = pressSettings(t, a, "7")
 	if name, _ := focusedName(a); name != "State folder" {
 		t.Fatalf("back in Library on %q, want State folder", name)
 	}
@@ -154,11 +154,12 @@ func TestSettingsFooterListsOnlyKeysForTheFocusedLine(t *testing.T) {
 		want string
 	}{
 		{sectionWriter, "Model", 0, "↑/↓ move   ←/→ section   enter choose   esc back"},
-		{sectionWriter, "Temperature", -1, "↑/↓ move   ←/→ section   +/- adjust   esc back"},
-		{sectionWriter, "Ollama URL", -1, "↑/↓ move   ←/→ section   enter edit   esc back"},
+		{sectionWriter, "Temperature", -1, "↑/↓ move   ←/→ section   +/- adjust   enter type   esc back"},
+		{sectionAdvanced, "Ollama URL", -1, "↑/↓ move   ←/→ section   enter edit   esc back"},
 		{sectionWriter, "Writing instructions", -1, "↑/↓ move   ←/→ section   enter edit   esc back"},
-		{sectionRender, "Default length", -1, "↑/↓ move   ←/→ section   enter/space/+/- step   esc back"},
-		{sectionSetup, "Ollama", -1, "↑/↓ move   ←/→ section   esc back"},
+		{sectionRender, "Default length", -1, "↑/↓ move   ←/→ section   space/+/- step   enter type   esc back"},
+		{sectionAdvanced, "Unload the writer before rendering", -1, "↑/↓ move   ←/→ section   enter/space toggle   esc back"},
+		{sectionSetup, "Writer model", -1, "↑/↓ move   ←/→ section   esc back"},
 		{sectionSetup, "Re-run checks", -1, "↑/↓ move   ←/→ section   enter re-run   esc back"},
 		{sectionLibrary, "Config file", -1, "↑/↓ move   ←/→ section   esc back"},
 	}
@@ -187,9 +188,9 @@ func TestSliderStepsAndClampsAtItsBounds(t *testing.T) {
 	if got := a.cfg().Ollama.Temperature; got != 0.9 {
 		t.Fatalf("temperature %v after +", got)
 	}
-	a = pressSettings(t, a, " ", "enter")
+	a = pressSettings(t, a, " ")
 	if got := a.cfg().Ollama.Temperature; got != 0.9 || len(*saves) != 1 {
-		t.Fatalf("space or enter moved the slider: %v, saves %v", got, *saves)
+		t.Fatalf("space moved the slider: %v, saves %v", got, *saves)
 	}
 	for range 10 {
 		a = pressSettings(t, a, "+")
@@ -199,7 +200,7 @@ func TestSliderStepsAndClampsAtItsBounds(t *testing.T) {
 	}
 	n := len(*saves)
 	a = pressSettings(t, a, "=")
-	if len(*saves) != n || !strings.Contains(plain(a), "Temperature is at its limit, 1.5") {
+	if len(*saves) != n || !strings.Contains(plain(a), "Temperature is at the end of the slider, 1.5; enter types another value") {
 		t.Fatalf("a press at the limit saved or said nothing: %v\n%s", *saves, plain(a))
 	}
 	for range 20 {
@@ -214,16 +215,12 @@ func TestSliderStepsAndClampsAtItsBounds(t *testing.T) {
 	}
 }
 
-func TestChoiceStepsWithEnterSpaceAndPlusMinusAndStopsAtTheEnds(t *testing.T) {
+func TestChoiceStepsWithSpaceAndPlusMinusAndStopsAtTheEnds(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
 	a = openSettingsOn(t, a, sectionRender)
 	saves := recordSaves(&a)
 	a = focus(t, a, "Default length", -1)
-	a = pressSettings(t, a, "enter")
-	if got := a.cfg().Render.DefaultSeconds; got != 150 {
-		t.Fatalf("enter: %d", got)
-	}
-	a = pressSettings(t, a, " ")
+	a = pressSettings(t, a, " ", " ")
 	if got := a.cfg().Render.DefaultSeconds; got != 180 {
 		t.Fatalf("space: %d", got)
 	}
@@ -240,19 +237,6 @@ func TestChoiceStepsWithEnterSpaceAndPlusMinusAndStopsAtTheEnds(t *testing.T) {
 	last := (*saves)[len(*saves)-1]
 	if last.key != "render.default_seconds" || last.value != 300 {
 		t.Fatalf("last save %+v", last)
-	}
-}
-
-func TestToggleRowFlipsWithEnterAndSpace(t *testing.T) {
-	a, _ := newSettingsApp(t, readyChecks())
-	flips := 0
-	row := settingRow{name: "Example", kind: rowToggle, run: func(*app) tea.Cmd { flips++; return nil }}
-	self := settingLine{option: -1}
-	a.activateSetting(row, self)
-	a.toggleSetting(row, self)
-	a.adjustSetting(row, self, 1)
-	if flips != 2 {
-		t.Fatalf("flips = %d, want enter and space only", flips)
 	}
 }
 
@@ -295,10 +279,10 @@ func TestFailedSaveChangesNothingAndSaysWhy(t *testing.T) {
 
 	a = focus(t, a, "Steps", -1)
 	a = pressSettings(t, a, "+")
-	if a.cfg().Render.Steps != 30 || !a.settings.failed || !strings.Contains(plain(a), "Not saved:") || !strings.Contains(plain(a), "Steps               30") {
+	if a.cfg().Render.Steps != 30 || !a.settings.failed || !strings.Contains(plain(a), "Not saved:") || !strings.Contains(plain(a), "Steps         30") {
 		t.Fatalf("steps %d failed %v:\n%s", a.cfg().Render.Steps, a.settings.failed, plain(a))
 	}
-	a = pressSettings(t, a, "6")
+	a = pressSettings(t, a, "7")
 	a = focus(t, a, "Library folder", -1)
 	running := a.cfg().LibraryDir
 	a = pressSettings(t, a, "enter")
@@ -347,18 +331,18 @@ func TestSettingsScrollsToTheCursor(t *testing.T) {
 	a, _ := newSettingsApp(t, nothingInstalled())
 	a, _ = send(t, a, tea.WindowSizeMsg{Width: 80, Height: 14})
 	a = openSettingsOn(t, a, sectionSetup)
-	if strings.Contains(plain(a), "WARN ffprobe:") {
-		t.Fatalf("whole report fits; the test needs a taller one:\n%s", plain(a))
+	if strings.Contains(plain(a), "Re-run checks") {
+		t.Fatalf("whole section fits; the test needs a taller one:\n%s", plain(a))
 	}
 	for range 60 {
 		a = pressSettings(t, a, "down")
 	}
 	view := plain(a)
-	if !strings.Contains(view, "▸") || !strings.Contains(view, "WARN ffprobe:") {
+	if !strings.Contains(view, "▸") || !strings.Contains(view, "Re-run checks") {
 		t.Fatalf("bottom of Setup:\n%s", view)
 	}
 	a = pressSettings(t, a, "pgup", "pgup", "pgup", "pgup")
-	if !strings.Contains(plain(a), "▸") || !strings.Contains(plain(a), "Missing:") {
+	if !strings.Contains(plain(a), "▸") || !strings.Contains(plain(a), "▲ Rendering is blocked") {
 		t.Fatalf("top of Setup:\n%s", plain(a))
 	}
 }
@@ -367,7 +351,7 @@ func TestSettingsResultsAfterLeavingDoNotCrash(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
 	a, open := send(t, a, switchScreenMsg(screenSettings))
 	a = pressSettings(t, a, "2")
-	a, write := send(t, a, settingsKey("4"))
+	a, write := send(t, a, settingsKey("6"))
 	a, engine := send(t, a, settingsKey("5"))
 	a = pressSettings(t, a, "esc")
 	runCmds(tea.Batch(open, write, engine))

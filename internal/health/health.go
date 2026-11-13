@@ -151,8 +151,7 @@ func installCheck(c config.ComfyUI, st setup.ComfyState) Check {
 		ch.Result, ch.Fix, ch.Missing, ch.Detail = Fail, "", "", st.Detail
 	default:
 		ch.Result = Fail
-		ch.Detail = fmt.Sprintf("ComfyUI is not installed in %s. songsmith can install it there: Finish setup. "+
-			"To use a ComfyUI you already have, set Settings → Music engine → Install folder (config key comfyui.dir)", c.Dir)
+		ch.Detail = fmt.Sprintf("No ComfyUI in %s. Set the folder in Settings → Server, or install it there from Setup.", c.Dir)
 	}
 	return ch
 }

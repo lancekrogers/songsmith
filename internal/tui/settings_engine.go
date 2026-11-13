@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -26,6 +27,8 @@ type ComfyServer interface {
 	Stop(ctx context.Context) error
 	LogPath() string
 	ObjectInfo(ctx context.Context, class string) (comfy.NodeInfo, bool, error)
+	// InstallDir is the folder a running server says it runs from, or "".
+	InstallDir(ctx context.Context) (string, error)
 }
 
 // NewComfyServer adapts a server manager to ComfyServer.
@@ -45,47 +48,15 @@ func (a app) comfyServer() ComfyServer {
 	return NewComfyServer(server.New(cfg.ComfyUI, cfg.StateDir))
 }
 
-// A musicEngine renders songs. The Music engine section lists every engine
-// and shows the rows of the one in use, so another engine is a new entry
-// with its own rows.
-type musicEngine struct {
-	id, label, help string
-	rows            func(a app) []settingRow
-}
-
-var musicEngines = []musicEngine{
-	{id: "comfyui", label: "ComfyUI · MiniMax Music 3 on a local ComfyUI server",
-		help: "songsmith sends each song to a ComfyUI server it starts and stops for you", rows: app.comfyRows},
-}
-
-// currentEngine is the engine in use; ComfyUI is the only one so far.
-func (a app) currentEngine() musicEngine { return musicEngines[0] }
-
-func (a app) engineRows() []settingRow {
-	cur := a.currentEngine()
-	row := settingRow{name: "Engine", kind: rowPick, current: -1, applies: appliesNextRender,
-		help: "What renders your songs"}
-	for i, e := range musicEngines {
-		row.options = append(row.options, e.label)
-		row.details = append(row.details, e.help)
-		if e.id == cur.id {
-			row.current = i
-		}
-	}
-	row.set = func(a *app, i int) tea.Cmd {
-		a.settingsNote(musicEngines[i].label + " is the engine in use")
-		return nil
-	}
-	return append([]settingRow{row}, cur.rows(a)...)
-}
-
 type serverState struct {
 	seq    int
 	known  bool
 	status server.Status
-	// busy is "starting" or "stopping" while an action runs.
-	busy      string
-	actionSeq int
+	// busy is "starting" or "stopping" while an action runs; confirming is
+	// set from its result until the status check after it lands.
+	busy       string
+	confirming bool
+	actionSeq  int
 }
 
 type serverStatusMsg struct {
@@ -142,14 +113,17 @@ func (a app) receiveServer(msg settingsAsync) (app, tea.Cmd) {
 	switch msg := msg.(type) {
 	case serverStatusMsg:
 		if msg.seq == sv.seq {
-			sv.known, sv.status = true, msg.status
+			sv.known, sv.status, sv.confirming = true, msg.status, false
 		}
 		return a, nil
 	case serverActionMsg:
 		if msg.seq != sv.actionSeq {
 			return a, nil
 		}
-		sv.busy = ""
+		sv.busy, sv.confirming = "", true
+		if msg.err == nil {
+			sv.known, sv.status = true, msg.status
+		}
 		switch {
 		case errors.Is(msg.err, server.ErrNotManaged):
 			a.settingsError("This server was not started by songsmith, so songsmith leaves it running; stop it where it was started")
@@ -172,77 +146,150 @@ func (a *app) refreshComfyFound() {
 	a.settings.comfyFound = err == nil
 }
 
-func (a app) comfyRows() []settingRow {
+// serverRows are the ComfyUI server songs render on: its state with start
+// and stop, the install when it is missing, its folder and its log.
+func (a app) serverRows() []settingRow {
 	cfg, saved := a.cfg(), a.settings.saved
-	rows := []settingRow{a.serverRow()}
+	rows := []settingRow{{name: "Engine", kind: rowNote, value: "Engine: ComfyUI · MiniMax Music 3 on this machine"}}
+	server := a.serverRow()
+	server.gap = true
+	rows = append(rows, server)
 	rows = append(rows, a.installComfyRows()...)
 	dir := settingRow{key: "comfyui.dir", name: "Install folder", kind: rowText,
+		desc: "Where ComfyUI is, or where setup installs it",
 		help: "Where ComfyUI is, or where setup installs it. Have your own ComfyUI? Point this at its folder",
-		run: func(a *app) tea.Cmd {
-			return a.beginEdit("Install folder", a.settings.saved.ComfyUI.Dir, func(a *app, v string) (tea.Cmd, error) {
-				return a.commitFolder("comfyui.dir", "Install folder", v)
-			})
-		}}
+		run:  func(a *app) tea.Cmd { return a.editInstallFolder() }}
 	restartValue(&dir, saved.ComfyUI.Dir, cfg.ComfyUI.Dir)
-	host := settingRow{key: "comfyui.host", name: "Host", kind: rowText,
-		help: "The address the server listens on and songsmith connects to",
-		run: func(a *app) tea.Cmd {
-			return a.beginEdit("Host", a.settings.saved.ComfyUI.Host, (*app).commitHost)
-		}}
-	restartValue(&host, saved.ComfyUI.Host, cfg.ComfyUI.Host)
-	port := settingRow{key: "comfyui.port", name: "Port", kind: rowText,
-		help: "The port the server listens on",
-		run: func(a *app) tea.Cmd {
-			return a.beginEdit("Port", strconv.Itoa(a.settings.saved.ComfyUI.Port), (*app).commitPort)
-		}}
-	restartValue(&port, strconv.Itoa(saved.ComfyUI.Port), strconv.Itoa(cfg.ComfyUI.Port))
 	log := settingRow{name: "Log", kind: rowInfo, value: a.comfyServer().LogPath(),
 		help: "The output of a server songsmith started"}
-	return append(rows, dir, host, port, log)
+	return append(rows, dir, log)
 }
 
 func (a app) serverRow() settingRow {
 	cfg := a.cfg()
 	sv := a.settings.server
-	row := settingRow{name: "Server", kind: rowAction, applies: appliesNow}
+	row := settingRow{name: "Server", kind: rowAction, applies: appliesNow,
+		desc: "songsmith starts it on the first render and stops only one it started"}
 	switch {
 	case sv.busy != "":
 		row.value = sv.busy + "…"
 		row.help = "Wait for the server to finish " + sv.busy
 	case !sv.known:
 		row.value = "checking…"
-	case sv.status.Running:
-		row.value = "running at " + cfg.ComfyUI.BaseURL()
-		row.detail = "not started by songsmith"
-		if sv.status.Managed {
-			row.detail = "started by songsmith"
-		}
+	case sv.status.OtherPort != 0 && !sv.status.Running && !a.rendering():
+		row.value = "songsmith's server still runs on port " + strconv.Itoa(sv.status.OtherPort)
+		row.detail = "this session uses port " + strconv.Itoa(cfg.ComfyUI.Port)
 		row.verb = "stop"
-		row.help = "enter stops the server; songsmith only stops a server it started"
+		row.help = "enter stops the server songsmith started on port " + strconv.Itoa(sv.status.OtherPort) + "; the next render starts one on port " + strconv.Itoa(cfg.ComfyUI.Port)
+		row.run = func(a *app) tea.Cmd { return a.serverAction("stop") }
+	case sv.status.Running && !sv.status.Managed:
+		row.kind, row.applies = rowInfo, ""
+		row.value, row.detail = "running", "started outside songsmith · "+cfg.ComfyUI.BaseURL()
+		row.help = "songsmith leaves a server it did not start running; stop it where it was started"
+	case sv.status.Running && a.rendering():
+		row.kind, row.applies = rowInfo, ""
+		row.value = "running"
+		row.detail = "rendering — stop is unavailable until the song finishes or is cancelled"
+		row.help = "Rendering — stop is unavailable until the song finishes or is cancelled"
+	case sv.status.Running:
+		row.value = "running"
+		row.detail = "started by songsmith · " + cfg.ComfyUI.BaseURL()
+		row.verb = "stop"
+		row.help = "enter stops the server"
 		row.run = func(a *app) tea.Cmd { return a.serverAction("stop") }
 	default:
-		row.value = "stopped · " + cfg.ComfyUI.BaseURL()
+		row.value, row.detail = "stopped", cfg.ComfyUI.BaseURL()
 		row.verb = "start"
 		row.help = "enter starts ComfyUI from the install folder; it also starts by itself on the first render"
 		row.run = func(a *app) tea.Cmd { return a.serverAction("start") }
 	}
+	if sv.confirming && sv.busy == "" {
+		row.kind, row.verb, row.run = rowInfo, "", nil
+		row.help = "Checking the server after that change…"
+	}
 	return row
 }
 
-func (a *app) commitFolder(key, name, v string) (tea.Cmd, error) {
-	if v == "" {
-		return nil, errors.New(name + " cannot be empty; type a folder")
+// rendering reports whether a song is rendering, here or in another process.
+func (a app) rendering() bool {
+	if a.d.Queue != nil && a.d.Queue.Current() != "" {
+		return true
 	}
-	a.saved(key, v, name+": "+v, appliesRestart)
+	_, _, ok := a.renderingSong()
+	return ok
+}
+
+// managedServerRunning reports whether the last check found a server
+// songsmith started running.
+func (a app) managedServerRunning() bool {
+	sv := a.settings.server
+	return sv.known && sv.status.Running && sv.status.Managed
+}
+
+// keepsRunningNote is added to a saved port or state folder while a server
+// songsmith started runs on the old one.
+func (a app) keepsRunningNote() string {
+	if !a.managedServerRunning() {
+		return ""
+	}
+	return " · the running server keeps port " + strconv.Itoa(a.cfg().ComfyUI.Port) + " until you stop it here, in this session"
+}
+
+// stopFirstHelp tells to stop a server songsmith started before restarting
+// with a changed port or state folder, while one runs.
+func (a app) stopFirstHelp(row *settingRow, saved, running string) {
+	if saved != running && a.managedServerRunning() {
+		row.help += " · Stop the server in Settings → Server before restarting, or songsmith will not recognise it as its own"
+	}
+}
+
+// commitFolder takes an absolute folder or one under ~.
+func (a *app) commitFolder(key, name, v string) (tea.Cmd, error) {
+	save, _, err := folderValue(name, v)
+	if err != nil {
+		return nil, err
+	}
+	note := ""
+	if key == "state_dir" {
+		note = a.keepsRunningNote()
+	}
+	if !a.saveSetting(key, save) {
+		return nil, errSaveFailed
+	}
+	a.settingsNote(capitalize(appliesRestart) + " · " + name + ": " + save + note)
 	return nil, nil
 }
 
+// errSaveFailed keeps the one-line editor open after a save that failed;
+// the reason is already on the status line.
+var errSaveFailed = errors.New("not saved")
+
+// commitHost takes a host name or an IP address, without a port.
 func (a *app) commitHost(v string) (tea.Cmd, error) {
-	if v == "" || strings.ContainsAny(v, " \t/") {
-		return nil, errors.New("Type a host name or address, such as 127.0.0.1")
+	if net.ParseIP(v) == nil && !validHostname(v) {
+		return nil, errors.New("Type a host name or IP address without a port, such as 127.0.0.1")
 	}
-	a.saved("comfyui.host", v, "Host: "+v, appliesRestart)
+	if !a.saved("comfyui.host", v, "Host: "+v, appliesRestart) {
+		return nil, errSaveFailed
+	}
 	return nil, nil
+}
+
+func validHostname(v string) bool {
+	if v == "" || len(v) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(strings.TrimSuffix(v, "."), ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (a *app) commitPort(v string) (tea.Cmd, error) {
@@ -250,7 +297,11 @@ func (a *app) commitPort(v string) (tea.Cmd, error) {
 	if err != nil || port < 1 || port > 65535 {
 		return nil, errors.New("Port must be a whole number from 1 to 65535")
 	}
-	a.saved("comfyui.port", port, "Port: "+v, appliesRestart)
+	note := a.keepsRunningNote()
+	if !a.saveSetting("comfyui.port", port) {
+		return nil, errSaveFailed
+	}
+	a.settingsNote(capitalize(appliesRestart) + " · Port: " + v + note)
 	return nil, nil
 }
 
@@ -258,7 +309,7 @@ func (a *app) commitPort(v string) (tea.Cmd, error) {
 // is missing or unfinished there, with progress, the latest line of the
 // install log and a Cancel row while it runs.
 func (a app) installComfyRows() []settingRow {
-	width := a.settingsContentWidth() - 4
+	width := a.settingsContentWidth() - rowIndent
 	t := comfyTarget(a.cfg())
 	if j, ok := a.job(t.key()); ok {
 		row := settingRow{name: "Install ComfyUI", kind: rowInfo, value: jobStatus(j), detail: jobDetail(j),
@@ -272,6 +323,8 @@ func (a app) installComfyRows() []settingRow {
 	row := settingRow{name: "Install ComfyUI", kind: rowInfo, value: "no ComfyUI in the install folder"}
 	var below []settingRow
 	switch {
+	case planned && installable(act) && !a.canInstall(act):
+		row.detail = a.withheldNote()
 	case planned && installable(act):
 		row.kind, row.verb, row.applies = rowAction, "install", appliesNow
 		row.detail = installOffer(act)

@@ -19,6 +19,7 @@ type launcherAction int
 
 const (
 	actionNew launcherAction = iota
+	actionUseServerDir
 	actionSetup
 	actionNowRendering
 	actionLibrary
@@ -53,6 +54,13 @@ type launcherState struct {
 	notice, err string
 	// musicJob, writerJob and comfyJob say how a running install is doing.
 	musicJob, writerJob, comfyJob string
+
+	// serverDir is a running server's folder offered for the install
+	// folder comfyDir, which has no ComfyUI.
+	serverDir, comfyDir string
+	// restartDir is an install folder saved for the next start; after sums
+	// up its checks.
+	restartDir, after string
 }
 
 func (a app) launcherState() launcherState {
@@ -64,6 +72,14 @@ func (a app) launcherState() launcherState {
 		writerModel: a.cfg().Ollama.Model,
 		notice:      a.notice,
 		err:         a.err,
+		comfyDir:    a.cfg().ComfyUI.Dir,
+		restartDir:  a.settings.restartDir,
+	}
+	if dir, ok := a.serverFolder(); ok {
+		st.serverDir = dir
+	}
+	if st.restartDir != "" {
+		st.after = a.afterRestart()
 	}
 	for _, s := range a.library.songs {
 		if s.Status == library.StatusQueued {
@@ -101,6 +117,10 @@ func (st launcherState) blocker() (health.Check, bool) {
 
 func (st launcherState) items() []launcherItem {
 	var items []launcherItem
+	if st.serverDir != "" {
+		items = append(items, launcherItem{actionUseServerDir, "↳", "Use that folder",
+			"Make it the install folder; applies after restart"})
+	}
 	if _, ok := st.blocker(); ok {
 		items = append(items, launcherItem{actionSetup, "▲", "Finish setup", "Install what is missing, or see where to get it"})
 	}
@@ -115,7 +135,7 @@ func (st launcherState) items() []launcherItem {
 	}
 	items = append(items,
 		launcherItem{actionLibrary, "▤", fmt.Sprintf("Library (%d)", st.songs), "Play, edit and re-render your songs"},
-		launcherItem{actionSettings, "⚙", "Settings", "Writer, music model, render, engine and folders"},
+		launcherItem{actionSettings, "⚙", "Settings", "Writer model, render quality, server, folders…"},
 	)
 	quitHint := "Exit songsmith"
 	if st.rendering != nil {
@@ -126,9 +146,9 @@ func (st launcherState) items() []launcherItem {
 
 type launcherModel struct {
 	selected launcherAction
-	// setupShown remembers whether Finish setup was listed, so it is
-	// preselected only when it appears.
-	setupShown bool
+	// setupShown and useShown remember whether Finish setup and Use that
+	// folder were listed, so each is preselected only when it appears.
+	setupShown, useShown bool
 }
 
 func newLauncher() launcherModel { return launcherModel{selected: actionNew} }
@@ -141,6 +161,11 @@ func (m launcherModel) sync(st launcherState) launcherModel {
 		m.selected = actionSetup
 	}
 	m.setupShown = blocked
+	offered := st.serverDir != ""
+	if offered && !m.useShown {
+		m.selected = actionUseServerDir
+	}
+	m.useShown = offered
 	if !slices.ContainsFunc(st.items(), func(it launcherItem) bool { return it.action == m.selected }) {
 		m.selected = actionNew
 	}
@@ -174,6 +199,9 @@ func (m launcherModel) update(key tea.KeyMsg, st launcherState) (launcherModel, 
 		return m, func() tea.Msg { return quitMsg{} }
 	case "enter":
 		switch items[i].action {
+		case actionUseServerDir:
+			dir := st.serverDir
+			return m, func() tea.Msg { return useServerFolderMsg{dir} }
 		case actionSetup:
 			return m, func() tea.Msg { return switchScreenMsg(screenSetup) }
 		case actionNew:
@@ -225,8 +253,8 @@ func (m launcherModel) fullView(st launcherState, width int) string {
 		}
 	}
 	b.WriteString("\n")
-	if msg := st.message(inner); msg != "" {
-		b.WriteString(msg + "\n")
+	for _, l := range st.messageLines(inner) {
+		b.WriteString(l + "\n")
 	}
 	b.WriteString(footer(inner, " ", "↑/↓ navigate", "enter select", "q quit") + "\n\n")
 	b.WriteString(dimStyle.Render(" " + credit))
@@ -238,10 +266,15 @@ func (m launcherModel) fullView(st launcherState, width int) string {
 func (m launcherModel) compactView(st launcherState, width, height int) string {
 	var lines []string
 	lines = append(lines, ansi.Truncate(headerStyle.Render(" ♪ SONGSMITH"), width, "…"))
-	lines = append(lines, st.noticeLines(width)[0])
-	if msg := st.message(width); msg != "" {
-		lines = append(lines, msg)
+	var msg []string
+	if st.message(width) != "" {
+		msg = st.messageLines(width)
 	}
+	notice := st.noticeLines(width)
+	// The notice may name a folder; it keeps as many lines as leave room for
+	// the message, one menu line and the footer.
+	lines = append(lines, notice[:min(len(notice), max(height-len(lines)-len(msg)-2, 1))]...)
+	lines = append(lines, msg...)
 	items := st.items()
 	cur := m.cursor(items)
 	visible := max(1, height-len(lines)-1)
@@ -412,6 +445,12 @@ func (st launcherState) noticeLines(width int) []string {
 	switch {
 	case !st.checked:
 		lines = []string{dimStyle.Render("Checking ComfyUI, the music model files, Ollama and ffprobe…")}
+	case st.restartDir != "":
+		lines = hangLines("↻ Restart songsmith to use "+st.restartDir, warningStyle, width)
+		lines = append(lines, hangLines("  After restart: "+st.after, dimStyle, width)...)
+	case st.serverDir != "":
+		lines = hangLines("▲ A ComfyUI server is already running from "+st.serverDir+".", warningStyle, width)
+		lines = append(lines, hangLines("  The install folder "+st.comfyDir+" has no ComfyUI. Use that folder, or install a separate copy from Setup.", dimStyle, width)...)
 	default:
 		b, blocked := blockerSummary(st.checks)
 		if !blocked {
@@ -427,14 +466,11 @@ func (st launcherState) noticeLines(width int) []string {
 			}
 			break
 		}
-		lines = []string{errorStyle.Render("▲ " + b)}
+		// The blocker wraps rather than being cut: it often names a folder.
+		lines = hangLines("▲ "+b, errorStyle, width)
 		if head, fix, ok := missingSummary(st.checks); ok {
-			// The fix line wraps: it says who installs what, and none of it may be cut.
-			wrapped := lipgloss.NewStyle().Width(max(10, width-2)).Render(fix)
-			lines = append(lines, warningStyle.Render("  "+head))
-			for _, l := range strings.Split(wrapped, "\n") {
-				lines = append(lines, dimStyle.Render("  "+strings.TrimRight(l, " ")))
-			}
+			lines = append(lines, warningStyle.Render(ansi.Truncate("  "+head, width, "…")))
+			lines = append(lines, hangLines("  "+fix, dimStyle, width)...)
 		}
 	}
 	for i, l := range lines {
@@ -485,6 +521,108 @@ func joinAnd(items []string) string {
 		return strings.Join(items, "")
 	}
 	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
+}
+
+// messageLines is the latest outcome wrapped over at most messageRows lines,
+// or none.
+func (st launcherState) messageLines(width int) []string {
+	switch {
+	case st.err != "":
+		return wrapMessage(st.err, errorStyle, width)
+	case st.notice != "":
+		return wrapMessage(st.notice, normalStyle, width)
+	}
+	return nil
+}
+
+// messageRows is how many lines a message on the launcher, the library or
+// the song form may take before it is cut.
+const messageRows = 3
+
+// wrapMessage wraps text to width over at most messageRows lines, so a
+// message is read whole rather than cut at the screen edge.
+func wrapMessage(text string, style lipgloss.Style, width int) []string {
+	lines := wrapText(text, width)
+	if len(lines) > messageRows {
+		lines = lines[:messageRows]
+		lines[messageRows-1] = ansi.Truncate(strings.TrimRight(lines[messageRows-1], " ")+" …", width, "…")
+	}
+	for i, l := range lines {
+		lines[i] = style.Render(strings.TrimRight(l, " "))
+	}
+	return lines
+}
+
+// wrapText wraps text to width at spaces. A word too long for a line, such
+// as a folder path, starts a line of its own and breaks after a "/", so it
+// is shown whole rather than cut.
+func wrapText(text string, width int) []string {
+	width = max(width, 10)
+	var lines []string
+	for _, para := range strings.Split(text, "\n") {
+		line := ""
+		for _, word := range strings.Fields(para) {
+			w := ansi.StringWidth(word)
+			switch {
+			case line == "":
+			case ansi.StringWidth(line)+1+w <= width:
+				line += " " + word
+				continue
+			default:
+				lines = append(lines, line)
+			}
+			line = ""
+			if w <= width {
+				line = word
+				continue
+			}
+			pieces := breakWord(word, width)
+			lines = append(lines, pieces[:len(pieces)-1]...)
+			line = pieces[len(pieces)-1]
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// breakWord splits a word wider than width after "/"s, and anywhere in a
+// part still too wide.
+func breakWord(word string, width int) []string {
+	var out []string
+	cur := ""
+	for _, part := range strings.SplitAfter(word, "/") {
+		if cur != "" && ansi.StringWidth(cur+part) > width {
+			out = append(out, cur)
+			cur = ""
+		}
+		cur += part
+		for ansi.StringWidth(cur) > width {
+			r := []rune(cur)
+			out = append(out, string(r[:width]))
+			cur = string(r[width:])
+		}
+	}
+	return append(out, cur)
+}
+
+// hangLines wraps text to width in style. Spaces leading text lead every
+// line; without them the lines after the first are indented by two.
+func hangLines(text string, style lipgloss.Style, width int) []string {
+	body := strings.TrimLeft(text, " ")
+	first, rest := text[:len(text)-len(body)], "  "
+	if first != "" {
+		rest = first
+	}
+	lines := wrapText(body, width-len(rest))
+	for i, l := range lines {
+		if i == 0 {
+			l = first + l
+		} else {
+			l = rest + l
+		}
+		lines[i] = style.Render(l)
+	}
+	return lines
 }
 
 // message is the latest outcome, such as a queued song or a failed render.

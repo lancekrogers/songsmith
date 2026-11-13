@@ -96,6 +96,13 @@ func (a app) updateLibrary(msg tea.Msg) (app, tea.Cmd) {
 		if ok {
 			return a, func() tea.Msg { return openComposeMsg{song: &song} }
 		}
+	case "g":
+		if ok && needsDraft(song) {
+			return a, func() tea.Msg { return openComposeMsg{song: &song, draft: true} }
+		}
+		if ok {
+			a.notice = "g drafts lyrics and style for a song that has an idea and neither yet; e edits this one."
+		}
 	case "enter", " ":
 		if !ok {
 			break
@@ -122,7 +129,7 @@ func (a app) updateLibrary(msg tea.Msg) (app, tea.Cmd) {
 			break
 		}
 		if err := song.CheckRender(); err != nil {
-			a.notice = "Can't queue " + song.Title + " yet: " + renderProblems(err) + ". Press e to edit it."
+			a.notice = cantRender(song, err)
 			break
 		}
 		if _, err := a.d.Queue.Enqueue(song); err != nil {
@@ -149,6 +156,40 @@ func (a app) updateLibrary(msg tea.Msg) (app, tea.Cmd) {
 		return a, cmd
 	}
 	return a, nil
+}
+
+// needsDraft reports whether a song has an idea and nothing written yet,
+// so drafting it is the next step.
+func needsDraft(song library.Song) bool {
+	if song.Status == library.StatusQueued || song.Status == library.StatusRendering {
+		return false
+	}
+	c := song.Caption
+	return strings.TrimSpace(song.Idea) != "" && strings.TrimSpace(song.Lyrics+c.GlobalMetadata+c.VocalDetails+c.Arrangement) == ""
+}
+
+// cantRender says, in plain words, what a song lacks before it can render
+// and the key that fixes it.
+func cantRender(song library.Song, err error) string {
+	c := song.Caption
+	var missing []string
+	if strings.TrimSpace(song.Lyrics) == "" {
+		missing = append(missing, "no lyrics")
+	}
+	switch {
+	case strings.TrimSpace(c.GlobalMetadata+c.VocalDetails+c.Arrangement) == "":
+		missing = append(missing, "no style")
+	case strings.TrimSpace(c.GlobalMetadata) == "" || strings.TrimSpace(c.VocalDetails) == "" || strings.TrimSpace(c.Arrangement) == "":
+		missing = append(missing, "an unfinished style")
+	}
+	what := joinAnd(missing)
+	if what == "" {
+		what = renderProblems(err)
+	}
+	if needsDraft(song) {
+		return "Can't render yet: " + what + ". g drafts them from the idea, e edits."
+	}
+	return "Can't render yet: " + what + ". e edits it."
 }
 
 // renderProblems lists what CheckRender found, in one line.
@@ -182,6 +223,9 @@ func (a app) libraryKeys() []string {
 		case library.StatusDone:
 			keys = append(keys, "r new take")
 		case library.StatusDraft, library.StatusFailed:
+			if needsDraft(song) {
+				keys = append(keys, "g draft lyrics and style")
+			}
 			keys = append(keys, "r render")
 		case library.StatusQueued, library.StatusRendering:
 			keys = append(keys, "x cancel")
@@ -196,7 +240,7 @@ func (a app) libraryKeys() []string {
 }
 
 func (a *app) listWidth() int  { return max(36, a.width*2/5) }
-func (a *app) bodyHeight() int { return max(3, a.height-4) }
+func (a *app) bodyHeight() int { return max(3, a.height-3-messageRows) }
 
 // detailPaneWidth is the detail pane's width inside its border; the
 // viewport sits inside the pane's one-column padding on each side.
@@ -249,10 +293,20 @@ func (a *app) detailText(width int) string {
 	if song.Status == library.StatusDone {
 		b.WriteString(wrap.Render(dimStyle.Render(a.d.Store.AudioPath(song))) + "\n")
 	}
+	empty := "not written yet · e to write them yourself"
+	if strings.TrimSpace(song.Idea) != "" {
+		empty = "not written yet · g drafts them from the idea · e to write them yourself"
+	}
+	section := func(text string) string {
+		if strings.TrimSpace(text) == "" {
+			return wrap.Render(dimStyle.Render(empty))
+		}
+		return wrap.Render(text)
+	}
 	b.WriteString("\n" + headingStyle.Render("Lyrics") + "\n")
-	b.WriteString(wrap.Render(song.Lyrics) + "\n\n")
+	b.WriteString(section(song.Lyrics) + "\n\n")
 	b.WriteString(headingStyle.Render("Style") + "\n")
-	b.WriteString(wrap.Render(song.Caption.String()) + "\n")
+	b.WriteString(section(song.Caption.String()) + "\n")
 	return b.String()
 }
 
@@ -330,16 +384,15 @@ func (a app) libraryView() string {
 	detail := focusPane.Width(a.detailPaneWidth()).Height(bodyH - 2).Render(a.library.detail.View())
 	body := lipgloss.JoinHorizontal(lipgloss.Top, list, detail)
 
-	msg := ""
-	if a.err != "" {
-		msg = errorStyle.Render(a.err)
-	} else if a.notice != "" {
-		msg = a.notice
+	msg := launcherState{err: a.err, notice: a.notice}.messageLines(max(a.width-2, 10))
+	for i := range msg {
+		msg[i] = " " + msg[i]
 	}
+	msg = fitLines(msg, messageRows)
 	return lipgloss.JoinVertical(lipgloss.Left,
 		ansi.Truncate(header, a.width, "…"),
 		body,
-		ansi.Truncate(msg, a.width, "…"),
+		strings.Join(msg, "\n"),
 		footer(a.width, "  ", a.libraryKeys()...),
 	)
 }

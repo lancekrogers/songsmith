@@ -29,7 +29,7 @@ demo-shell: build
         demos/with-setupfake.sh vhs demos/shell.tape
     ls -lh demos/shell.gif
 
-# Record demos/editor.gif: the song form and text editor on a hand-written song (throwaway config in /tmp, no Ollama or ComfyUI needed)
+# Record demos/editor.gif: the song form drafting from an idea with the stand-in writer, and the text editor (throwaway config in /tmp, no real Ollama or ComfyUI)
 demo-editor: build
     #!/usr/bin/env bash
     set -euo pipefail

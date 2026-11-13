@@ -1,8 +1,11 @@
-// Command setupfake stands in for Hugging Face and Ollama while
-// demos/setup.tape records, so the recording downloads nothing real. It
-// serves small generated model files with a catalog of their sizes and
-// SHA-256 sums, and an Ollama that pulls a model in a few seconds. It is for
-// demos and tests only and listens on loopback.
+// Command setupfake stands in for Hugging Face, Ollama and ComfyUI while the
+// demo tapes record, so a recording downloads nothing real and reaches no
+// real service. It serves small generated model files with a catalog of
+// their sizes and SHA-256 sums, and an Ollama that pulls a model in a few
+// seconds; with -library-addr, an Ollama with a library of made-up models
+// that writes a canned draft, and with -comfy-addr, a ComfyUI that lists its
+// nodes and samplers and renders nothing. It is for demos and tests only and
+// listens on loopback.
 package main
 
 import (
@@ -158,10 +161,23 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:18490", "loopback address to listen on")
 	rate := flag.Int64("rate", 24<<20, "download speed in bytes per second")
 	model := flag.String("model", "songwriter:demo", "the model the fake Ollama pulls")
+	libraryAddr := flag.String("library-addr", "", "also serve an Ollama with a library of made-up models here")
+	comfyAddr := flag.String("comfy-addr", "", "also serve a stand-in running ComfyUI here")
 	flag.Parse()
-	host, _, err := net.SplitHostPort(*addr)
-	if err != nil || !net.ParseIP(host).IsLoopback() {
-		log.Fatalf("listen on a loopback address, not %q", *addr)
+	for _, a := range []string{*addr, *libraryAddr, *comfyAddr} {
+		if a == "" {
+			continue
+		}
+		host, _, err := net.SplitHostPort(a)
+		if err != nil || !net.ParseIP(host).IsLoopback() {
+			log.Fatalf("listen on a loopback address, not %q", a)
+		}
+	}
+	if *libraryAddr != "" {
+		go serveLibrary(*libraryAddr)
+	}
+	if *comfyAddr != "" {
+		go serveComfy(*comfyAddr)
 	}
 	for i := range fixtures {
 		fixtures[i].seed = byte(i * 53)
