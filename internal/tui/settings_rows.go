@@ -16,7 +16,6 @@ import (
 //
 //	rowPick    one of a list: the options are drawn; enter on one chooses it
 //	rowChoice  one of a few, drawn on the row: enter, space or +/- step it
-//	rowToggle  on or off: enter or space flips it
 //	rowSlider  a level: +/- nudge it
 //	rowText    typed: enter opens the one-line editor
 //	rowAction  does something: enter runs it
@@ -27,7 +26,6 @@ type rowKind int
 const (
 	rowPick rowKind = iota
 	rowChoice
-	rowToggle
 	rowSlider
 	rowText
 	rowAction
@@ -71,7 +69,7 @@ type settingRow struct {
 	// the cursor stays on the one it was on.
 	anchor string
 	// set applies option idx (pick, choice). run performs the row's own verb
-	// (toggle, text, action). nudge moves a slider by delta steps. Each gets
+	// (text, action). nudge moves a slider by delta steps. Each gets
 	// the app to change, never a copy captured when the row was built.
 	set   func(a *app, idx int) tea.Cmd
 	run   func(a *app) tea.Cmd

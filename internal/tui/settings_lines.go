@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"slices"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -232,6 +234,10 @@ func (a *app) ensureSettingsCursorVisible(lines []settingLine) {
 	for bottom >= 0 && bottom+1 < len(lines) && lines[bottom+1].wrap > 0 {
 		bottom++
 	}
+	if bottom-top+1 > visible {
+		// Too few rows for the heading or wrapped lines: the cursor's line wins.
+		top, bottom = s.cursor, s.cursor
+	}
 	if bottom >= s.offset+visible {
 		s.offset = bottom - visible + 1
 	}
@@ -268,8 +274,35 @@ func (a *app) switchSection(delta int) tea.Cmd {
 	return a.gotoSection(settingsSection(((int(a.settings.section)+delta)%n + n) % n))
 }
 
+// moveSettingsCursorToEnd puts the cursor on the first line of the section
+// a key acts on, or the last when last is set. A section with nothing to act
+// on goes to its first or last line.
+func (a *app) moveSettingsCursorToEnd(last bool) {
+	rows, lines := a.settingsLayout()
+	actionable := func(l settingLine) bool {
+		k := rows[l.row].kind
+		return l.focusable() && (l.option >= 0 || k != rowInfo && k != rowReport)
+	}
+	at := slices.IndexFunc(lines, actionable)
+	if last {
+		at = -1
+		for i := len(lines) - 1; i >= 0 && at < 0; i-- {
+			if actionable(lines[i]) {
+				at = i
+			}
+		}
+	}
+	if at < 0 {
+		at = 0
+		if last {
+			at = len(lines) - 1
+		}
+	}
+	a.placeSettingsCursor(rows, lines, at)
+}
+
 // activateSetting is enter: choose the option under the cursor, step a
-// choice, flip a toggle, edit a value, run an action.
+// choice, edit a value, run an action.
 func (a *app) activateSetting(row settingRow, line settingLine) tea.Cmd {
 	if line.option >= 0 {
 		if row.set == nil {
@@ -280,7 +313,7 @@ func (a *app) activateSetting(row settingRow, line settingLine) tea.Cmd {
 	switch row.kind {
 	case rowChoice:
 		return a.stepChoice(row, 1)
-	case rowToggle, rowText, rowAction:
+	case rowText, rowAction:
 		if row.run != nil {
 			return row.run(a)
 		}
@@ -288,18 +321,9 @@ func (a *app) activateSetting(row settingRow, line settingLine) tea.Cmd {
 	return nil
 }
 
-// toggleSetting is space: a toggle flips and a choice steps; anything else
-// ignores it.
+// toggleSetting is space: a choice steps; anything else ignores it.
 func (a *app) toggleSetting(row settingRow, line settingLine) tea.Cmd {
-	if line.option >= 0 {
-		return nil
-	}
-	switch row.kind {
-	case rowToggle:
-		if row.run != nil {
-			return row.run(a)
-		}
-	case rowChoice:
+	if line.option < 0 && row.kind == rowChoice {
 		return a.stepChoice(row, 1)
 	}
 	return nil

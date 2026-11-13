@@ -132,9 +132,26 @@ func comboRow(name, key string, options []string, current string) settingRow {
 	return row
 }
 
-// nudgeInt steps an integer setting within [lo, hi], first snapping a value
-// saved outside the range back into it.
+// outOfRange says, and reports, when cur lies past the end of [lo, hi]
+// that delta moves away from, where a step would jump the other way.
+func (a *app) outOfRange(name, cur string, above, below bool, delta int, lo, hi string) bool {
+	switch {
+	case above && delta > 0:
+		a.settingsNote(fmt.Sprintf("%s is %s, above the slider's range of %s to %s; change it in the config file", name, cur, lo, hi))
+	case below && delta < 0:
+		a.settingsNote(fmt.Sprintf("%s is %s, below the slider's range of %s to %s; change it in the config file", name, cur, lo, hi))
+	default:
+		return false
+	}
+	return true
+}
+
+// nudgeInt steps an integer setting within [lo, hi]. A value saved outside
+// the range moves into it only in the direction pressed.
 func (a *app) nudgeInt(key, name string, cur, lo, hi, step, delta int) tea.Cmd {
+	if a.outOfRange(name, fmt.Sprint(cur), cur > hi, cur < lo, delta, fmt.Sprint(lo), fmt.Sprint(hi)) {
+		return nil
+	}
 	next := min(max(cur+delta*step, lo), hi)
 	if next == cur {
 		a.settingsNote(fmt.Sprintf("%s is at its limit, %d", name, cur))
@@ -147,6 +164,9 @@ func (a *app) nudgeInt(key, name string, cur, lo, hi, step, delta int) tea.Cmd {
 // nudgeCFG steps the CFG scale in tenths between 1.0 and 4.0.
 func (a *app) nudgeCFG(delta int) tea.Cmd {
 	cur := int(math.Round(a.cfg().Render.CFGScale * 10))
+	if a.outOfRange("CFG scale", fmt.Sprintf("%.1f", a.cfg().Render.CFGScale), cur > 40, cur < 10, delta, "1.0", "4.0") {
+		return nil
+	}
 	next := min(max(cur+delta, 10), 40)
 	if next == cur {
 		a.settingsNote(fmt.Sprintf("CFG scale is at its limit, %.1f", float64(cur)/10))

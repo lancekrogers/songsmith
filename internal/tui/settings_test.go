@@ -243,19 +243,6 @@ func TestChoiceStepsWithEnterSpaceAndPlusMinusAndStopsAtTheEnds(t *testing.T) {
 	}
 }
 
-func TestToggleRowFlipsWithEnterAndSpace(t *testing.T) {
-	a, _ := newSettingsApp(t, readyChecks())
-	flips := 0
-	row := settingRow{name: "Example", kind: rowToggle, run: func(*app) tea.Cmd { flips++; return nil }}
-	self := settingLine{option: -1}
-	a.activateSetting(row, self)
-	a.toggleSetting(row, self)
-	a.adjustSetting(row, self, 1)
-	if flips != 2 {
-		t.Fatalf("flips = %d, want enter and space only", flips)
-	}
-}
-
 func TestTextRowEditorCommitsCancelsAndOwnsKeys(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
 	a = openSettingsOn(t, a, sectionLibrary)

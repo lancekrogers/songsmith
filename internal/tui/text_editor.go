@@ -47,6 +47,8 @@ type textEditor struct {
 	menuSel int
 	// note is a one-off message for the form's message line.
 	note string
+	// normalKeys replaces the NORMAL mode key hints when set.
+	normalKeys []string
 }
 
 type editorEvent int
@@ -465,6 +467,9 @@ func (t *textEditor) modeKeys() []string {
 		return []string{"y yank", "d delete", "c change", "esc normal"}
 	case vim.ModeCommand:
 		return []string{":" + t.ed.CommandBuffer() + "▏", "enter run", "esc cancel"}
+	}
+	if t.normalKeys != nil {
+		return t.normalKeys
 	}
 	return []string{"i insert", ":w back to form", ":q discard", ":wq save draft", "u undo", "v visual"}
 }

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"slices"
 	"strings"
 
@@ -47,6 +48,8 @@ type settingsModel struct {
 	message string
 	failed  bool
 	edit    settingsEditor
+	// text is a file open in the text editor, which then fills the screen.
+	text *settingsText
 
 	// saved is the config file as last read. Rows that apply after a restart
 	// show it, since the running settings keep the values from the start.
@@ -82,7 +85,7 @@ func (a app) openSettings(sec settingsSection, lastUsed bool) (app, tea.Cmd) {
 	if lastUsed {
 		sec = a.settings.section
 	}
-	a.settings.edit = settingsEditor{}
+	a.settings.edit, a.settings.text = settingsEditor{}, nil
 	cmd := a.gotoSection(sec)
 	return a, cmd
 }
@@ -115,11 +118,15 @@ func (a *app) enterSection(sec settingsSection) tea.Cmd {
 }
 
 // One key, one verb: ←/→ (h/l, tab, digits) switch sections, ↑/↓ move
-// between lines, enter acts on the line, space flips, +/- adjust, esc leaves.
+// between lines (home/end to either end), enter acts on the line, space
+// steps a choice, +/- adjust, esc leaves.
 func (a app) updateSettings(msg tea.Msg) (app, tea.Cmd) {
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return a, nil
+	}
+	if a.settings.text != nil {
+		return a.updateSettingsText(key)
 	}
 	if a.settings.edit.active {
 		return a.updateSettingsEditor(key)
@@ -143,6 +150,9 @@ func (a app) updateSettings(msg tea.Msg) (app, tea.Cmd) {
 	case "pgdown":
 		a.clearSettingsNote()
 		a.moveSettingsCursor(a.settingsListRows())
+	case "home", "g", "end", "G":
+		a.clearSettingsNote()
+		a.moveSettingsCursorToEnd(k == "end" || k == "G")
 	case "enter", " ", "+", "=", "-", "_":
 		row, line, ok := a.focusedSetting()
 		if !ok {
@@ -258,6 +268,10 @@ func (a app) updateSettingsEditor(key tea.KeyMsg) (app, tea.Cmd) {
 	case "enter":
 		value := strings.TrimSpace(a.settings.edit.input.Value())
 		cmd, err := a.settings.edit.commit(&a, value)
+		if errors.Is(err, errSaveFailed) {
+			// The editor stays open with the typed value; the reason is shown.
+			return a, cmd
+		}
 		if err != nil {
 			a.settingsError(err.Error())
 			return a, nil

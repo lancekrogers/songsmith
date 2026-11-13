@@ -38,3 +38,18 @@ func TestChatAndModels(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestATrailingSlashOnTheBaseURLIsIgnored(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		io.WriteString(w, `{"models":[{"name":"m"}]}`)
+	}))
+	defer srv.Close()
+	if _, err := NewClient(srv.URL + "/").Models(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 || paths[0] != "/api/tags" {
+		t.Fatalf("paths %q", paths)
+	}
+}

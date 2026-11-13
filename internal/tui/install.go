@@ -371,5 +371,6 @@ func (a *app) relayout() {
 		return
 	}
 	a.compose.resize(a.width, a.height)
+	a.layoutSettingsText()
 	a.layoutDetail()
 }
