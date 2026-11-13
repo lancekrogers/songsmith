@@ -2,13 +2,13 @@ package tui
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/lancekrogers/songsmith/internal/config"
+	"github.com/lancekrogers/songsmith/internal/setup"
 )
 
 // ModelVariant is one known file for a music model slot.
@@ -22,55 +22,41 @@ type ModelVariant struct {
 	Note string
 	// Installed is true when the file is on disk at its full size.
 	Installed bool
+	// Partial is how much of an unfinished download is on disk, in percent.
+	Partial float64
 }
 
 // Music model slots, as Deps.Variants is asked for them: the folders under
 // ComfyUI's models folder.
 const (
-	SlotDiffusion   = "diffusion_models"
-	SlotTextEncoder = "text_encoders"
-	SlotVAE         = "vae"
+	SlotDiffusion   = setup.DirDiffusion
+	SlotTextEncoder = setup.DirTextEncoder
+	SlotVAE         = setup.DirVAE
 )
 
-// builtinVariants are the files in the Comfy-Org/MiniMax-Music-3 repository.
-var builtinVariants = map[string][]ModelVariant{
-	SlotDiffusion: {
-		{File: "minimax_music3_dit_fp16.safetensors", Label: "fp16", Size: 4914197682, Tag: "recommended",
-			Note: "The standard diffusion model."},
-		{File: "minimax_music3_dit_fp32.safetensors", Label: "fp32", Size: 9828345396,
-			Note: "Full precision, twice the size of fp16."},
-		{File: "minimax_music3_dit_int8_convrot.safetensors", Label: "int8", Size: 2502161682,
-			Note: "Quantized, about half the size of fp16."},
-	},
-	SlotTextEncoder: {
-		{File: "minimax_music3_text_encoder_pruned_bf16.safetensors", Label: "pruned bf16", Size: 16706629398, Tag: "recommended",
-			Note: "The standard text encoder."},
-		{File: "minimax_music3_text_encoder_pruned_int8_convrot.safetensors", Label: "pruned int8", Size: 9196611886, Tag: "for NVIDIA 16 GB cards",
-			Note: "For NVIDIA cards with 16 GB (untested on NVIDIA). On Apple Silicon it ran on the CPU in testing, about 50x slower."},
-		{File: "minimax_music3_text_encoder_bf16.safetensors", Label: "full bf16", Size: 18472478038,
-			Note: "The unpruned text encoder, larger than the pruned one."},
-	},
-	SlotVAE: {
-		{File: "minimax_music3_dav.safetensors", Label: "dav", Size: 216696128,
-			Note: "The audio decoder."},
-	},
-}
-
-// localVariants lists the built-in files for slot with whether each is in
-// cfg's ComfyUI models folder at its full size.
-func localVariants(cfg config.Config, slot string) []ModelVariant {
-	list := slices.Clone(builtinVariants[slot])
-	for i := range list {
-		fi, err := os.Stat(filepath.Join(cfg.ComfyUI.Dir, "models", slot, list[i].File))
-		list[i].Installed = err == nil && fi.Size() == list[i].Size
+// manifestVariants lists the files songsmith can download for slot, with
+// their state in cfg's ComfyUI models folder.
+func manifestVariants(cfg config.Config, slot string) []ModelVariant {
+	var out []ModelVariant
+	for _, f := range setup.Variants(slot) {
+		st := setup.State(cfg.ComfyUI.Dir, f)
+		v := ModelVariant{File: f.Name, Label: f.Label, Size: f.Size, Tag: f.Tag, Note: f.Note,
+			Installed: st.Status == setup.FileInstalled}
+		if f.Recommended && v.Tag == "" {
+			v.Tag = "recommended"
+		}
+		if st.Status == setup.FilePartial {
+			v.Partial = st.Percent()
+		}
+		out = append(out, v)
 	}
-	return list
+	return out
 }
 
 func (a *app) refreshVariants() {
 	list := a.d.Variants
 	if list == nil {
-		list = localVariants
+		list = manifestVariants
 	}
 	cfg := a.cfg()
 	a.settings.variants = map[string][]ModelVariant{}
@@ -83,27 +69,57 @@ func gigabytes(n int64) string { return fmt.Sprintf("%.1f GB", float64(n)/1e9) }
 
 func (a app) musicModelRows() []settingRow {
 	cfg := a.cfg()
-	rows := []settingRow{
-		a.variantRow("Text encoder", "comfyui.text_encoder", SlotTextEncoder, cfg.ComfyUI.TextEncoder),
-		a.variantRow("Diffusion model", "comfyui.diffusion_model", SlotDiffusion, cfg.ComfyUI.DiffusionModel),
-	}
+	width := a.settingsContentWidth() - 4
+	var rows []settingRow
+	rows = append(rows, a.variantRow("Text encoder", "comfyui.text_encoder", SlotTextEncoder, cfg.ComfyUI.TextEncoder))
+	rows = append(rows, a.slotJobRows(SlotTextEncoder, width)...)
+	rows = append(rows, a.variantRow("Diffusion model", "comfyui.diffusion_model", SlotDiffusion, cfg.ComfyUI.DiffusionModel))
+	rows = append(rows, a.slotJobRows(SlotDiffusion, width)...)
 	vae := settingRow{name: "VAE", kind: rowInfo, value: cfg.ComfyUI.VAE,
 		help: "The audio decoder; MiniMax Music 3 has one: " + cfg.ComfyUI.VAE}
 	if i := slices.IndexFunc(a.settings.variants[SlotVAE], func(v ModelVariant) bool { return v.File == cfg.ComfyUI.VAE }); i >= 0 {
 		v := a.settings.variants[SlotVAE][i]
-		vae.value = v.Label + " · " + gigabytes(v.Size) + " · " + installedLabel(v.Installed)
+		vae.value = v.Label + " · " + gigabytes(v.Size) + " · " + a.variantState(SlotVAE, v)
 	}
 	models := filepath.Join(cfg.ComfyUI.Dir, "models")
 	folder := settingRow{name: "Model folder", kind: rowInfo, value: models,
 		help: "Where ComfyUI reads the model files, under Settings → Music engine → Install folder: " + models}
-	return append(rows, vae, folder)
+	rows = append(rows, vae)
+	rows = append(rows, a.slotJobRows(SlotVAE, width)...)
+	return append(rows, folder)
 }
 
-func installedLabel(ok bool) string {
-	if ok {
+// variantState is installed, downloading, partly downloaded or not on disk.
+func (a app) variantState(slot string, v ModelVariant) string {
+	if j, ok := a.job(variantKey(slot, v.File)); ok {
+		return jobStatus(j)
+	}
+	switch {
+	case v.Installed:
 		return "installed"
+	case v.Partial > 0:
+		return fmt.Sprintf("%.0f%% downloaded", v.Partial)
 	}
 	return "not on disk"
+}
+
+func variantKey(slot, file string) string {
+	return installTarget{kind: setup.KindModel, file: setup.ModelFile{Dir: slot, Name: file}}.key()
+}
+
+// slotJobRows are the Cancel rows of slot's running downloads and the full
+// error of any that failed.
+func (a app) slotJobRows(slot string, width int) []settingRow {
+	var rows []settingRow
+	for _, j := range a.runningJobs() {
+		if j.target.kind == setup.KindModel && j.target.file.Dir == slot {
+			rows = append(rows, a.cancelRow(j))
+		}
+	}
+	for _, f := range setup.Variants(slot) {
+		rows = append(rows, a.failureRows(modelTarget(a.cfg(), f), width)...)
+	}
+	return rows
 }
 
 // variantRow lists slot's known files with size and state, ✓ on the one in
@@ -115,13 +131,13 @@ func (a app) variantRow(name, key, slot, configured string) settingRow {
 	row := settingRow{key: key, name: name, kind: rowPick, current: -1, applies: appliesNextRender,
 		help: "Which file ComfyUI loads for the " + name}
 	for i, v := range vs {
-		label := v.Label + " · " + gigabytes(v.Size) + " · " + installedLabel(v.Installed)
+		label := v.Label + " · " + gigabytes(v.Size) + " · " + a.variantState(slot, v)
 		if v.Tag != "" {
 			label += " · " + v.Tag
 		}
 		detail := v.Note
 		if !v.Installed {
-			detail += " Not on disk: a " + gigabytes(v.Size) + " download, which arrives with in-app setup."
+			detail += " Not on disk: enter downloads it (" + gigabytes(v.Size) + ") and switches to it once it is verified."
 		}
 		detail += " " + v.File
 		row.options = append(row.options, label)
@@ -144,12 +160,36 @@ func (a app) variantRow(name, key, slot, configured string) settingRow {
 		}
 		v := vs[i]
 		if !v.Installed {
-			a.settingsNote(fmt.Sprintf("%s is not on disk (%s). Downloading it from here arrives with in-app setup; for now see docs/setup.md",
-				v.File, gigabytes(v.Size)))
-			return nil
+			return a.downloadVariant(name, key, slot, v)
 		}
 		a.saved(key, v.File, name+": "+v.File, appliesNextRender)
 		return nil
 	}
 	return row
+}
+
+// downloadVariant fetches a file that is not on disk and, once it is
+// installed and verified, makes it the one in use. Nothing is saved before.
+func (a *app) downloadVariant(name, key, slot string, v ModelVariant) tea.Cmd {
+	if j, ok := a.job(variantKey(slot, v.File)); ok {
+		a.settingsNote(v.File + " is already " + jobStatus(j))
+		return nil
+	}
+	f, ok := setup.Lookup(slot, v.File)
+	if !ok || a.d.Installer == nil {
+		a.settingsError(v.File + " cannot be downloaded from here")
+		return nil
+	}
+	cfg := a.cfg()
+	if !setup.InspectComfyUI(cfg.ComfyUI.Dir).HasCheckout {
+		a.settingsError("ComfyUI is not installed yet, and the file goes in its folder: install ComfyUI in Settings → Setup first")
+		return nil
+	}
+	a.settingsNote(fmt.Sprintf("Downloading %s (%s); %s switches to it once it is verified", v.File, gigabytes(v.Size), name))
+	return a.startJob(modelTarget(cfg, f), func(a *app, err error) {
+		if err != nil || setup.State(cfg.ComfyUI.Dir, f).Status != setup.FileInstalled {
+			return
+		}
+		a.saved(key, v.File, name+": "+v.File, appliesNextRender)
+	})
 }

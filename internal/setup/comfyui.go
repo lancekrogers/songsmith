@@ -77,7 +77,7 @@ func InspectComfyUI(dir string) ComfyState {
 		entries, err := os.ReadDir(dir)
 		if err == nil && len(entries) > 0 {
 			st.Status = ComfyBlocked
-			st.Detail = dir + " exists, is not empty and holds no ComfyUI (no main.py); choose another folder in Settings → ComfyUI, or empty it"
+			st.Detail = dir + " exists, is not empty and holds no ComfyUI (no main.py); choose another folder in Settings → Music engine → Install folder, or empty it"
 		} else {
 			st.Status, st.Detail = ComfyMissing, "not installed in "+dir
 		}

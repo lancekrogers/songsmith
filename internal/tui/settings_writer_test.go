@@ -104,7 +104,7 @@ func TestWriterListsAConfiguredModelThatIsNotPulledDim(t *testing.T) {
 		t.Fatalf("cursor on %q %d", name, opt)
 	}
 	a = pressSettings(t, a, "enter")
-	if len(*saves) != 0 || !strings.Contains(plain(a), testModel+" is not pulled. Pulling it from here arrives with in-app setup; for now run `ollama pull "+testModel+"`") {
+	if len(*saves) != 0 || !strings.Contains(plain(a), testModel+" cannot be pulled from here") {
 		t.Fatalf("saves %v:\n%s", *saves, plain(a))
 	}
 }
@@ -145,7 +145,7 @@ func TestWriterShowsLoadingAndDropsStaleLists(t *testing.T) {
 	}
 }
 
-func TestWriterOtherModelSavesAnyTag(t *testing.T) {
+func TestWriterOtherModelSavesAPulledTagAndNeverAnUnpulledOne(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
 	a = openSettingsOn(t, a, sectionWriter)
 	saves := recordSaves(&a)
@@ -159,14 +159,15 @@ func TestWriterOtherModelSavesAnyTag(t *testing.T) {
 	a = clearEditor(t, a)
 	a = typeIntoSettings(t, a, "newcomer:2b")
 	a = pressSettings(t, a, "enter")
-	if len(*saves) != 1 || (*saves)[0] != (savedKV{"ollama.model", "newcomer:2b"}) {
+	if len(*saves) != 0 || !strings.Contains(a.settings.message, "newcomer:2b cannot be pulled from here") {
+		t.Fatalf("unpulled tag without an installer: saves %v, message %q", *saves, a.settings.message)
+	}
+	a = focus(t, a, "Other model", -1)
+	a = pressSettings(t, a, "enter")
+	a = typeIntoSettings(t, a, "zeta:3b")
+	a = pressSettings(t, a, "enter")
+	if len(*saves) != 1 || (*saves)[0] != (savedKV{"ollama.model", "zeta:3b"}) {
 		t.Fatalf("saves %v", *saves)
-	}
-	if !strings.Contains(plain(a), "newcomer:2b · not pulled") {
-		t.Fatalf("not listed as not pulled:\n%s", plain(a))
-	}
-	if !strings.Contains(a.settings.message, "newcomer:2b is not pulled") {
-		t.Fatalf("message %q", a.settings.message)
 	}
 }
 

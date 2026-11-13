@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"math"
 	"net/url"
 	"os"
@@ -16,6 +17,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/lancekrogers/songsmith/internal/ollama"
+	"github.com/lancekrogers/songsmith/internal/setup"
 	"github.com/lancekrogers/songsmith/internal/writer"
 )
 
@@ -72,12 +74,14 @@ func (a *app) receiveModels(msg modelsLoadedMsg) {
 
 func (a app) writerRows() []settingRow {
 	cfg := a.cfg()
+	width := a.settingsContentWidth() - 4
 	rows := []settingRow{a.writerModelRow()}
 	if a.settings.models.err != nil {
 		text := fmt.Sprintf("Ollama is not reachable at %s, so its models cannot be listed (configured: %s). "+
 			"Get Ollama from %s; lyrics can still be written by hand.", cfg.Ollama.URL, cfg.Ollama.Model, ollamaDownload)
-		rows = reportRows("Model", text, a.settingsContentWidth()-4)
+		rows = reportRows("Model", text, width)
 	}
+	rows = append(rows, a.pullRows(width)...)
 
 	instructions := "built-in"
 	if cfg.Ollama.InstructionsFile != "" {
@@ -87,7 +91,7 @@ func (a app) writerRows() []settingRow {
 		settingRow{
 			key: "ollama.model", name: "Other model", kind: rowText, value: dimStyle.Render("a tag not in the list"),
 			applies: appliesNextDraft,
-			help:    "Type any Ollama model tag, such as name:tag",
+			help:    "Type any Ollama model tag, such as name:tag. One Ollama does not have is pulled first, and used once the pull finishes",
 			run: func(a *app) tea.Cmd {
 				return a.beginEdit("Other model", "", (*app).commitOtherModel)
 			},
@@ -136,12 +140,16 @@ func (a app) writerModelRow() settingRow {
 	names := m.names
 	row.options = slices.Clone(names)
 	row.muted = make([]bool, len(names))
-	row.current = slices.Index(names, model)
+	row.current = slices.IndexFunc(names, func(n string) bool { return setup.ModelTag(n) == setup.ModelTag(model) })
 	if m.loading {
 		row.detail = "refreshing…"
 	}
 	if row.current < 0 && model != "" {
-		row.options = append(row.options, model+" · not pulled")
+		state := "not pulled"
+		if j, ok := a.job(writerTarget(a.cfg(), model).key()); ok {
+			state = jobStatus(j)
+		}
+		row.options = append(row.options, model+" · "+state)
 		row.muted = append(row.muted, true)
 		row.details = make([]string, len(row.options))
 		row.details[len(names)] = notPulled(model)
@@ -153,8 +161,7 @@ func (a app) writerModelRow() settingRow {
 	}
 	row.set = func(a *app, i int) tea.Cmd {
 		if i >= len(names) {
-			a.settingsNote(notPulled(model))
-			return nil
+			return a.pullWriter(model)
 		}
 		if names[i] == a.cfg().Ollama.Model {
 			a.settingsNote(names[i] + " is already the writer model")
@@ -167,19 +174,64 @@ func (a app) writerModelRow() settingRow {
 }
 
 func notPulled(model string) string {
-	return fmt.Sprintf("%s is not pulled. Pulling it from here arrives with in-app setup; for now run `ollama pull %s`", model, model)
+	return fmt.Sprintf("%s is not pulled into Ollama yet: enter pulls it, then drafts use it", model)
+}
+
+// pullWriter pulls model through Ollama and makes it the writer model once
+// the pull has finished; a failed or cancelled pull changes nothing.
+func (a *app) pullWriter(model string) tea.Cmd {
+	t := writerTarget(a.cfg(), model)
+	if j, ok := a.job(t.key()); ok {
+		a.settingsNote(model + " is already " + jobStatus(j))
+		return nil
+	}
+	if a.d.Installer == nil {
+		a.settingsError(model + " cannot be pulled from here")
+		return nil
+	}
+	a.settingsNote("Pulling " + model + " through Ollama; drafts use it once the pull finishes")
+	return a.startJob(t, func(a *app, err error) {
+		if err != nil || setup.ModelTag(a.cfg().Ollama.Model) == setup.ModelTag(model) {
+			return
+		}
+		a.saved("ollama.model", model, "Writer model: "+model, appliesNextDraft)
+	})
+}
+
+// pullRows show each running pull with its Cancel row, and the full error
+// of a pull that failed.
+func (a app) pullRows(width int) []settingRow {
+	var rows []settingRow
+	for _, j := range a.runningJobs() {
+		if j.target.kind != setup.KindWriter {
+			continue
+		}
+		rows = append(rows, settingRow{name: "Pulling " + j.target.model, kind: rowInfo,
+			value: jobStatus(j), detail: jobDetail(j), help: "Ollama is pulling this model; it keeps going while you use the rest of songsmith"},
+			a.cancelRow(j))
+	}
+	for _, key := range slices.Sorted(maps.Keys(a.jobs.failed)) {
+		if tag, ok := strings.CutPrefix(key, "writer:"); ok {
+			rows = append(rows, a.failureRows(writerTarget(a.cfg(), tag), width)...)
+		}
+	}
+	return rows
 }
 
 func (a *app) commitOtherModel(tag string) (tea.Cmd, error) {
 	if tag == "" || strings.ContainsAny(tag, " \t") {
 		return nil, errors.New("Type one model tag, such as name:tag")
 	}
+	m := a.settings.models
+	pulled := slices.ContainsFunc(m.names, func(n string) bool { return setup.ModelTag(n) == setup.ModelTag(tag) })
+	if m.loaded && m.err == nil && !pulled {
+		return a.pullWriter(tag), nil
+	}
 	if !a.saveSetting("ollama.model", tag) {
 		return nil, nil
 	}
-	m := a.settings.models
-	if m.loaded && m.err == nil && !slices.Contains(m.names, tag) {
-		a.settingsNote(fmt.Sprintf("%s · Writer model: %s · %s", capitalize(appliesNextDraft), tag, notPulled(tag)))
+	if m.err != nil {
+		a.settingsNote(fmt.Sprintf("%s · Writer model: %s · Ollama is not reachable, so it was not checked or pulled", capitalize(appliesNextDraft), tag))
 		return nil, nil
 	}
 	a.settingsNote(capitalize(appliesNextDraft) + " · Writer model: " + tag)

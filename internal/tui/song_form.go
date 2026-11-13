@@ -573,10 +573,11 @@ func (a app) saveCompose(render bool) (app, tea.Cmd) {
 			return a, c.focusOn(fieldRows[fe.Field])
 		}
 	}
-	blocked := ""
+	blocked, fix := "", ""
 	if render {
 		if b, ok := health.Blocker(a.health.checks); ok {
-			render, blocked = false, missingForRender(a.health.checks, b)
+			render = false
+			blocked, fix = missingForRender(a.health.checks, b)
 		}
 	}
 	song.Status = library.StatusDraft
@@ -605,7 +606,7 @@ func (a app) saveCompose(render bool) (app, tea.Cmd) {
 	}
 	switch {
 	case blocked != "":
-		a.notice = "Saved " + song.Title + " as a draft instead of queueing it: rendering needs " + blocked + ". Finish setup on the home screen fixes it."
+		a.notice = "Saved " + song.Title + " as a draft instead of queueing it: rendering needs " + blocked + ". " + fix
 	case render:
 		if _, err := a.d.Queue.Enqueue(song); err != nil {
 			a.err = "queue " + song.Title + ": " + err.Error()
@@ -618,17 +619,21 @@ func (a app) saveCompose(render bool) (app, tea.Cmd) {
 	return a, tea.Batch(cmd, a.loadSongs())
 }
 
-// missingForRender names what stops rendering.
-func missingForRender(checks []health.Check, blocker health.Check) string {
+// missingForRender names what stops rendering and where it gets fixed.
+func missingForRender(checks []health.Check, blocker health.Check) (what, fix string) {
 	var blocking []health.Check
 	for _, ch := range checks {
 		if ch.Blocking && ch.Result == health.Fail {
 			blocking = append(blocking, ch)
 		}
 	}
+	fix = "Finish setup on the home screen says how to fix it."
 	in, out := health.Missing(blocking)
-	if all := append(in, out...); len(all) > 0 {
-		return joinAnd(all)
+	if len(in) > 0 && len(out) == 0 {
+		fix = "Finish setup on the home screen installs it."
 	}
-	return blocker.Name
+	if all := append(in, out...); len(all) > 0 {
+		return joinAnd(all), fix
+	}
+	return blocker.Name, fix
 }

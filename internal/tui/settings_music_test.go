@@ -27,10 +27,10 @@ var musicRepoTree = map[string]int64{
 	"vae/minimax_music3_dav.safetensors":                                        216696128,
 }
 
-func TestBuiltinVariantsMatchTheModelRepository(t *testing.T) {
+func TestManifestVariantsMatchTheModelRepository(t *testing.T) {
 	got := map[string]int64{}
-	for slot, vs := range builtinVariants {
-		for _, v := range vs {
+	for _, slot := range []string{SlotDiffusion, SlotTextEncoder, SlotVAE} {
+		for _, v := range manifestVariants(config.Default(), slot) {
 			got[slot+"/"+v.File] = v.Size
 		}
 	}
@@ -66,17 +66,21 @@ func sparseFile(t *testing.T, path string, size int64) {
 	f.Close()
 }
 
-func TestLocalVariantsAreInstalledOnlyAtFullSize(t *testing.T) {
+func TestManifestVariantsAreInstalledOnlyAtFullSize(t *testing.T) {
 	cfg := config.Default()
 	cfg.ComfyUI.Dir = t.TempDir()
 	sparseFile(t, filepath.Join(cfg.ComfyUI.Dir, "models", "vae", "minimax_music3_dav.safetensors"), 216696128)
 	sparseFile(t, filepath.Join(cfg.ComfyUI.Dir, "models", "diffusion_models", "minimax_music3_dit_int8_convrot.safetensors"), 1000)
-	if vae := localVariants(cfg, SlotVAE); !vae[0].Installed {
+	sparseFile(t, filepath.Join(cfg.ComfyUI.Dir, "models", "diffusion_models", "minimax_music3_dit_fp16.safetensors.part"), 4914197682/2)
+	if vae := manifestVariants(cfg, SlotVAE); !vae[0].Installed {
 		t.Fatal("full-size VAE not installed")
 	}
-	for _, v := range localVariants(cfg, SlotDiffusion) {
+	for _, v := range manifestVariants(cfg, SlotDiffusion) {
 		if v.Installed {
 			t.Fatalf("%s installed (missing or partial)", v.File)
+		}
+		if strings.Contains(v.File, "fp16") != (v.Partial == 50) {
+			t.Fatalf("%s partial %.0f%%", v.File, v.Partial)
 		}
 	}
 }
@@ -84,7 +88,7 @@ func TestLocalVariantsAreInstalledOnlyAtFullSize(t *testing.T) {
 // someInstalled marks the pruned text encoders and the fp16 diffusion model
 // as on disk.
 func someInstalled(_ config.Config, slot string) []ModelVariant {
-	vs := slices.Clone(builtinVariants[slot])
+	vs := manifestVariants(config.Default(), slot)
 	for i := range vs {
 		vs[i].Installed = strings.Contains(vs[i].File, "pruned") || strings.Contains(vs[i].File, "fp16") || slot == SlotVAE
 	}
@@ -98,13 +102,13 @@ func TestMusicModelListsVariantsAndSavesOnlyInstalledOnes(t *testing.T) {
 	view := plain(a)
 	for _, s := range []string{
 		"Text encoder",
-		"▸ ✓ pruned bf16 · 16.7 GB · installed · recommended",
-		"pruned int8 · 9.2 GB · installed · for NVIDIA 16 GB",
-		"full bf16 · 18.5 GB · not on disk",
+		"▸ ✓ Text encoder bf16 (pruned) · 16.7 GB · installed · recommended",
+		"Text encoder int8 (pruned) · 9.2 GB · installed · for NVIDIA 16 GB",
+		"Text encoder bf16 (full) · 18.5 GB · not on disk",
 		"Diffusion model",
-		"✓ fp16 · 4.9 GB · installed · recommended",
-		"fp32 · 9.8 GB · not on disk",
-		"VAE           dav · 0.2 GB · installed",
+		"✓ DiT fp16 · 4.9 GB · installed · recommended",
+		"DiT fp32 · 9.8 GB · not on disk",
+		"VAE           VAE · 0.2 GB · installed",
 	} {
 		if !strings.Contains(view, s) {
 			t.Fatalf("Music model missing %q:\n%s", s, view)
@@ -114,7 +118,7 @@ func TestMusicModelListsVariantsAndSavesOnlyInstalledOnes(t *testing.T) {
 	a = focus(t, a, "Diffusion model", 1)
 	a = pressSettings(t, a, "enter")
 	if len(*saves) != 0 || a.cfg().ComfyUI.DiffusionModel != config.Default().ComfyUI.DiffusionModel ||
-		!strings.Contains(plain(a), "minimax_music3_dit_fp32.safetensors is not on disk (9.8 GB)") {
+		!strings.Contains(plain(a), "minimax_music3_dit_fp32.safetensors cannot be downloaded from here") {
 		t.Fatalf("dim variant: saves %v\n%s", *saves, plain(a))
 	}
 	a, _ = send(t, a, tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -130,7 +134,7 @@ func TestMusicModelListsVariantsAndSavesOnlyInstalledOnes(t *testing.T) {
 	if len(*saves) != 1 || (*saves)[0] != want || a.cfg().ComfyUI.TextEncoder != want.value {
 		t.Fatalf("saves %v", *saves)
 	}
-	if !strings.Contains(plain(a), "Applies to the next render · Text encoder:") || !strings.Contains(plain(a), "✓ pruned int8") {
+	if !strings.Contains(plain(a), "Applies to the next render · Text encoder:") || !strings.Contains(plain(a), "✓ Text encoder int8 (pruned)") {
 		t.Fatalf("after choosing:\n%s", plain(a))
 	}
 }

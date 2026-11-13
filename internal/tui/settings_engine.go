@@ -14,6 +14,7 @@ import (
 
 	"github.com/lancekrogers/songsmith/internal/comfy"
 	"github.com/lancekrogers/songsmith/internal/comfy/server"
+	"github.com/lancekrogers/songsmith/internal/setup"
 )
 
 // ComfyServer is the ComfyUI server Settings shows, starts and stops.
@@ -174,11 +175,7 @@ func (a *app) refreshComfyFound() {
 func (a app) comfyRows() []settingRow {
 	cfg, saved := a.cfg(), a.settings.saved
 	rows := []settingRow{a.serverRow()}
-	if !a.settings.comfyFound {
-		rows = append(rows, settingRow{name: "Install ComfyUI", kind: rowInfo,
-			value: "no ComfyUI in the install folder",
-			help:  "songsmith can install ComfyUI into the install folder; that action arrives with in-app setup (for now see docs/setup.md)"})
-	}
+	rows = append(rows, a.installComfyRows()...)
 	dir := settingRow{key: "comfyui.dir", name: "Install folder", kind: rowText,
 		help: "Where ComfyUI is, or where setup installs it. Have your own ComfyUI? Point this at its folder",
 		run: func(a *app) tea.Cmd {
@@ -255,4 +252,37 @@ func (a *app) commitPort(v string) (tea.Cmd, error) {
 	}
 	a.saved("comfyui.port", port, "Port: "+v, appliesRestart)
 	return nil, nil
+}
+
+// installComfyRows offer to install ComfyUI into the install folder while it
+// is missing or unfinished there, with progress, the latest line of the
+// install log and a Cancel row while it runs.
+func (a app) installComfyRows() []settingRow {
+	width := a.settingsContentWidth() - 4
+	t := comfyTarget(a.cfg())
+	if j, ok := a.job(t.key()); ok {
+		row := settingRow{name: "Install ComfyUI", kind: rowInfo, value: jobStatus(j), detail: jobDetail(j),
+			help: "Installing ComfyUI; the full output goes to " + t.logPath}
+		return append([]settingRow{row, a.cancelRow(j)}, a.failureRows(t, width)...)
+	}
+	act, planned := a.planAction(setup.ActionComfyUI)
+	if planned && !act.Pending() || !planned && a.settings.comfyFound {
+		return nil
+	}
+	row := settingRow{name: "Install ComfyUI", kind: rowInfo, value: "no ComfyUI in the install folder"}
+	var below []settingRow
+	switch {
+	case planned && installable(act):
+		row.kind, row.verb, row.applies = rowAction, "install", appliesNow
+		row.detail = installOffer(act)
+		row.help = "Installs ComfyUI into the install folder, with its own Python environment; the output goes to " + t.logPath
+		row.run = func(a *app) tea.Cmd { return a.installAction(setup.ActionComfyUI) }
+	case planned:
+		row.detail = "cannot install here; the reason is below"
+		below = styledReportRows("Install ComfyUI · why", "Cannot install: "+act.Detail, width, &warningStyle)
+	default:
+		row.detail = "checking what the install needs…"
+	}
+	rows := append([]settingRow{row}, below...)
+	return append(rows, a.failureRows(t, width)...)
 }

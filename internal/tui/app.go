@@ -41,6 +41,9 @@ type Deps struct {
 	// Variants lists the known files for a music model slot with their
 	// on-disk state; nil means the built-in list.
 	Variants func(cfg config.Config, slot string) []ModelVariant
+	// Installer installs ComfyUI, the model files and the writer model; nil
+	// means nothing can be installed from the TUI.
+	Installer Installer
 }
 
 type screen int
@@ -80,14 +83,17 @@ type app struct {
 	updates <-chan queue.Update
 	events  *bridge
 
-	width, height int
-	screen        screen
+	// height is what the screens draw in: the terminal less the footer note
+	// shown while a download runs.
+	width, height, termHeight int
+	screen                    screen
 
 	health   healthState
 	launcher launcherModel
 	library  libraryModel
 	compose  composeModel
 	settings settingsModel
+	jobs     jobsState
 
 	// notice and err are the latest outcome, shown on the launcher and library.
 	notice, err string
@@ -106,6 +112,7 @@ func newApp(ctx context.Context, d Deps, updates <-chan queue.Update) app {
 		launcher: newLauncher(),
 		library:  newLibrary(),
 		compose:  newCompose(),
+		jobs:     newJobsState(),
 	}
 }
 
@@ -115,8 +122,13 @@ func Run(ctx context.Context, d Deps) error {
 	updates, stop := d.Queue.Subscribe()
 	defer stop()
 	defer d.Player.Stop()
-	p := tea.NewProgram(newApp(ctx, d, updates), tea.WithAltScreen(), tea.WithContext(ctx))
-	_, err := p.Run()
+	m := newApp(ctx, d, updates)
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx))
+	final, err := p.Run()
+	if last, ok := final.(app); ok {
+		last.cancelAllJobs()
+	}
+	m.jobs.waitJobs(15 * time.Second)
 	if err != nil && ctx.Err() != nil {
 		return nil
 	}
@@ -182,15 +194,18 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a app) update(msg tea.Msg) (app, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		a.width, a.height = msg.Width, msg.Height
-		a.compose.resize(msg.Width, msg.Height)
-		a.layoutDetail()
+		a.width, a.termHeight = msg.Width, msg.Height
+		a.relayout()
 		return a, nil
 	case bridgeMsg:
 		next, cmd := a.update(msg.msg)
 		return next, tea.Batch(cmd, a.events.wait(a.ctx))
 	case runHealthMsg:
 		return a.startHealth()
+	case jobProgressMsg:
+		return a.receiveJobProgress(msg), nil
+	case jobDoneMsg:
+		return a.receiveJobDone(msg)
 	case healthDoneMsg:
 		if msg.seq != a.health.seq {
 			return a, nil
@@ -198,6 +213,9 @@ func (a app) update(msg tea.Msg) (app, tea.Cmd) {
 		a.health.running = false
 		a.health.done = true
 		a.health.checks = msg.checks
+		if msg.planned {
+			a.health.plan, a.health.planned = msg.plan, true
+		}
 		return a, nil
 	case songsMsg:
 		a.applySongs(msg)
@@ -288,6 +306,7 @@ func (a app) quit() (app, tea.Cmd) {
 	if a.compose.cancel != nil {
 		a.compose.cancel()
 	}
+	a.cancelAllJobs()
 	return a, tea.Quit
 }
 
@@ -305,6 +324,14 @@ func (a app) View() string {
 	if a.width == 0 {
 		return ""
 	}
+	view := a.screenView()
+	if a.height < a.termHeight {
+		view += "\n" + footer(a.width, "  ", downloadNote)
+	}
+	return view
+}
+
+func (a app) screenView() string {
 	switch a.screen {
 	case screenLibrary:
 		return a.libraryView()

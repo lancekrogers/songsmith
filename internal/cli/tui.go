@@ -12,6 +12,7 @@ import (
 	"github.com/lancekrogers/songsmith/internal/library"
 	"github.com/lancekrogers/songsmith/internal/player"
 	"github.com/lancekrogers/songsmith/internal/queue"
+	"github.com/lancekrogers/songsmith/internal/setup"
 	"github.com/lancekrogers/songsmith/internal/tui"
 )
 
@@ -35,6 +36,7 @@ func (a *app) runTUI(ctx context.Context) error {
 		Checks:     health.Run,
 		WorkerNote: func() string { return note.Load().(string) },
 		Server:     tui.NewComfyServer(r.server),
+		Installer:  setup.New(version),
 	}
 
 	ctx, cancel := context.WithCancel(ctx)

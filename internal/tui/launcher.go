@@ -12,6 +12,7 @@ import (
 	"github.com/lancekrogers/songsmith/internal/backend"
 	"github.com/lancekrogers/songsmith/internal/health"
 	"github.com/lancekrogers/songsmith/internal/library"
+	"github.com/lancekrogers/songsmith/internal/setup"
 )
 
 type launcherAction int
@@ -50,6 +51,8 @@ type launcherState struct {
 	writerModel string
 	workerNote  string
 	notice, err string
+	// musicJob, writerJob and comfyJob say how a running install is doing.
+	musicJob, writerJob, comfyJob string
 }
 
 func (a app) launcherState() launcherState {
@@ -73,6 +76,20 @@ func (a app) launcherState() launcherState {
 	if a.d.WorkerNote != nil {
 		st.workerNote = a.d.WorkerNote()
 	}
+	for _, j := range a.runningJobs() {
+		switch j.target.kind {
+		case setup.KindModel:
+			if st.musicJob == "" {
+				st.musicJob = jobStatus(j)
+			}
+		case setup.KindWriter:
+			if st.writerJob == "" {
+				st.writerJob = j.target.model + " " + jobStatus(j)
+			}
+		case setup.KindComfyUI:
+			st.comfyJob = jobStatus(j)
+		}
+	}
 	return st
 }
 
@@ -85,7 +102,7 @@ func (st launcherState) blocker() (health.Check, bool) {
 func (st launcherState) items() []launcherItem {
 	var items []launcherItem
 	if _, ok := st.blocker(); ok {
-		items = append(items, launcherItem{actionSetup, "▲", "Finish setup", "See what is missing and how to fix it"})
+		items = append(items, launcherItem{actionSetup, "▲", "Finish setup", "Install what is missing, or see where to get it"})
 	}
 	newHint := fmt.Sprintf("Describe a song; %s drafts lyrics and a style for you to edit", st.writerModel)
 	if w, ok := health.Find(st.checks, health.IDWriter); ok && w.Result != health.OK {
@@ -297,6 +314,9 @@ func (st launcherState) chips(width int) string {
 const checkingLabel = "checking…"
 
 func (st launcherState) writerChip() (string, chipTone) {
+	if st.writerJob != "" {
+		return st.writerJob, toneWarn
+	}
 	if st.checking {
 		return checkingLabel, toneDim
 	}
@@ -314,6 +334,9 @@ func (st launcherState) writerChip() (string, chipTone) {
 }
 
 func (st launcherState) musicChip() (string, chipTone) {
+	if st.musicJob != "" {
+		return st.musicJob, toneWarn
+	}
 	if st.checking {
 		return checkingLabel, toneDim
 	}
@@ -330,6 +353,9 @@ func (st launcherState) musicChip() (string, chipTone) {
 }
 
 func (st launcherState) serverChip() (string, chipTone) {
+	if st.comfyJob != "" {
+		return st.comfyJob, toneWarn
+	}
 	if st.checking {
 		return checkingLabel, toneDim
 	}

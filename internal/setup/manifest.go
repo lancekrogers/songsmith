@@ -6,11 +6,13 @@ const Repo = "Comfy-Org/MiniMax-Music-3"
 // ModelFile is one file in Repo. Dir is both its folder in the repo and the
 // ComfyUI models subfolder it belongs in.
 type ModelFile struct {
-	Dir         string
-	Name        string
-	Size        int64
-	SHA256      string
-	Label       string
+	Dir    string
+	Name   string
+	Size   int64
+	SHA256 string
+	Label  string
+	// Tag is a few words a list shows beside the file, such as who it is for.
+	Tag         string
 	Note        string
 	Recommended bool
 }
@@ -38,7 +40,8 @@ var Manifest = []ModelFile{
 	{
 		Dir: DirDiffusion, Name: "minimax_music3_dit_int8_convrot.safetensors", Size: 2502161682,
 		SHA256: "d6b959633e69899f99f3a92d6741c0fe79f26958a30811e50e372ef978b24d5f",
-		Label:  "DiT int8", Note: "Targets NVIDIA cards with 16 GB. Untested with songsmith.",
+		Label:  "DiT int8", Tag: "for NVIDIA 16 GB cards",
+		Note: "Targets NVIDIA cards with 16 GB (untested on NVIDIA). Untested with songsmith.",
 	},
 	{
 		Dir: DirTextEncoder, Name: "minimax_music3_text_encoder_pruned_bf16.safetensors", Size: 16706629398,
@@ -48,8 +51,8 @@ var Manifest = []ModelFile{
 	{
 		Dir: DirTextEncoder, Name: "minimax_music3_text_encoder_pruned_int8_convrot.safetensors", Size: 9196611886,
 		SHA256: "010b7416d2336a08c711bc22ee65849c9623069ddb7d89bec011a75699e52014",
-		Label:  "Text encoder int8 (pruned)",
-		Note:   "Targets NVIDIA cards with 16 GB. On Apple Silicon it ran on the CPU in testing, about 50x slower.",
+		Label:  "Text encoder int8 (pruned)", Tag: "for NVIDIA 16 GB cards",
+		Note: "Targets NVIDIA cards with 16 GB (untested on NVIDIA). On Apple Silicon it ran on the CPU in testing, about 50x slower.",
 	},
 	{
 		Dir: DirTextEncoder, Name: "minimax_music3_text_encoder_bf16.safetensors", Size: 18472478038,

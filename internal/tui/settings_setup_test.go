@@ -45,7 +45,7 @@ func TestSetupWithNothingInstalledListsEveryMissingPiece(t *testing.T) {
 		}
 	}
 	a = focus(t, a, "ComfyUI install", -1)
-	if !strings.Contains(plain(a), "the install action arrives with in-app setup (for now see docs/setup.md)") {
+	if !strings.Contains(plain(a), "  ComfyUI is not installed in /home/someone/.local/share/songsmith/ComfyUI") {
 		t.Errorf("focused install row:\n%s", plain(a))
 	}
 }
