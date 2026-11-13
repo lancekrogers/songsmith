@@ -29,6 +29,10 @@ func (f fakeDrafter) Write(context.Context, string, writer.Options) (writer.Draf
 	return f.draft, f.err
 }
 
+func (f fakeDrafter) Revise(context.Context, writer.Draft, string, string, writer.Options) (writer.Draft, error) {
+	return f.draft, f.err
+}
+
 type nopBackend struct{}
 
 func (nopBackend) Name() string                          { return "nop" }
@@ -59,7 +63,8 @@ func testConfig(t *testing.T) *config.Live {
 func testDeps(t *testing.T, store *library.Store, q *queue.Queue, d Drafter) Deps {
 	return Deps{
 		Store: store, Queue: q, Drafter: d, Player: player.New(), Config: testConfig(t),
-		Checks: func(context.Context, config.Config) []health.Check { return readyChecks() },
+		Checks:    func(context.Context, config.Config) []health.Check { return readyChecks() },
+		Clipboard: func(string) error { return nil },
 	}
 }
 
@@ -154,7 +159,8 @@ func runCmd(t *testing.T, a app, cmd tea.Cmd) app {
 				continue
 			}
 			if r := c(); r != nil {
-				if _, isDraft := r.(draftDoneMsg); isDraft {
+				switch r.(type) {
+				case draftDoneMsg, reviseDoneMsg:
 					a, _ = send(t, a, r)
 				}
 				if _, isSongs := r.(songsMsg); isSongs {

@@ -35,7 +35,7 @@ func newListCmd(a *app) *cobra.Command {
 				if s.Duration > 0 {
 					length = formatSeconds(s.Duration)
 				}
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", s.Status, s.Title, length, s.Created.Format(time.DateTime), s.ID)
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", s.Status, s.Title, length, seedColumn(s), s.Created.Format(time.DateTime), s.ID)
 			}
 			tw.Flush()
 			if err != nil {
@@ -44,6 +44,17 @@ func newListCmd(a *app) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// seedColumn is the seed a song renders with: pinned, or the last random one.
+func seedColumn(s library.Song) string {
+	switch {
+	case s.SeedPinned:
+		return fmt.Sprintf("seed %d pinned", s.Seed)
+	case s.Seed != 0:
+		return fmt.Sprintf("seed %d random", s.Seed)
+	}
+	return "seed -"
 }
 
 func formatSeconds(s float64) string {

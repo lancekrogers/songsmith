@@ -239,3 +239,72 @@ func TestWriteAsksForTheContextAndKeepAliveOnlyWhenSet(t *testing.T) {
 		t.Fatalf("keep_alive 0 sent as %#v", llm.got.KeepAlive)
 	}
 }
+
+var currentSong = Draft{
+	Title:   "Coast Road",
+	Lyrics:  "[Verse]\nWindows down\n[Chorus]\nInto the light",
+	Caption: Caption{GlobalMetadata: "Indie pop, 104 BPM", VocalDetails: "Warm male lead", Arrangement: "Verse: acoustic guitar. Chorus: full drums."},
+	Seconds: 95,
+}
+
+func TestReviseSendsTheSongAndTheInstruction(t *testing.T) {
+	longer := `{"title":"Coast Road","lyrics":"[Verse]\nWindows down\n[Verse]\nPast the pier\n[Chorus]\nInto the light","caption":{"global_metadata":"Indie pop, 104 BPM","vocal_details":"Warm male lead","arrangement":"Verse: guitar. Verse 2: bass enters. Chorus: full drums."},"seconds":140}`
+	llm := &fakeLLM{reply: longer}
+	w := New(llm, "m").WithTemperature(0.5).WithContext(8192).WithKeepAlive("5m").WithInstructions("Write sea shanties.")
+	d, err := w.Revise(t.Context(), currentSong, "a summer drive", "add a verse about the pier", Options{Seconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Seconds != 140 || !strings.Contains(d.Lyrics, "Past the pier") {
+		t.Fatalf("draft = %+v", d)
+	}
+	user := llm.got.Messages[1].Content
+	for _, want := range []string{ReviseMarker, "Instruction: add a verse about the pier", "Song idea: a summer drive",
+		"<lyrics>\n" + currentSong.Lyrics + "\n</lyrics>", "Current length: 95 seconds", "Current caption.arrangement: Verse: acoustic guitar.",
+		"Keep every existing lyric line"} {
+		if !strings.Contains(user, want) {
+			t.Errorf("request lacks %q:\n%s", want, user)
+		}
+	}
+	if llm.got.Messages[0].Content != "Write sea shanties." || llm.got.Options["temperature"] != 0.5 ||
+		llm.got.Options["num_ctx"] != 8192 || llm.got.KeepAlive != "5m" || llm.got.Format == nil || *llm.got.Think {
+		t.Fatalf("request settings = %+v", llm.got)
+	}
+}
+
+func TestReviseAcceptsDroppedLinesButNotAnInvalidSong(t *testing.T) {
+	dropped := `{"title":"","lyrics":"[Chorus]\nInto the light","caption":{"global_metadata":"","vocal_details":"Warm male lead","arrangement":"Chorus: drums."},"seconds":0}`
+	d, err := New(&fakeLLM{reply: dropped}, "m").Revise(t.Context(), currentSong, "", "shorter", Options{})
+	if err != nil {
+		t.Fatalf("dropped lines refused: %v", err)
+	}
+	if d.Title != "Coast Road" || d.Caption.GlobalMetadata != "Indie pop, 104 BPM" || d.Seconds != 95 {
+		t.Fatalf("blank parts not kept from the song: %+v", d)
+	}
+
+	untagged := `{"title":"Coast Road","lyrics":"Windows down","caption":{"global_metadata":"a","vocal_details":"b","arrangement":"c"},"seconds":400}`
+	d, err = New(&fakeLLM{reply: untagged}, "m").Revise(t.Context(), currentSong, "", "longer", Options{})
+	if err == nil || !strings.Contains(err.Error(), "revision from m is incomplete") || !strings.Contains(err.Error(), "section tag") {
+		t.Fatalf("err = %v", err)
+	}
+	if d.Lyrics != "Windows down" || d.Seconds != MaxSeconds {
+		t.Fatalf("partial draft = %+v", d)
+	}
+}
+
+func TestReviseRefusesAnEmptyRequest(t *testing.T) {
+	llm := &fakeLLM{reply: goodReply}
+	if _, err := New(llm, "m").Revise(t.Context(), currentSong, "", "  ", Options{}); err == nil {
+		t.Fatal("blank instruction accepted")
+	}
+	if _, err := New(llm, "m").Revise(t.Context(), Draft{}, "", "longer", Options{}); err == nil {
+		t.Fatal("song without lyrics accepted")
+	}
+	if llm.got.Model != "" {
+		t.Fatal("a refused revision reached the model")
+	}
+	boom := errors.New("connection refused")
+	if _, err := New(&fakeLLM{err: boom}, "m").Revise(t.Context(), currentSong, "", "longer", Options{}); !errors.Is(err, boom) || !strings.HasPrefix(err.Error(), "revise song with m: ") {
+		t.Fatalf("err = %v", err)
+	}
+}

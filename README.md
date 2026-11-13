@@ -68,7 +68,9 @@ songsmith                     # open the TUI
 songsmith write "a sea shanty about debugging production at 3am"
 songsmith generate --seconds 60 "lo-fi study beat about rain on a tin roof"
 songsmith generate --title "Coast Road" --lyrics lyrics.txt --caption caption.txt --seconds 90
-songsmith list
+songsmith list                # status, title, length, seed, created, ID
+songsmith revise <song-id> "make it longer with two more verses that continue the story"
+songsmith revise --save <song-id> "add a bridge"   # keep it as a new draft (--queue also queues it)
 songsmith server start|status|stop
 songsmith config              # print the effective configuration
 ```
@@ -81,6 +83,8 @@ songsmith config              # print the effective configuration
 | `e` | Edit the selected song (editing a finished song makes a copy) |
 | `enter` / `space` | Play or stop the selected finished song |
 | `r` | Queue the selected song (a finished song renders a new take with a new seed; earlier takes stay on disk) |
+| `v` | Revise or extend the selected song with the writer (a finished song gets a copy with the same seed, pinned) |
+| `s` | Copy the selected song's seed to the clipboard |
 | `x` | Cancel a queued or rendering song |
 | `q` | Quit; ComfyUI keeps rendering the current song and songsmith picks up the result next time it starts |
 
@@ -89,7 +93,15 @@ In the song form: `↑/↓` or `tab` move between fields, `←/→` change Lengt
 in NORMAL goes back, `:q` drops that field's changes, `:wq` saves a draft, `[` then
 `tab` completes a section tag), `ctrl+e` opens the field in `$VISUAL` or `$EDITOR`,
 `ctrl+s` saves and queues, and `ctrl+d` saves a draft. `esc` on a changed form asks
-once before discarding.
+once before discarding. On the Seed row, `p` pins the seed the last render used, or
+unpins a pinned one.
+
+`ctrl+r` revises a song that has lyrics: say what should change ("make it longer with
+two more verses that continue the story") and the writer returns the whole song with
+that change. Nothing changes until you review it: added lines are marked `+`, removed
+ones `-`, and `enter` applies it to the form, `r` asks again, `e` edits the instruction
+and `esc` discards it. MiniMax Music 3 cannot continue a recording, so an extended song
+is a new performance of the new lyrics with the same seed and style.
 
 ### Writing for MiniMax Music 3
 

@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/lancekrogers/songsmith/internal/comfy"
 	comfyserver "github.com/lancekrogers/songsmith/internal/comfy/server"
 	"github.com/lancekrogers/songsmith/internal/config"
+	"github.com/lancekrogers/songsmith/internal/writer"
 )
 
 // libraryModel is one made-up model of the stand-in Ollama library.
@@ -53,6 +55,57 @@ var cannedDraft = map[string]any{
 	"seconds": 150,
 }
 
+// cannedRevision extends the song in a revise request: a verse and a
+// pre-chorus before its last chorus, and a bridge and a final chorus before
+// its outro, keeping every line it was sent.
+func cannedRevision(prompt string) map[string]any {
+	field := func(name string) string {
+		_, rest, _ := strings.Cut(prompt, "\n"+name+": ")
+		line, _, _ := strings.Cut(rest, "\n")
+		return line
+	}
+	_, rest, _ := strings.Cut(prompt, "<lyrics>\n")
+	lyrics, _, _ := strings.Cut(rest, "\n</lyrics>")
+	lines := strings.Split(lyrics, "\n")
+	lastChorus, outro := -1, len(lines)
+	for i, l := range lines {
+		switch strings.TrimSpace(l) {
+		case "[Chorus]":
+			lastChorus = i
+		case "[Outro]":
+			outro = i
+		}
+	}
+	verse := []string{"[Verse]", "A trawler calls me on the wire", "Her lights are swallowed whole", "I give her bearings by the fire", "And steer her past the shoal", "",
+		"[Pre-Chorus]", "Hold on, hold on", "The rock is all we know", ""}
+	bridge := []string{"[Bridge]", "When the switch is thrown at morning", "And they find the log in place", "Let them read the last night's warning", "In a steady hand's own trace", "",
+		"[Chorus]", "Keep the light on, keep the light on", "Every ship that finds the bay", "Keep the light on, keep the light on", "Till the dawn takes it away", ""}
+	var out []string
+	for i, l := range lines {
+		if i == lastChorus {
+			out = append(out, verse...)
+		}
+		if i == outro {
+			out = append(out, bridge...)
+		}
+		out = append(out, l)
+	}
+	if outro == len(lines) {
+		out = append(append(out, ""), bridge...)
+	}
+	return map[string]any{
+		"title":  field("Current title"),
+		"lyrics": strings.TrimSpace(strings.Join(out, "\n")),
+		"caption": map[string]string{
+			"global_metadata": field("Current caption.global_metadata"),
+			"vocal_details":   field("Current caption.vocal_details"),
+			"arrangement": "Verse: fingerpicked acoustic guitar and room tone. Pre-Chorus: a low cello swell. Chorus: brushed drums and upright bass enter, " +
+				"a fiddle line answers the vocal. Bridge: everything drops to guitar and voice, then builds. Final chorus: full band and harmony. Outro: guitar alone, fading.",
+		},
+		"seconds": 215,
+	}
+}
+
 // serveLibrary answers like an Ollama with libraryModels installed: tags,
 // show for the model tags leave undescribed, and a chat that returns
 // cannedDraft after a short pause, or unloads when sent no messages.
@@ -82,7 +135,7 @@ func serveLibrary(addr string) {
 	mux.HandleFunc("POST /api/chat", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Model    string
-			Messages []json.RawMessage
+			Messages []struct{ Role, Content string }
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if len(req.Messages) == 0 {
@@ -94,7 +147,11 @@ func serveLibrary(addr string) {
 			return
 		case <-time.After(2500 * time.Millisecond):
 		}
-		content, _ := json.Marshal(cannedDraft)
+		reply := cannedDraft
+		if last := req.Messages[len(req.Messages)-1].Content; strings.Contains(last, writer.ReviseMarker) {
+			reply = cannedRevision(last)
+		}
+		content, _ := json.Marshal(reply)
 		_ = json.NewEncoder(w).Encode(map[string]any{"model": req.Model, "message": map[string]string{"role": "assistant", "content": string(content)}, "done": true})
 	})
 	log.Printf("stand-in Ollama library on http://%s", addr)

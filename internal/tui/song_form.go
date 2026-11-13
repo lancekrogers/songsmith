@@ -31,6 +31,7 @@ const (
 	rowIdea formRow = iota
 	rowWriter
 	rowDraft
+	rowRevise
 	rowTitle
 	rowLength
 	rowVocals
@@ -49,7 +50,7 @@ func (r formRow) isText() bool { return r >= rowLyrics }
 func (r formRow) textIndex() int { return int(r - rowLyrics) }
 
 func (r formRow) name() string {
-	return [...]string{"Idea", "Writer", "Draft", "Title", "Length", "Vocals", "Seed", "Lyrics", "Global metadata", "Vocal details", "Arrangement"}[r]
+	return [...]string{"Idea", "Writer", "Draft", "Revise", "Title", "Length", "Vocals", "Seed", "Lyrics", "Global metadata", "Vocal details", "Arrangement"}[r]
 }
 
 const (
@@ -86,12 +87,16 @@ type composeModel struct {
 	// draftedLength is set once seconds holds a drafted length.
 	autoLength    bool
 	draftedLength bool
-	instrumental  bool
+	// lengthSet is set once the user steps Length in this form.
+	lengthSet    bool
+	instrumental bool
+	// lastSeed is the seed the song's latest render used, which p pins.
+	lastSeed int64
 	// texts are Lyrics, Global metadata, Vocal details and Arrangement.
 	texts [4]string
 	focus formRow
 	// skip are rows focus passes over: the writer row without a model to
-	// choose, the draft row without a writer.
+	// choose, the draft row without a writer, the revise row without lyrics.
 	skip [rowCount]bool
 
 	// editor is the open text editor, or nil on the form.
@@ -110,6 +115,10 @@ type composeModel struct {
 	armed string
 	msg   string
 	tone  chipTone
+	// note stays under the header for the whole visit.
+	note string
+
+	rv reviseModel
 
 	width, height int
 }
@@ -149,11 +158,14 @@ func newCompose() composeModel {
 	idea.FocusedStyle.Placeholder = dimStyle
 	idea.BlurredStyle.Placeholder = dimStyle
 	idea.SetHeight(1)
+	instruction := input("e.g. make it longer with two more verses that continue the story", 0)
+	instruction.Prompt = "› "
 	return composeModel{
 		idea:    idea,
 		title:   input("Untitled", 0),
 		seed:    input("random each render", 20),
 		spinner: sp,
+		rv:      reviseModel{input: instruction},
 	}
 }
 
@@ -184,7 +196,8 @@ func (c *composeModel) resize(w, h int) {
 	c.idea.SetWidth(max(inner-1, 10))
 	c.fitIdea()
 	c.title.Width = max(inner-labelWidth-4, 10)
-	c.seed.Width = 22
+	c.fitSeed()
+	c.rv.input.Width = max(inner-8, 10)
 	c.layoutEditor()
 }
 
@@ -192,6 +205,7 @@ func (c *composeModel) resize(w, h int) {
 // song has no ID. newSeconds is the length a song without one starts with.
 func (c *composeModel) startEdit(song library.Song, newSeconds float64) tea.Cmd {
 	c.copied = false
+	c.lastSeed = song.Seed
 	if song.Status == library.StatusDone || song.Status == library.StatusRendering {
 		// Keep finished audio: edits become a new song.
 		song = asCopy(song)
@@ -205,13 +219,15 @@ func (c *composeModel) startEdit(song library.Song, newSeconds float64) tea.Cmd 
 	if song.SeedPinned {
 		c.seed.SetValue(strconv.FormatInt(song.Seed, 10))
 	}
+	c.fitSeed()
 	c.seconds = cmp.Or(song.Seconds, newSeconds)
 	c.autoLength = song.ID == "" && !c.copied && song.Seconds == 0
-	c.draftedLength = false
+	c.draftedLength, c.lengthSet = false, false
 	c.instrumental = song.Instrumental
 	c.texts = [4]string{song.Lyrics, song.Caption.GlobalMetadata, song.Caption.VocalDetails, song.Caption.Arrangement}
 	c.initial = c.fields()
-	c.editor, c.drafting, c.cancel, c.armed, c.msg = nil, false, nil, "", ""
+	c.editor, c.drafting, c.cancel, c.armed, c.msg, c.note = nil, false, nil, "", "", ""
+	c.rv.reset()
 	c.focus = rowIdea
 	if song.ID != "" || c.copied {
 		c.focus = rowLyrics
@@ -219,9 +235,23 @@ func (c *composeModel) startEdit(song library.Song, newSeconds float64) tea.Cmd 
 	return c.applyFocus()
 }
 
+// fitSeed has the blank Seed field say what a render does, with the last
+// seed used when there is one, and sizes the field to what it shows.
+func (c *composeModel) fitSeed() {
+	c.seed.Placeholder = "random each render"
+	if c.lastSeed != 0 {
+		c.seed.Placeholder += fmt.Sprintf(" · last used %d", c.lastSeed)
+	}
+	c.seed.Width = 22
+	if c.seed.Value() == "" {
+		c.seed.Width = max(22, len(c.seed.Placeholder)+1)
+	}
+}
+
 // asCopy turns song into an unsaved new song with the same words and style,
-// and the same seed only when it was pinned.
+// and the same seed only when it was pinned. The copy records its source.
 func asCopy(song library.Song) library.Song {
+	song.DerivedFrom = cmp.Or(song.ID, song.DerivedFrom)
 	song.ID, song.Status, song.Audio, song.Duration, song.Error, song.JobID = "", "", "", 0, "", ""
 	song.Started, song.Finished, song.Timings = time.Time{}, time.Time{}, nil
 	if !song.SeedPinned {
@@ -249,8 +279,12 @@ func (c *composeModel) applyFocus() tea.Cmd {
 	c.idea.Blur()
 	c.title.Blur()
 	c.seed.Blur()
+	c.rv.input.Blur()
 	if c.editor != nil {
 		return nil
+	}
+	if c.rv.stage == reviseInput {
+		return c.rv.input.Focus()
 	}
 	switch c.focus {
 	case rowIdea:
@@ -362,6 +396,7 @@ func (a app) leaveCompose() (app, tea.Cmd) {
 		c.cancel()
 	}
 	c.cancel, c.drafting, c.editor = nil, false, nil
+	c.rv.reset()
 	return a.show(a.back())
 }
 
@@ -370,6 +405,8 @@ func (a app) updateCompose(msg tea.Msg) (app, tea.Cmd) {
 	switch msg := msg.(type) {
 	case draftDoneMsg:
 		return a.draftDone(msg)
+	case reviseDoneMsg:
+		return a.reviseDone(msg)
 	case editorDoneMsg:
 		return a.externalDone(msg)
 	case spinner.TickMsg:
@@ -391,6 +428,10 @@ func (a app) updateCompose(msg tea.Msg) (app, tea.Cmd) {
 // updateInput sends msg to the focused one-line field.
 func (c *composeModel) updateInput(msg tea.Msg) tea.Cmd {
 	var cmd tea.Cmd
+	if c.rv.stage == reviseInput {
+		c.rv.input, cmd = c.rv.input.Update(msg)
+		return cmd
+	}
 	switch c.focus {
 	case rowIdea:
 		c.idea, cmd = c.idea.Update(msg)
@@ -399,6 +440,7 @@ func (c *composeModel) updateInput(msg tea.Msg) tea.Cmd {
 		c.title, cmd = c.title.Update(msg)
 	case rowSeed:
 		c.seed, cmd = c.seed.Update(msg)
+		c.fitSeed()
 	}
 	return cmd
 }
@@ -413,7 +455,7 @@ func (a app) formKey(key tea.KeyMsg) (app, tea.Cmd) {
 	if key.Paste {
 		key.Runes = []rune(normalizeNewlines(string(key.Runes)))
 	}
-	if key.Paste && c.focus == rowIdea {
+	if key.Paste && (c.focus == rowIdea || c.rv.stage == reviseInput) {
 		key.Runes = []rune(strings.ReplaceAll(string(key.Runes), "\n", " "))
 	}
 	a.refreshFormSkips()
@@ -432,9 +474,20 @@ func (a app) formKey(key tea.KeyMsg) (app, tea.Cmd) {
 			c.cancel()
 			c.cancel, c.drafting = nil, false
 			c.draftSeq++
+			if c.rv.stage == reviseRunning {
+				c.rv.stage = reviseOff
+				c.setMsg(toneWarn, "Revision cancelled; the song is as it was. ctrl+r revises again.")
+				return a, c.applyFocus()
+			}
 			c.setMsg(toneWarn, "Draft cancelled.")
 		}
 		return a, nil
+	}
+	switch c.rv.stage {
+	case reviseInput:
+		return a.reviseInputKey(key)
+	case reviseReview:
+		return a.reviewKey(key)
 	}
 	armed := c.armed
 	c.armed, c.msg = "", ""
@@ -454,10 +507,19 @@ func (a app) formKey(key tea.KeyMsg) (app, tea.Cmd) {
 		return a, c.move(1)
 	case "ctrl+g":
 		return a.startDraft(armed == "draft")
+	case "ctrl+r":
+		return a.openRevise()
+	case "p":
+		if c.focus == rowSeed {
+			c.toggleSeedPin()
+			return a, nil
+		}
 	case "enter":
 		switch {
 		case c.focus == rowIdea || c.focus == rowDraft:
 			return a.startDraft(armed == "draft")
+		case c.focus == rowRevise:
+			return a.openRevise()
 		case c.focus.isText():
 			c.openEditor(c.focus)
 			return a, nil
@@ -495,7 +557,7 @@ func (c *composeModel) stepLength(def float64, dir int) {
 	} else {
 		c.seconds = stepLength(c.seconds, dir)
 	}
-	c.autoLength, c.draftedLength = false, false
+	c.autoLength, c.draftedLength, c.lengthSet = false, false, true
 }
 
 // draftReplaces names the filled fields a draft would replace.
@@ -803,6 +865,7 @@ func (a *app) refreshFormSkips() {
 	_, down := a.writerUnavailable()
 	c.skip[rowWriter] = !ok
 	c.skip[rowDraft] = down
+	c.skip[rowRevise] = down || !c.hasLyrics()
 }
 
 // formWriterChoice is the models the form's Writer row cycles through, the

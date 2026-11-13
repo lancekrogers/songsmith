@@ -74,6 +74,11 @@ func (d liveWriter) Write(ctx context.Context, idea string, opts writer.Options)
 	return writer.New(d.chat, cfg.Ollama.Model).WithTemperature(cfg.Ollama.Temperature).Write(ctx, idea, opts)
 }
 
+func (d liveWriter) Revise(ctx context.Context, current writer.Draft, idea, instruction string, opts writer.Options) (writer.Draft, error) {
+	cfg := d.live.Get()
+	return writer.New(d.chat, cfg.Ollama.Model).Revise(ctx, current, idea, instruction, opts)
+}
+
 func TestSettingsChangesReachTheNextRenderAndDraft(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
 	rec := &promptRecorder{}

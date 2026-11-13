@@ -1,7 +1,8 @@
 # The song form: a long idea wrapped in full, the Writer row that picks the
 # model, the Draft action and the draft arriving, then the text editor with
-# section tags and tag completion, Length, the unsaved-changes warning and the
-# saved draft in the library. Uses a throwaway config under
+# section tags and tag completion, Length, the unsaved-changes warning, the
+# saved draft in the library, and revising it with the writer: ctrl+r, an
+# instruction, the review with added lines marked, and applying it. Uses a throwaway config under
 # /tmp/songsmith-demo-editor (see demos/editor.yaml); the writer is
 # demos/setupfake's stand-in Ollama with a canned draft on a loopback port, and
 # nothing is installed, queued or played.
@@ -100,6 +101,26 @@ Down
 Sleep 800ms
 Enter
 Sleep 3.5s
+
+# Revise it: ctrl+r, say what should change, review the result, apply it.
+Up
+Sleep 800ms
+Type "e"
+Sleep 2s
+Ctrl+R
+Sleep 1.2s
+Type@35ms "make it longer with another verse and a bridge that continue the story"
+Sleep 1.2s
+Enter
+Sleep 4.5s
+Down@300ms 8
+Sleep 2.5s
+Down@300ms 12
+Sleep 2.5s
+Enter
+Sleep 3s
+Ctrl+D
+Sleep 3s
 Escape
 Sleep 1s
 Type "q"

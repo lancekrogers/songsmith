@@ -2,13 +2,16 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	"github.com/lancekrogers/songsmith/internal/backend"
 	"github.com/lancekrogers/songsmith/internal/library"
@@ -141,6 +144,31 @@ func (a app) updateLibrary(msg tea.Msg) (app, tea.Cmd) {
 			}
 		}
 		return a, a.loadSongs()
+	case "v":
+		if !ok {
+			break
+		}
+		if strings.TrimSpace(song.Lyrics) == "" {
+			a.notice = "v revises a song that has lyrics; e edits this one."
+			if needsDraft(song) {
+				a.notice = "v revises a song that has lyrics; g drafts them from the idea, e edits."
+			}
+			break
+		}
+		return a, func() tea.Msg { return openComposeMsg{song: &song, revise: true} }
+	case "s":
+		if !ok {
+			break
+		}
+		if !hasSeed(song) {
+			a.notice = "No seed yet: one is chosen when the song renders."
+			break
+		}
+		if err := a.copyText(strconv.FormatInt(song.Seed, 10)); err != nil {
+			a.err = "copy the seed: " + err.Error()
+			break
+		}
+		a.notice = fmt.Sprintf("Seed copied: %d.", song.Seed)
 	case "x":
 		if ok {
 			if err := a.d.Queue.Cancel(song.ID); err != nil {
@@ -156,6 +184,22 @@ func (a app) updateLibrary(msg tea.Msg) (app, tea.Cmd) {
 		return a, cmd
 	}
 	return a, nil
+}
+
+// hasSeed reports whether a song has a seed to show or copy: a pinned one,
+// or the one its latest render drew.
+func hasSeed(song library.Song) bool { return song.SeedPinned || song.Seed != 0 }
+
+// copyText puts text on the clipboard: the system's, or failing that the
+// terminal's through OSC 52.
+func (a app) copyText(text string) error {
+	if a.d.Clipboard != nil {
+		return a.d.Clipboard(text)
+	}
+	if err := clipboard.WriteAll(text); err != nil {
+		termenv.Copy(text)
+	}
+	return nil
 }
 
 // needsDraft reports whether a song has an idea and nothing written yet,
@@ -207,6 +251,11 @@ func renderProblems(err error) string {
 
 // libraryKeys lists the keys that do something for the selected song.
 func (a app) libraryKeys() []string {
+	return a.libraryKeysFor(a.library.detail.TotalLineCount() > a.library.detail.Height)
+}
+
+// libraryKeysFor is libraryKeys with the scroll key given.
+func (a app) libraryKeysFor(scroll bool) []string {
 	var keys []string
 	if len(a.library.songs) > 1 {
 		keys = append(keys, "↑/↓ select")
@@ -231,16 +280,28 @@ func (a app) libraryKeys() []string {
 			keys = append(keys, "x cancel")
 		}
 		keys = append(keys, "e edit")
+		if strings.TrimSpace(song.Lyrics) != "" {
+			keys = append(keys, "v revise / extend")
+		}
+		if hasSeed(song) {
+			keys = append(keys, "s copy seed")
+		}
 	}
 	keys = append(keys, "n new song")
-	if a.library.detail.TotalLineCount() > a.library.detail.Height {
+	if scroll {
 		keys = append(keys, "pgup/pgdn scroll")
 	}
 	return append(keys, "esc back")
 }
 
 func (a *app) listWidth() int  { return max(36, a.width*2/5) }
-func (a *app) bodyHeight() int { return max(3, a.height-3-messageRows) }
+func (a *app) bodyHeight() int { return max(3, a.height-2-messageRows-a.libraryFooterRows()) }
+
+// libraryFooterRows is the lines the key footer takes, counting the scroll
+// key so the layout does not depend on itself.
+func (a *app) libraryFooterRows() int {
+	return len(footerRows(a.width, "  ", a.libraryKeysFor(true)...))
+}
 
 // detailPaneWidth is the detail pane's width inside its border; the
 // viewport sits inside the pane's one-column padding on each side.
@@ -268,6 +329,9 @@ func (a *app) detailText(width int) string {
 		b.WriteString("  " + statusStyle.Render("▶ playing"))
 	}
 	b.WriteString("\n")
+	if song.DerivedFrom != "" {
+		b.WriteString(wrap.Render(dimStyle.Render("from "+a.songTitle(song.DerivedFrom))) + "\n")
+	}
 	if song.Status == library.StatusRendering {
 		b.WriteString(renderProgress(a.library.progress[song.ID], song.Started, max(10, width-2)) + "\n")
 	}
@@ -280,13 +344,11 @@ func (a *app) detailText(width int) string {
 	} else {
 		meta = append(meta, fmt.Sprintf("up to %.0fs", song.Seconds))
 	}
-	if song.Seed != 0 {
-		meta = append(meta, fmt.Sprintf("seed %d", song.Seed))
-	}
 	if !song.Started.IsZero() && !song.Finished.IsZero() {
 		meta = append(meta, "rendered in "+song.Finished.Sub(song.Started).Round(time.Second).String())
 	}
 	b.WriteString(dimStyle.Render(strings.Join(meta, " · ")) + "\n")
+	b.WriteString(wrap.Render(a.seedLine(song)) + "\n")
 	if song.Idea != "" {
 		b.WriteString(wrap.Render(dimStyle.Render("Idea: "+song.Idea)) + "\n")
 	}
@@ -308,6 +370,44 @@ func (a *app) detailText(width int) string {
 	b.WriteString(headingStyle.Render("Style") + "\n")
 	b.WriteString(section(song.Caption.String()) + "\n")
 	return b.String()
+}
+
+// songTitle names a library song by ID, or says it is gone.
+func (a *app) songTitle(id string) string {
+	if s, ok := a.songByID(id); ok {
+		return s.Title
+	}
+	return "a song no longer in the library"
+}
+
+func (a *app) songByID(id string) (library.Song, bool) {
+	for _, s := range a.library.songs {
+		if s.ID == id {
+			return s, true
+		}
+	}
+	return library.Song{}, false
+}
+
+// seedLine says which seed the song renders with, and whether it is the
+// seed of the song it was copied from.
+func (a *app) seedLine(song library.Song) string {
+	value, how := "", "chosen at render"
+	switch {
+	case song.SeedPinned:
+		value, how = strconv.FormatInt(song.Seed, 10), "pinned"
+	case song.Seed != 0:
+		value, how = strconv.FormatInt(song.Seed, 10), "random"
+	}
+	line := labelStyle.Render("Seed")
+	if value != "" {
+		line += " " + value
+	}
+	line += dimStyle.Render(" · " + how)
+	if src, ok := a.songByID(song.DerivedFrom); ok && value != "" && hasSeed(src) && src.Seed == song.Seed {
+		line += dimStyle.Render(" · from " + src.Title)
+	}
+	return line
 }
 
 func renderProgress(p backend.Progress, started time.Time, width int) string {
@@ -393,6 +493,6 @@ func (a app) libraryView() string {
 		ansi.Truncate(header, a.width, "…"),
 		body,
 		strings.Join(msg, "\n"),
-		footer(a.width, "  ", a.libraryKeys()...),
+		strings.Join(footerRows(a.width, "  ", a.libraryKeys()...), "\n"),
 	)
 }

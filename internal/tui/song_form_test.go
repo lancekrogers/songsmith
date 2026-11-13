@@ -16,16 +16,28 @@ import (
 	"github.com/lancekrogers/songsmith/internal/writer"
 )
 
-// recordingDrafter counts drafts and keeps the options of the last one.
+// recordingDrafter counts drafts and keeps the options of the last one, and
+// the songs and instructions sent to Revise.
 type recordingDrafter struct {
-	calls *int
-	opts  *writer.Options
-	draft writer.Draft
-	err   error
+	calls   *int
+	opts    *writer.Options
+	revises *[]revision
+	draft   writer.Draft
+	err     error
+}
+
+type revision struct {
+	current     writer.Draft
+	instruction string
 }
 
 func newRecordingDrafter(d writer.Draft, err error) recordingDrafter {
-	return recordingDrafter{calls: new(int), opts: new(writer.Options), draft: d, err: err}
+	return recordingDrafter{calls: new(int), opts: new(writer.Options), revises: new([]revision), draft: d, err: err}
+}
+
+func (r recordingDrafter) Revise(_ context.Context, current writer.Draft, _, instruction string, _ writer.Options) (writer.Draft, error) {
+	*r.revises = append(*r.revises, revision{current, instruction})
+	return r.draft, r.err
 }
 
 func (r recordingDrafter) Write(_ context.Context, _ string, opts writer.Options) (writer.Draft, error) {
@@ -563,7 +575,7 @@ func TestFormFitsAt80x24(t *testing.T) {
 		t.Fatalf("expected a wrapped message, got %q", m.compose.msg)
 	}
 	check("wrapped message in the editor")
-	m = press(t, m, ":", "q", "enter", "up", "up", "up", "up", "up")
+	m = press(t, m, ":", "q", "enter", "up", "up", "up", "up", "up", "up")
 	m, _ = send(t, m, key("enter"), key("enter"))
 	if !m.compose.drafting {
 		t.Fatalf("not drafting: focus %v msg %q", m.compose.focus, m.compose.msg)

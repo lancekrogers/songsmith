@@ -26,7 +26,7 @@ func runAll(t *testing.T, a app, cmd tea.Cmd) app {
 		for _, c := range msg {
 			a = runAll(t, a, c)
 		}
-	case draftDoneMsg, settingsAsync, healthDoneMsg, songsMsg, openComposeMsg:
+	case draftDoneMsg, reviseDoneMsg, settingsAsync, healthDoneMsg, songsMsg, openComposeMsg:
 		var next tea.Cmd
 		a, next = send(t, a, msg)
 		a = runAll(t, a, next)

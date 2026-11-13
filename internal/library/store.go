@@ -55,6 +55,8 @@ type Song struct {
 	Timings map[string]float64 `json:"timings,omitempty"`
 	// Instrumental songs are drafted without sung lines.
 	Instrumental bool `json:"instrumental,omitempty"`
+	// DerivedFrom is the ID of the song this one was copied from.
+	DerivedFrom string `json:"derived_from,omitempty"`
 }
 
 // CheckRender reports what stops the song from rendering, as the
