@@ -1,0 +1,17 @@
+{
+    "programs": [
+
+    ],
+    "stream_groups": [
+
+    ],
+    "streams": [
+        {
+            "sample_rate": "44100",
+            "channels": 2
+        }
+    ],
+    "format": {
+        "duration": "5.000000"
+    }
+}

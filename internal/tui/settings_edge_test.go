@@ -171,7 +171,7 @@ func TestPortAndStateFolderSayToStopTheServerFirst(t *testing.T) {
 	if !strings.Contains(a.focusedHelp(), "Stop the server") {
 		t.Fatalf("port help %q", a.focusedHelp())
 	}
-	a = pressSettings(t, a, "7")
+	a = pressSettings(t, a, "8")
 	a = commitText(t, a, "State folder", filepath.Join(t.TempDir(), "state2"))
 	a = focus(t, a, "State folder", -1)
 	if !strings.Contains(a.focusedHelp(), "Stop the server") {

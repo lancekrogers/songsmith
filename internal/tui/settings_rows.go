@@ -108,6 +108,8 @@ func (a app) sectionRows() []settingRow {
 		return a.musicModelRows()
 	case sectionRender:
 		return a.renderRows()
+	case sectionMaster:
+		return a.masterSettingsRows()
 	case sectionServer:
 		return a.serverRows()
 	case sectionAdvanced:

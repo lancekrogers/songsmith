@@ -255,6 +255,21 @@ func TestFFprobeCheck(t *testing.T) {
 	}
 }
 
+func TestFFmpegCheck(t *testing.T) {
+	if ch := ffmpegCheck(nil); ch.Result != OK || ch.Missing != "" {
+		t.Fatalf("found: %+v", ch)
+	}
+	ch := ffmpegCheck(errors.New("not found"))
+	if ch.Result != Warn || ch.Blocking || ch.Fix != "" || ch.Missing != "ffmpeg" {
+		t.Fatalf("missing: %+v", ch)
+	}
+	for _, want := range []string{"brew install ffmpeg", "apt install ffmpeg", "master"} {
+		if !strings.Contains(ch.Detail, want) {
+			t.Fatalf("detail %q lacks %q", ch.Detail, want)
+		}
+	}
+}
+
 func TestMissing(t *testing.T) {
 	checks := []Check{
 		{Result: Fail, Missing: "ComfyUI", Fix: FixComfyUI},

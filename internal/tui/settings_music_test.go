@@ -203,7 +203,7 @@ func TestAdvancedWithoutAServerSaysToStartIt(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
 	a, _ = send(t, a, tea.WindowSizeMsg{Width: 140, Height: 30})
 	a, cmd := send(t, a, switchScreenMsg(screenSettings))
-	a, load := send(t, a, settingsKey("6"))
+	a, load := send(t, a, settingsKey("7"))
 	if !strings.Contains(plain(a), "asking the ComfyUI server…") {
 		t.Fatalf("no loading line:\n%s", plain(a))
 	}

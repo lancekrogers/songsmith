@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/lancekrogers/songsmith/internal/ollama"
 )
@@ -84,6 +85,41 @@ const (
 	MinSeconds = 10
 	MaxSeconds = 300
 )
+
+// Length guidance, from renders on MiniMax Music 3: songs of 3:00 or less
+// came out clean, longer ones with static throughout. Clean songs sang
+// about 6 to 7.5 characters of lyrics per second. None of these is a limit.
+const (
+	// CleanSeconds is the longest length that rendered clean.
+	CleanSeconds = 180
+	// CharsPerSecond is the lyric characters sung per second, roughly.
+	CharsPerSecond = 6.5
+	// LongLyrics is about how many lyric characters run past CleanSeconds.
+	LongLyrics = 1250
+)
+
+// LyricChars counts the characters of the sung lines of lyrics, leaving
+// out section tags and blank lines.
+func LyricChars(lyrics string) int {
+	n := 0
+	for line := range strings.SplitSeq(lyrics, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if _, _, _, ok := TagLine(line); ok {
+			continue
+		}
+		n += utf8.RuneCountInString(line)
+	}
+	return n
+}
+
+// LongerThanClean reports whether a song of seconds, or with these lyrics,
+// will likely run past CleanSeconds. seconds of 0 means no length is set.
+func LongerThanClean(seconds float64, lyrics string) bool {
+	return seconds > CleanSeconds || LyricChars(lyrics) > LongLyrics
+}
 
 // SectionTags are the lyric section tags the writer is asked to use and the
 // editor offers, in song order.
@@ -273,6 +309,8 @@ Return JSON with:
 - caption.arrangement: a section-by-section timeline matching the lyric tags. For each section, state what enters, exits or intensifies: drums and groove, bass, harmonic instruments, leads, textures and transitions. Prefer concrete musical changes over decorative adjectives.
 - seconds: the song length in seconds that fits the lyrics, between 10 and 300.
 
+Size the lyrics to the length: a singer gets through roughly 6.5 characters of lyrics per second, counting the sung lines and not the tags. When no length is given, keep the song to 3:00 (180 seconds) or less, about 1,170 characters of lyrics.
+
 Keep the three caption parts together around 250-450 words. Never copy lyric lines into the caption. Write in English unless the idea asks for another language.`
 
 // bracketed lists tags as "[Intro], [Verse]".
@@ -293,7 +331,11 @@ func (w *Writer) Write(ctx context.Context, idea string, opts Options) (Draft, e
 	var user strings.Builder
 	user.WriteString("Song idea: " + idea)
 	if opts.Seconds > 0 {
-		fmt.Fprintf(&user, "\nTarget length: about %.0f seconds; size the lyrics to fit.", opts.Seconds)
+		fmt.Fprintf(&user, "\nTarget length: about %.0f seconds; size the lyrics to fit, about %d characters of sung lines at %.1f characters per second.",
+			opts.Seconds, int(opts.Seconds*CharsPerSecond), CharsPerSecond)
+	} else {
+		fmt.Fprintf(&user, "\nNo target length: keep the song to %d:%02d or less, about %d characters of sung lines.",
+			CleanSeconds/60, CleanSeconds%60, int(CleanSeconds*CharsPerSecond))
 	}
 	if opts.Instrumental {
 		user.WriteString("\nThis is an instrumental: use only [Intro], [Instrumental], [Solo] and [Outro] tags with no sung lines.")
@@ -354,7 +396,8 @@ var ReviseRules = `Return the complete revised song as JSON in the same shape as
 - Keep caption.global_metadata and caption.vocal_details exactly as they are unless the instruction is about the sound.
 - Update caption.arrangement so it covers every section tag in the revised lyrics.
 - Keep the title unless the instruction asks for a new one.
-- Set seconds to the length that fits the revised lyrics, between ` + fmt.Sprint(MinSeconds) + ` and ` + fmt.Sprint(MaxSeconds) + `.`
+- Set seconds to the length that fits the revised lyrics, between ` + fmt.Sprint(MinSeconds) + ` and ` + fmt.Sprint(MaxSeconds) + `, at roughly 6.5 characters of sung lines per second.
+- Unless the instruction asks for a longer song, keep the revised song to 3:00 (180 seconds) or less.`
 
 // Revise asks for current rewritten as instruction says. The model picks the
 // length; opts.Seconds is not a target here. A reply that fails Validate is

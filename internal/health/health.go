@@ -50,6 +50,7 @@ const (
 	IDServerModelFiles = "comfyui-model-list"
 	IDWriter           = "ollama"
 	IDFFprobe          = "ffprobe"
+	IDFFmpeg           = "ffmpeg"
 	IDInstructions     = "writer-instructions"
 )
 
@@ -133,7 +134,9 @@ func Run(ctx context.Context, cfg config.Config) []Check {
 		out = append(out, ch)
 	}
 	_, err = exec.LookPath("ffprobe")
-	return append(out, ffprobeCheck(err))
+	out = append(out, ffprobeCheck(err))
+	_, err = exec.LookPath("ffmpeg")
+	return append(out, ffmpegCheck(err))
 }
 
 // installCheck and modelChecks read the install state the way songsmith
@@ -297,6 +300,18 @@ func ffprobeCheck(lookErr error) Check {
 		ch.Result, ch.Missing = Warn, "ffprobe"
 		ch.Detail = "not found, and songsmith cannot install it: install ffmpeg (macOS: `brew install ffmpeg`). " +
 			"songsmith uses it to record song lengths"
+	}
+	return ch
+}
+
+// ffmpegCheck never blocks: without ffmpeg songs render, but they cannot
+// be mastered or previewed.
+func ffmpegCheck(lookErr error) Check {
+	ch := Check{ID: IDFFmpeg, Name: "ffmpeg", Result: OK, Detail: "found"}
+	if lookErr != nil {
+		ch.Result, ch.Missing = Warn, "ffmpeg"
+		ch.Detail = "not found, and songsmith cannot install it: macOS `brew install ffmpeg`, Debian or Ubuntu `sudo apt install ffmpeg`, " +
+			"Fedora `sudo dnf install ffmpeg`, Arch `sudo pacman -S ffmpeg`. songsmith uses it to master songs and prepare previews"
 	}
 	return ch
 }

@@ -61,6 +61,7 @@ var requirementName = map[string]string{
 	health.IDWriter:           "Writer model",
 	health.IDInstructions:     "Writing instructions",
 	health.IDFFprobe:          "ffprobe",
+	health.IDFFmpeg:           "ffmpeg",
 }
 
 // requirementHelp says what each requirement is for, in a few words and in
@@ -73,6 +74,7 @@ var requirementHelp = map[string][2]string{
 	health.IDWriter:           {"The Ollama model that drafts lyrics", "Choose it in Settings → Writer"},
 	health.IDInstructions:     {"The writing instructions drafts use", "Edit them in Settings → Writer"},
 	health.IDFFprobe:          {"Records each song's length; it comes with ffmpeg", ""},
+	health.IDFFmpeg:           {"Masters songs and prepares their previews", "Used by the Master screen (m in the library)"},
 }
 
 // modelChecks are the three music model file checks, in check order.
@@ -165,7 +167,7 @@ func (a app) checkState(c health.Check, act setup.Action, planned bool) (string,
 		return "Ollama not reachable", ""
 	case health.IDInstructions:
 		return "not usable", ""
-	case health.IDFFprobe:
+	case health.IDFFprobe, health.IDFFmpeg:
 		if ok {
 			return "found", ""
 		}

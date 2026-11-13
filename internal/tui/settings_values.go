@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/lancekrogers/songsmith/internal/master"
 	"github.com/lancekrogers/songsmith/internal/writer"
 )
 
@@ -168,4 +169,33 @@ func contextValue(n int) string {
 		return "Ollama's setting (not overridden)"
 	}
 	return fmt.Sprintf("%d tokens", n)
+}
+
+// masterSettingsRows are the auto-master toggle and the saved default chain,
+// which the Master screen's rows edit.
+func (a app) masterSettingsRows() []settingRow {
+	cfg := a.cfg().Master
+	const group = "Mastering"
+	auto := settingRow{key: "master.auto", name: "Master new renders automatically", kind: rowToggle, group: group,
+		options: []string{"OFF", "ON"}, applies: appliesNextRender,
+		desc: "Masters each new render with the default chain and makes it current; the raw render stays as its own take",
+		help: "Mastering needs ffmpeg; if it fails, the raw render stays current and the song says why"}
+	if cfg.Auto {
+		auto.current = 1
+	}
+	auto.set = func(a *app, i int) tea.Cmd {
+		a.saved("master.auto", i == 1, "Master new renders automatically: "+auto.options[i], appliesNextRender)
+		return nil
+	}
+	summary := settingRow{name: "Default chain", kind: rowInfo, group: group, value: master.Name(cfg.Default),
+		desc: "What the Master screen opens with, and what new renders are mastered with"}
+	details := noteRows("Default chain · details", master.Summary(cfg.Default), a.settingsContentWidth()-rowIndent-2, nil)
+	for i := range details {
+		details[i].indent = true
+	}
+	edit := settingRow{name: "Edit the default", kind: rowAction, verb: "edit", group: group, value: "the Master screen's rows on the default chain",
+		applies: appliesNextRender,
+		help:    "Opens the Master screen without a song; changes there save as the default",
+		run:     func(*app) tea.Cmd { return func() tea.Msg { return openMasterMsg{} } }}
+	return append(append([]settingRow{auto, summary}, details...), edit)
 }

@@ -23,8 +23,14 @@ var writeMu sync.Mutex
 // YAML file at path. Comments, key order and every other value in the file
 // are kept; the file and its directory are created when missing. Only keys
 // the file names are written, so defaults never get baked into it.
+//
+// A key whose value is a whole struct, such as "master.default", takes a
+// value of that struct's type and is replaced as a whole.
 func Set(path, key string, value any) error {
 	field, err := fieldType(key)
+	if errors.Is(err, errSection) && value != nil && reflect.TypeOf(value) == field {
+		err = nil
+	}
 	if err != nil {
 		return err
 	}
@@ -148,10 +154,12 @@ func fieldType(key string) (reflect.Type, error) {
 		}
 	}
 	if t.Kind() == reflect.Struct {
-		return nil, fmt.Errorf("config key %q is a section, not a value", key)
+		return t, fmt.Errorf("config key %q is %w", key, errSection)
 	}
 	return t, nil
 }
+
+var errSection = errors.New("a section, not a value")
 
 // writeFile replaces path atomically, keeping an existing file's mode. A
 // symlinked path is written through to its target, so the link survives.

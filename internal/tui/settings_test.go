@@ -23,8 +23,8 @@ func TestSettingsSwitchesSectionsWithEveryKey(t *testing.T) {
 		{"right", sectionWriter}, {"l", sectionMusicModel}, {"tab", sectionRender},
 		{"left", sectionMusicModel}, {"h", sectionWriter}, {"shift+tab", sectionSetup},
 		{"left", sectionLibrary}, {"right", sectionSetup},
-		{"5", sectionServer}, {"6", sectionAdvanced}, {"7", sectionLibrary}, {"1", sectionSetup}, {"3", sectionMusicModel},
-		{"8", sectionMusicModel}, {"0", sectionMusicModel},
+		{"5", sectionMaster}, {"6", sectionServer}, {"7", sectionAdvanced}, {"8", sectionLibrary}, {"1", sectionSetup}, {"3", sectionMusicModel},
+		{"9", sectionMusicModel}, {"0", sectionMusicModel},
 	}
 	for _, s := range steps {
 		a = pressSettings(t, a, s.key)
@@ -76,7 +76,7 @@ func TestSettingsRemembersEachSectionsCursorAndLastSection(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
 	a = openSettingsOn(t, a, sectionRender)
 	a = pressSettings(t, a, "down", "down")
-	a = pressSettings(t, a, "7", "down", "4")
+	a = pressSettings(t, a, "8", "down", "4")
 	if name, _ := focusedName(a); name != "Top-k" {
 		t.Fatalf("back in Render on %q, want Top-k", name)
 	}
@@ -89,7 +89,7 @@ func TestSettingsRemembersEachSectionsCursorAndLastSection(t *testing.T) {
 	if a.settings.section != sectionRender {
 		t.Fatalf("Settings reopened on %s, want the last used section", sectionNames[a.settings.section])
 	}
-	a = pressSettings(t, a, "7")
+	a = pressSettings(t, a, "8")
 	if name, _ := focusedName(a); name != "State folder" {
 		t.Fatalf("back in Library on %q, want State folder", name)
 	}
@@ -282,7 +282,7 @@ func TestFailedSaveChangesNothingAndSaysWhy(t *testing.T) {
 	if a.cfg().Render.Steps != 30 || !a.settings.failed || !strings.Contains(plain(a), "Not saved:") || !strings.Contains(plain(a), "Steps         30") {
 		t.Fatalf("steps %d failed %v:\n%s", a.cfg().Render.Steps, a.settings.failed, plain(a))
 	}
-	a = pressSettings(t, a, "7")
+	a = pressSettings(t, a, "8")
 	a = focus(t, a, "Library folder", -1)
 	running := a.cfg().LibraryDir
 	a = pressSettings(t, a, "enter")
@@ -351,8 +351,8 @@ func TestSettingsResultsAfterLeavingDoNotCrash(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
 	a, open := send(t, a, switchScreenMsg(screenSettings))
 	a = pressSettings(t, a, "2")
-	a, write := send(t, a, settingsKey("6"))
-	a, engine := send(t, a, settingsKey("5"))
+	a, write := send(t, a, settingsKey("7"))
+	a, engine := send(t, a, settingsKey("6"))
 	a = pressSettings(t, a, "esc")
 	runCmds(tea.Batch(open, write, engine))
 	for msg, ok := a.events.next(); ok; msg, ok = a.events.next() {

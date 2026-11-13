@@ -1,0 +1,19 @@
+[Parsed_astats_2] Channel: 1
+[Parsed_astats_2] DC offset: 0.029967
+[Parsed_astats_2] Channel: 2
+[Parsed_astats_2] DC offset: 0.029967
+[Parsed_astats_2] Overall
+[Parsed_astats_2] Noise floor dB: -9.671612
+[Parsed_loudnorm_1] 
+{
+	"input_i" : "-11.05",
+	"input_tp" : "-8.58",
+	"input_lra" : "0.00",
+	"input_thresh" : "-21.05",
+	"output_i" : "-23.99",
+	"output_tp" : "-21.53",
+	"output_lra" : "0.10",
+	"output_thresh" : "-33.99",
+	"normalization_type" : "dynamic",
+	"target_offset" : "-0.01"
+}

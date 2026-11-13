@@ -75,6 +75,9 @@ func (p *Player) Stop() {
 	}
 }
 
+// Finished delivers the path of each file whose playback ended.
+func (p *Player) Finished() <-chan string { return p.Done }
+
 // Current returns the file being played, or "".
 func (p *Player) Current() string {
 	p.mu.Lock()

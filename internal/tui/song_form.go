@@ -253,6 +253,7 @@ func (c *composeModel) fitSeed() {
 func asCopy(song library.Song) library.Song {
 	song.DerivedFrom = cmp.Or(song.ID, song.DerivedFrom)
 	song.ID, song.Status, song.Audio, song.Duration, song.Error, song.JobID = "", "", "", 0, "", ""
+	song.Takes = nil
 	song.Started, song.Finished, song.Timings = time.Time{}, time.Time{}, nil
 	if !song.SeedPinned {
 		song.Seed = 0

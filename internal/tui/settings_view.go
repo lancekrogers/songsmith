@@ -110,7 +110,11 @@ func (a app) settingsListRows() int {
 // was not saved, wrapped so a long path is read whole, or what the typed
 // value is, or a blank line.
 func (a app) editorLines() []string {
-	e := a.settings.edit
+	return editorView(a.settings.edit, a.settingsContentWidth())
+}
+
+// editorView is a one-line editor and the line under it, in a column width wide.
+func editorView(e settingsEditor, width int) []string {
 	out := []string{"  " + selectedStyle.Render(e.label+": ") + e.input.View()}
 	switch {
 	case e.note != "":
@@ -118,7 +122,7 @@ func (a app) editorLines() []string {
 		if e.noteFailed {
 			style = errorStyle
 		}
-		for _, l := range wrapText(e.note, a.settingsContentWidth()-4) {
+		for _, l := range wrapText(e.note, width-4) {
 			out = append(out, "    "+style.Render(l))
 		}
 	case e.hint != "":
@@ -352,13 +356,19 @@ func (a app) settingsContent() []string {
 		out = append(out, a.editorLines()...)
 	}
 	rows, lines := a.settingsLayout()
-	disp, _ := a.settingsDisplay(rows, lines)
+	return append(out, rowContent(rows, lines, a.settings.rowCursor, a.settingsFrame())...)
+}
+
+// rowContent is the visible part of rows, in a frame.
+func rowContent(rows []settingRow, lines []settingLine, c rowCursor, f rowFrame) []string {
+	var out []string
+	disp, _ := rowDisplay(rows, lines, c, f)
 	nameWidth := nameColumns(rows)
-	valueWidth := a.settingsValueWidths(rows)
-	visible := a.settingsListRows()
-	start := min(max(a.settings.offset, 0), max(len(disp)-visible, 0))
+	valueWidth := valueWidths(rows, f.width)
+	visible := f.height
+	start := min(max(c.offset, 0), max(len(disp)-visible, 0))
 	end := min(start+visible, len(disp))
-	cw := a.settingsContentWidth()
+	cw := f.width
 	pad := strings.Repeat(" ", rowIndent)
 	for _, d := range disp[start:end] {
 		var s string
@@ -372,18 +382,18 @@ func (a app) settingsContent() []string {
 			}
 			s = p + dimStyle.Render(ansi.Truncate(d.text, max(cw-len(p), 1), "…"))
 		default:
-			s = a.settingLineView(rows, lines, d.line, nameWidth, valueWidth)
+			s = rowLineView(rows, lines, d.line, c, f, nameWidth, valueWidth)
 		}
 		out = append(out, ansi.Truncate(s, cw, "…"))
 	}
 	return out
 }
 
-func (a app) settingLineView(rows []settingRow, lines []settingLine, i int, nameWidths, valueWidths []int) string {
+func rowLineView(rows []settingRow, lines []settingLine, i int, c rowCursor, f rowFrame, nameWidths, valueWidths []int) string {
 	l := lines[i]
 	row := rows[l.row]
 	nameWidth, valueWidth := nameWidths[l.row], valueWidths[l.row]
-	focused := i == a.settings.cursor && !a.settings.edit.active
+	focused := i == c.cursor && !f.editing
 	pad := strings.Repeat(" ", rowIndent)
 	switch {
 	case l.blank:
@@ -393,21 +403,21 @@ func (a app) settingLineView(rows []settingRow, lines []settingLine, i int, name
 	case l.group:
 		return "  " + groupStyle.Render(row.group)
 	case l.filter:
-		f := a.settings.filter
+		flt := c.filter
 		n := 0
 		for _, o := range row.options {
-			if f.matches(row, o) {
+			if flt.matches(row, o) {
 				n++
 			}
 		}
-		return pad + selectedStyle.Render("/ "+f.text) + normalStyle.Render("▏") +
+		return pad + selectedStyle.Render("/ "+flt.text) + normalStyle.Render("▏") +
 			dimStyle.Render(fmt.Sprintf("  %d of %d", n, len(row.options)))
 	case l.empty:
 		cursor := "  "
 		if focused {
 			cursor = selectedStyle.Render("▸ ")
 		}
-		return "  " + cursor + "  " + dimStyle.Render("nothing matches "+quoted(a.settings.filter.text))
+		return "  " + cursor + "  " + dimStyle.Render("nothing matches "+quoted(c.filter.text))
 	case l.note:
 		style := dimStyle
 		if row.style != nil {
@@ -613,4 +623,8 @@ func (r settingRow) valueLines(width int) []string {
 		used += w
 	}
 	return append(lines, line)
+}
+
+func (a app) settingLineView(rows []settingRow, lines []settingLine, i int, nameWidths, valueWidths []int) string {
+	return rowLineView(rows, lines, i, a.settings.rowCursor, a.settingsFrame(), nameWidths, valueWidths)
 }

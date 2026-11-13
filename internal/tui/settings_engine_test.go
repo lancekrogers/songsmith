@@ -49,7 +49,7 @@ func TestInstallComfyUIRowOnlyWhenTheFolderHasNoComfyUI(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "main.py"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	a = pressSettings(t, a, "7", "5")
+	a = pressSettings(t, a, "8", "6")
 	if lineOf(a, "Install ComfyUI", -1) >= 0 {
 		t.Fatalf("Install ComfyUI shown with ComfyUI present:\n%s", plain(a))
 	}
@@ -98,7 +98,7 @@ func TestServerStartedOutsideSongsmithOffersNoStop(t *testing.T) {
 	}
 	srv.status = server.Status{}
 	srv.startErr = errors.New("comfyui not found at /x")
-	a = pressSettings(t, a, "7", "5")
+	a = pressSettings(t, a, "8", "6")
 	a = focus(t, a, "Server", -1)
 	a = pressSettings(t, a, "enter")
 	if !strings.Contains(plain(a), "Could not start the server: comfyui not found at /x") {
@@ -172,7 +172,7 @@ func TestFoldersAndHostSaveOnlyTheirKeyForTheNextStart(t *testing.T) {
 		t.Fatalf("host:\n%s", plain(a))
 	}
 
-	a = pressSettings(t, a, "7")
+	a = pressSettings(t, a, "8")
 	view := plain(a)
 	for _, s := range []string{"Library folder", "State folder", "Config file"} {
 		if !strings.Contains(view, s) {

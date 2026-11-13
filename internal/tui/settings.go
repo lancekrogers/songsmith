@@ -18,6 +18,7 @@ const (
 	sectionWriter
 	sectionMusicModel
 	sectionRender
+	sectionMaster
 	sectionServer
 	sectionAdvanced
 	sectionLibrary
@@ -29,6 +30,7 @@ var sectionNames = [settingsSectionCount]string{
 	sectionWriter:     "Writer",
 	sectionMusicModel: "Music model",
 	sectionRender:     "Render",
+	sectionMaster:     "Master",
 	sectionServer:     "Server",
 	sectionAdvanced:   "Advanced",
 	sectionLibrary:    "Library",
@@ -39,16 +41,11 @@ var sectionNames = [settingsSectionCount]string{
 // arrive after leaving it still land.
 type settingsModel struct {
 	section settingsSection
-	cursor  int
-	offset  int
+	rowCursor
 	// marks remembers the line each section was on; visited says which
 	// sections have one rather than their home line.
 	marks   [settingsSectionCount]lineAnchor
 	visited [settingsSectionCount]bool
-	// window is where the focused long list's window starts; filter is
-	// the text typed after / on it.
-	window listTop
-	filter settingsFilter
 
 	// message is the latest outcome; failed draws it as an error.
 	message string
@@ -351,16 +348,21 @@ type settingsEditor struct {
 }
 
 func (a *app) beginEdit(label, initial string, commit func(a *app, value string) (tea.Cmd, error)) tea.Cmd {
+	a.settings.edit = newEditor(label, initial, a.settingsContentWidth(), commit)
+	a.clearSettingsNote()
+	return textinput.Blink
+}
+
+// newEditor is an open one-line editor on initial, in a column width wide.
+func newEditor(label, initial string, width int, commit func(a *app, value string) (tea.Cmd, error)) settingsEditor {
 	in := textinput.New()
 	in.Prompt = ""
 	in.CharLimit = 1024
-	in.Width = max(a.settingsContentWidth()-len(label)-6, 10)
+	in.Width = max(width-len(label)-6, 10)
 	in.SetValue(initial)
 	in.CursorEnd()
 	in.Focus()
-	a.settings.edit = settingsEditor{active: true, label: label, input: in, commit: commit}
-	a.clearSettingsNote()
-	return textinput.Blink
+	return settingsEditor{active: true, label: label, input: in, commit: commit}
 }
 
 // updateSettingsEditor owns every key while the editor is open, so typing
