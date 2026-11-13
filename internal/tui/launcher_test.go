@@ -406,8 +406,12 @@ func TestSecondOpenComposeKeepsTheOpenForm(t *testing.T) {
 		t.Fatalf("second open reset the form: screen %v idea %q", a.screen, a.compose.idea.Value())
 	}
 	a, _ = send(t, a, key("esc"))
+	if a.screen != screenCompose || !strings.Contains(plain(a), unsavedChanges) {
+		t.Fatalf("first esc on the changed form should warn: screen %v", a.screen)
+	}
+	a, _ = send(t, a, key("esc"))
 	if a.screen != screenLauncher {
-		t.Fatalf("esc went to %v", a.screen)
+		t.Fatalf("second esc went to %v, not where the form was opened from", a.screen)
 	}
 }
 
