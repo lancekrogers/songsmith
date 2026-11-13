@@ -8,13 +8,21 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/setup"
 )
 
+func scratchConfig(dir string) config.Config {
+	cfg := config.Default()
+	cfg.ComfyUI.Dir = dir
+	return cfg
+}
+
 func TestDemoSetupIsInertWithoutItsVariable(t *testing.T) {
 	t.Setenv(demoSetupEnv, "")
+	t.Setenv(demoFixturesEnv, "1")
 	before := slices.Clone(setup.Manifest)
-	in, err := tuiInstaller("test")
+	in, err := tuiInstaller("test", scratchConfig("/opt/ComfyUI"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +38,7 @@ func TestDemoSetupIsInertWithoutItsVariable(t *testing.T) {
 func TestDemoSetupRefusesAnythingButLoopback(t *testing.T) {
 	for _, base := range []string{"https://huggingface.co", "http://192.0.2.1:18490", "file:///tmp/x"} {
 		t.Setenv(demoSetupEnv, base)
-		if _, err := tuiInstaller("test"); err == nil {
+		if _, err := tuiInstaller("test", scratchConfig("/tmp/songsmith-test/ComfyUI")); err == nil {
 			t.Errorf("%s accepted", base)
 		}
 	}
@@ -45,7 +53,17 @@ func TestDemoSetupServesFromTheFakeOnly(t *testing.T) {
 	t.Cleanup(func() { setup.Manifest = saved })
 
 	t.Setenv(demoSetupEnv, fake.URL)
-	in, err := tuiInstaller("test")
+	t.Setenv(demoFixturesEnv, "")
+	if _, err := tuiInstaller("test", scratchConfig("/opt/ComfyUI")); err == nil {
+		t.Fatal("demo setup accepted a ComfyUI folder outside a temporary folder")
+	}
+	before := slices.Clone(setup.Manifest)
+	if _, err := tuiInstaller("test", scratchConfig("/tmp/songsmith-test/ComfyUI")); err != nil || !slices.Equal(setup.Manifest, before) {
+		t.Fatalf("without fixtures the manifest must stay: %v", err)
+	}
+
+	t.Setenv(demoFixturesEnv, "1")
+	in, err := tuiInstaller("test", scratchConfig("/tmp/songsmith-test/ComfyUI"))
 	if err != nil {
 		t.Fatal(err)
 	}

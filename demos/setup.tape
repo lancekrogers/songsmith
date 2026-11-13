@@ -2,7 +2,8 @@
 # ComfyUI, the MiniMax Music 3 files and the writer model, and the launcher
 # ends ready. Uses a throwaway config under /tmp/songsmith-demo-setup (see
 # demos/setup.yaml). The downloads and Ollama are demos/setupfake on a
-# loopback port, ComfyUI's install is simulated (SONGSMITH_DEMO_SETUP), and a
+# loopback port serving small stand-in files (SONGSMITH_DEMO_SETUP and
+# SONGSMITH_DEMO_SETUP_FIXTURES), ComfyUI's install is simulated, and a
 # stub stands in for ffprobe: nothing real is downloaded or installed.
 # Record with: just demo-setup
 
@@ -24,7 +25,7 @@ Hide
 Type "unset NO_COLOR CLICOLOR; export CLICOLOR_FORCE=1 FORCE_COLOR=1 TERM=xterm-256color SONGSMITH_COLOR_PROFILE=ansi" Enter
 Type "rm -rf /tmp/songsmith-demo-setup && mkdir -p /tmp/songsmith-demo-setup/bin && cp demos/setup.yaml /tmp/songsmith-demo-setup/config.yaml" Enter
 Type "printf '#!/bin/sh\nexit 0\n' > /tmp/songsmith-demo-setup/bin/ffprobe && chmod +x /tmp/songsmith-demo-setup/bin/ffprobe" Enter
-Type "export PATH=$PWD/bin:/tmp/songsmith-demo-setup/bin:/usr/bin:/bin SONGSMITH_CONFIG=/tmp/songsmith-demo-setup/config.yaml SONGSMITH_DEMO_SETUP=http://127.0.0.1:18490" Enter
+Type "export PATH=$PWD/bin:/tmp/songsmith-demo-setup/bin:/usr/bin:/bin SONGSMITH_CONFIG=/tmp/songsmith-demo-setup/config.yaml SONGSMITH_DEMO_SETUP=http://127.0.0.1:18490 SONGSMITH_DEMO_SETUP_FIXTURES=1" Enter
 Type "clear" Enter
 Show
 

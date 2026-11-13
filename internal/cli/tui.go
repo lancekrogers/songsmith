@@ -22,7 +22,7 @@ func (a *app) runTUI(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	installer, err := tuiInstaller(version)
+	installer, err := tuiInstaller(version, cfg)
 	if err != nil {
 		return err
 	}

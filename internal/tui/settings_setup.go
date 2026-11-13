@@ -254,6 +254,10 @@ func (a *app) installAction(id setup.ActionID) tea.Cmd {
 				a.settingsNote("Install everything missing is running; it installs this too")
 				return nil
 			}
+			if _, running := a.job(comfyTarget(a.cfg()).key()); running {
+				a.settingsNote("ComfyUI is still installing; download " + t.name + " once it is done")
+				return nil
+			}
 			a.settingsNote("Installing ComfyUI first, then " + t.name)
 			return a.startSequence([]installTarget{comfyTarget(a.cfg()), t})
 		}

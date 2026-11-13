@@ -13,30 +13,39 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/setup"
 	"github.com/lancekrogers/songsmith/internal/tui"
 )
 
 // demoSetupEnv points the TUI's installer at a local stand-in for Hugging
-// Face (demos/setupfake) for recording demos/setup.tape. Unset, it does
-// nothing.
-const demoSetupEnv = "SONGSMITH_DEMO_SETUP"
+// Face (demos/setupfake) while the demo tapes record. With demoFixturesEnv
+// also set, the stand-in's small files replace the model list, so the setup
+// tape can download them. Unset, neither does anything.
+const (
+	demoSetupEnv    = "SONGSMITH_DEMO_SETUP"
+	demoFixturesEnv = "SONGSMITH_DEMO_SETUP_FIXTURES"
+)
 
 // tuiInstaller is the installer the TUI uses: the real one, unless the demo
-// variable is set, when every download goes to the loopback stand-in and
-// ComfyUI's install is simulated.
-func tuiInstaller(version string) (tui.Installer, error) {
+// variable is set, when nothing leaves the loopback stand-in, ComfyUI's
+// install is simulated, and only a ComfyUI folder under a temporary folder
+// is accepted.
+func tuiInstaller(version string, cfg config.Config) (tui.Installer, error) {
 	in := setup.New(version)
 	base := os.Getenv(demoSetupEnv)
 	if base == "" {
 		return in, nil
 	}
-	return newDemoInstaller(in, base)
+	if !underTemp(cfg.ComfyUI.Dir) {
+		return nil, fmt.Errorf("%s needs a ComfyUI folder under a temporary folder, not %s", demoSetupEnv, cfg.ComfyUI.Dir)
+	}
+	return newDemoInstaller(in, base, os.Getenv(demoFixturesEnv) != "")
 }
 
 type demoInstaller struct{ *setup.Installer }
 
-func newDemoInstaller(in *setup.Installer, base string) (*demoInstaller, error) {
+func newDemoInstaller(in *setup.Installer, base string, fixtures bool) (*demoInstaller, error) {
 	u, err := url.Parse(base)
 	if err != nil || u.Scheme != "http" || !isLoopback(u.Hostname()) {
 		return nil, fmt.Errorf("%s must be an http://127.0.0.1 address, not %q", demoSetupEnv, base)
@@ -55,6 +64,10 @@ func newDemoInstaller(in *setup.Installer, base string) (*demoInstaller, error) 
 	in.Reach = func(context.Context, string) error { return nil }
 	in.LookPath = func(file string) (string, error) { return "/demo/" + file, nil }
 	in.Run = func(context.Context, setup.Cmd) error { return errors.New("demo setup runs no programs") }
+	in.FreeSpace = func(string) (uint64, error) { return 1 << 40, nil }
+	if !fixtures {
+		return &demoInstaller{in}, nil
+	}
 
 	resp, err := in.HTTP.Get(base + "/catalog.json")
 	if err != nil {

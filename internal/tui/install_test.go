@@ -530,3 +530,18 @@ func TestTheDownloadNoteKeepsEveryScreenInTheTerminal(t *testing.T) {
 	run.finish(nil)
 	pump(t, a, noJob(vaeKey))
 }
+
+func TestAModelRowWaitsForAComfyUIInstallThatIsRunning(t *testing.T) {
+	a, fake := newInstallApp(t, true)
+	a = focus(t, a, "ComfyUI install", -1)
+	a = hit(t, a, "enter")
+	run := fake.next(t)
+	a = focus(t, a, "Model vae", -1)
+	a = hit(t, a, "enter")
+	fake.noneStarted(t)
+	if !strings.Contains(a.settings.message, "ComfyUI is still installing") {
+		t.Fatalf("message %q", a.settings.message)
+	}
+	run.finish(nil)
+	pump(t, a, noJob("comfyui"))
+}
