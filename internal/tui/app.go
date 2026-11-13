@@ -271,7 +271,9 @@ func (a app) update(msg tea.Msg) (app, tea.Cmd) {
 	case settingsAsync:
 		return a.receiveSettings(msg)
 	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" {
+		// The song form and the text editors handle ctrl+c themselves, so a
+		// reflex copy or cancel there never loses work.
+		if msg.String() == "ctrl+c" && a.screen != screenCompose {
 			return a.quit()
 		}
 	}

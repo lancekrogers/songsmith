@@ -49,14 +49,15 @@ func (r formRow) name() string {
 
 const (
 	lengthStep = 15
-	minLength  = 15
-	maxLength  = 300
+	minLength  = writer.MinSeconds
+	maxLength  = writer.MaxSeconds
 )
 
 // songFields are the form's values, compared to tell whether it changed.
 type songFields struct {
 	idea, title, seed string
 	seconds           float64
+	autoLength        bool
 	instrumental      bool
 	texts             [4]string
 }
@@ -73,7 +74,12 @@ type composeModel struct {
 
 	idea, title, seed textinput.Model
 	seconds           float64
-	instrumental      bool
+	// autoLength leaves the length to the writer: drafts get no target and
+	// seconds takes the drafted length, or stays the default without one.
+	// draftedLength is set once seconds holds a drafted length.
+	autoLength    bool
+	draftedLength bool
+	instrumental  bool
 	// texts are Lyrics, Global metadata, Vocal details and Arrangement.
 	texts [4]string
 	focus formRow
@@ -121,8 +127,8 @@ func newCompose() composeModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	return composeModel{
-		idea:    input("a road-trip anthem about leaving a small town", 300),
-		title:   input("Untitled", 120),
+		idea:    input("a road-trip anthem about leaving a small town", 0),
+		title:   input("Untitled", 0),
 		seed:    input("random each render", 20),
 		spinner: sp,
 	}
@@ -150,10 +156,12 @@ func (c *composeModel) startEdit(song library.Song, newSeconds float64) tea.Cmd 
 	c.idea.SetValue(song.Idea)
 	c.title.SetValue(song.Title)
 	c.seed.SetValue("")
-	if song.Seed != 0 {
+	if song.SeedPinned {
 		c.seed.SetValue(strconv.FormatInt(song.Seed, 10))
 	}
 	c.seconds = cmp.Or(song.Seconds, newSeconds)
+	c.autoLength = song.ID == "" && !c.copied && song.Seconds == 0
+	c.draftedLength = false
 	c.instrumental = song.Instrumental
 	c.texts = [4]string{song.Lyrics, song.Caption.GlobalMetadata, song.Caption.VocalDetails, song.Caption.Arrangement}
 	c.initial = c.fields()
@@ -165,17 +173,21 @@ func (c *composeModel) startEdit(song library.Song, newSeconds float64) tea.Cmd 
 	return c.applyFocus()
 }
 
-// asCopy turns song into an unsaved new song with the same words and style.
+// asCopy turns song into an unsaved new song with the same words and style,
+// and the same seed only when it was pinned.
 func asCopy(song library.Song) library.Song {
-	song.ID, song.Status, song.Audio, song.Duration, song.Seed, song.Error, song.JobID = "", "", "", 0, 0, "", ""
+	song.ID, song.Status, song.Audio, song.Duration, song.Error, song.JobID = "", "", "", 0, "", ""
 	song.Started, song.Finished, song.Timings = time.Time{}, time.Time{}, nil
+	if !song.SeedPinned {
+		song.Seed = 0
+	}
 	return song
 }
 
 func (c *composeModel) fields() songFields {
 	return songFields{
 		idea: c.idea.Value(), title: c.title.Value(), seed: c.seed.Value(),
-		seconds: c.seconds, instrumental: c.instrumental, texts: c.texts,
+		seconds: c.seconds, autoLength: c.autoLength, instrumental: c.instrumental, texts: c.texts,
 	}
 }
 
@@ -221,7 +233,8 @@ func (c *composeModel) setMsg(tone chipTone, format string, args ...any) {
 	c.layoutEditor()
 }
 
-// stepLength moves seconds to the next 15 s mark in dir, within 0:15-5:00.
+// stepLength moves seconds to the next 15 s mark in dir, within the
+// lengths a render accepts.
 func stepLength(seconds float64, dir int) float64 {
 	next := (math.Floor(seconds/lengthStep) + 1) * lengthStep
 	if dir < 0 {
@@ -230,27 +243,32 @@ func stepLength(seconds float64, dir int) float64 {
 	return min(max(next, minLength), maxLength)
 }
 
-// parseSeed reads the Seed field: blank is 0, a new random seed each render.
-func parseSeed(s string) (int64, error) {
+// parseSeed reads the Seed field: blank is unpinned, a new random seed
+// each render; a number pins it.
+func parseSeed(s string) (seed int64, pinned bool, err error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return 0, nil
+		return 0, false, nil
 	}
 	n, err := strconv.ParseInt(s, 10, 64)
 	if err != nil || n < 0 {
-		return 0, errors.New("seed must be a whole number of 0 or more, or blank for a new random seed each render")
+		return 0, false, errors.New("seed must be a whole number of 0 or more, or blank for a new random seed each render")
 	}
-	return n, nil
+	return n, true, nil
 }
 
-// song builds the edited song from the form.
+// song builds the edited song from the form. A blank seed keeps the stored
+// one unpinned, so a render waiting to resume still matches it.
 func (c *composeModel) song() (library.Song, error) {
 	s := c.base
-	seed, err := parseSeed(c.seed.Value())
+	seed, pinned, err := parseSeed(c.seed.Value())
 	if err != nil {
 		return s, err
 	}
-	s.Seed = seed
+	s.SeedPinned = pinned
+	if pinned {
+		s.Seed = seed
+	}
 	s.Idea = strings.TrimSpace(c.idea.Value())
 	s.Title = cmp.Or(strings.TrimSpace(c.title.Value()), "Untitled")
 	s.Seconds = c.seconds
@@ -333,12 +351,27 @@ func (c *composeModel) updateInput(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-const unsavedChanges = "Unsaved changes: ctrl+d saves the draft, esc again discards"
+const (
+	unsavedChanges = "Unsaved changes: ctrl+d saves the draft, esc again discards"
+	unsavedQuit    = "Unsaved changes: ctrl+d saves the draft, ctrl+c again quits"
+)
 
 func (a app) formKey(key tea.KeyMsg) (app, tea.Cmd) {
 	c := &a.compose
+	if key.Paste {
+		key.Runes = []rune(normalizeNewlines(string(key.Runes)))
+	}
 	k := key.String()
+	if k == "ctrl+c" {
+		if c.dirty() && c.armed != "ctrl+c" {
+			c.armed = "ctrl+c"
+			c.setMsg(toneWarn, unsavedQuit)
+			return a, nil
+		}
+		return a.quit()
+	}
 	if c.drafting {
+		c.armed = ""
 		if k == "esc" {
 			c.cancel()
 			c.cancel, c.drafting = nil, false
@@ -384,7 +417,7 @@ func (a app) formKey(key tea.KeyMsg) (app, tea.Cmd) {
 		}
 		switch c.focus {
 		case rowLength:
-			c.seconds = stepLength(c.seconds, dir)
+			c.stepLength(a.defaultSeconds(), dir)
 			return a, nil
 		case rowVocals:
 			c.instrumental = !c.instrumental
@@ -394,8 +427,33 @@ func (a app) formKey(key tea.KeyMsg) (app, tea.Cmd) {
 	return a, c.updateInput(key)
 }
 
+// stepLength changes the length by one step. The first step away from auto
+// lands on the default length.
+func (c *composeModel) stepLength(def float64, dir int) {
+	if c.autoLength && !c.draftedLength {
+		c.seconds = min(max(def, minLength), maxLength)
+	} else {
+		c.seconds = stepLength(c.seconds, dir)
+	}
+	c.autoLength, c.draftedLength = false, false
+}
+
+// draftReplaces names the filled fields a draft would replace.
+func (c *composeModel) draftReplaces() []string {
+	var names []string
+	if strings.TrimSpace(c.title.Value()) != "" {
+		names = append(names, "title")
+	}
+	for i, name := range []string{"lyrics", "global metadata", "vocal details", "arrangement"} {
+		if strings.TrimSpace(c.texts[i]) != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 // startDraft asks the writer for lyrics and a style from the idea.
-// confirmed is set by a second enter when drafting would replace lyrics.
+// confirmed is set by a second enter when drafting would replace fields.
 func (a app) startDraft(confirmed bool) (app, tea.Cmd) {
 	c := &a.compose
 	if why, down := a.writerUnavailable(); down {
@@ -407,16 +465,19 @@ func (a app) startDraft(confirmed bool) (app, tea.Cmd) {
 		c.setMsg(toneWarn, "Describe the song first: genre, mood, subject, anything.")
 		return a, nil
 	}
-	if strings.TrimSpace(c.texts[0]) != "" && !confirmed {
+	if names := c.draftReplaces(); len(names) > 0 && !confirmed {
 		c.armed = "enter"
-		c.setMsg(toneWarn, "Drafting replaces the lyrics and style below: enter again drafts, any other key keeps them")
+		c.setMsg(toneWarn, "Drafting replaces the %s below: enter again drafts, any other key keeps them", joinAnd(names))
 		return a, nil
 	}
 	ctx, cancel := context.WithCancel(a.ctx)
 	c.cancel, c.drafting = cancel, true
 	c.draftSeq++
 	seq, drafter := c.draftSeq, a.d.Drafter
-	opts := writer.Options{Seconds: c.seconds, Instrumental: c.instrumental}
+	opts := writer.Options{Instrumental: c.instrumental}
+	if !c.autoLength {
+		opts.Seconds = c.seconds
+	}
 	return a, tea.Batch(c.spinner.Tick, func() tea.Msg {
 		d, err := drafter.Write(ctx, idea, opts)
 		if ctx.Err() != nil {
@@ -447,8 +508,8 @@ func (a app) draftDone(msg draftDoneMsg) (app, tea.Cmd) {
 	set(&c.texts[1], d.Caption.GlobalMetadata)
 	set(&c.texts[2], d.Caption.VocalDetails)
 	set(&c.texts[3], d.Caption.Arrangement)
-	if d.Seconds > 0 {
-		c.seconds = d.Seconds
+	if d.Seconds > 0 && c.autoLength {
+		c.seconds, c.draftedLength = d.Seconds, true
 	}
 	cmd := c.focusOn(rowLyrics)
 	if msg.err != nil {
@@ -566,9 +627,8 @@ func (a app) saveCompose(render bool) (app, tea.Cmd) {
 		return a, nil
 	}
 	if render {
-		d := writer.Draft{Lyrics: song.Lyrics, Caption: song.Caption, Seconds: song.Seconds, Instrumental: song.Instrumental}
 		var fe *writer.FieldError
-		if err := d.Validate(); errors.As(err, &fe) {
+		if err := song.CheckRender(); errors.As(err, &fe) {
 			c.setMsg(toneBad, "Can't queue yet: %s.", fe.Msg)
 			return a, c.focusOn(fieldRows[fe.Field])
 		}
@@ -588,7 +648,8 @@ func (a app) saveCompose(render bool) (app, tea.Cmd) {
 	if song.ID != "" {
 		err = a.d.Queue.SaveEdit(song)
 		if errors.Is(err, queue.ErrBusy) {
-			// It started rendering while being edited: keep the edits as a new song.
+			// It started rendering while being edited: keep the edits, and a
+			// typed seed, as a new song.
 			song = asCopy(song)
 			copied = true
 		}

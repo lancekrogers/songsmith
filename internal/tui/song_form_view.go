@@ -13,11 +13,36 @@ const labelWidth = 8
 
 func (c *composeModel) boxWidth() int { return max(min(c.width-2, 100), 30) }
 
-// editorRows is the height the open editor and its tag menu share: the
-// screen less the header and blank line, the box border, the message and
-// the two key lines.
+// editorChrome is the lines around the open editor and the rows left for
+// its box, dropping the header, then the message and key lines, on a
+// terminal too short for all of them.
+func (c composeModel) editorChrome() (head, tail []string, rows int) {
+	head = []string{c.headerLine(), ""}
+	tail = append(c.messageLines(), footer(c.width, "  ", c.editor.modeKeys()...), footer(c.width, "  ", editorKeys()...))
+	head, tail = fitChrome(c.height, head, tail)
+	return head, tail, max(c.height-len(head)-len(tail), 0)
+}
+
+// fitChrome trims head, then tail from its top, until at least one row is
+// left between them on a screen h rows tall.
+func fitChrome(h int, head, tail []string) ([]string, []string) {
+	for len(head) > 0 && len(head)+len(tail) >= h {
+		head = head[:len(head)-1]
+	}
+	for len(tail) > 0 && len(tail) >= h {
+		tail = tail[1:]
+	}
+	return head, tail
+}
+
+// editorRows is the height the open editor and its tag menu share inside
+// the box, or the whole body when there is no room for the box border.
 func (c *composeModel) editorRows() int {
-	return max(c.height-6-len(c.messageLines()), 4)
+	_, _, rows := c.editorChrome()
+	if rows >= 3 {
+		rows -= 2
+	}
+	return max(rows, 1)
 }
 
 // layoutEditor fits the open text editor, and its tag menu, to the screen.
@@ -25,7 +50,7 @@ func (c *composeModel) layoutEditor() {
 	if c.editor == nil {
 		return
 	}
-	c.editor.setSize(c.boxWidth()-8, max(c.editorRows()-c.editorMenuRows(), 3))
+	c.editor.setSize(c.boxWidth()-8, max(c.editorRows()-c.editorMenuRows(), 1))
 }
 
 func (c *composeModel) editorMenuRows() int {
@@ -58,14 +83,14 @@ func formBox(title string, body []string, width int, focused bool) []string {
 func (a app) composeView() string {
 	c := a.compose
 	w, h := a.width, a.height
-	head := []string{c.headerLine(), ""}
-	var body, tail []string
+	var head, body, tail []string
 	if c.editor != nil {
-		tail = append(c.messageLines(), footer(w, "  ", c.editor.modeKeys()...), footer(w, "  ", editorKeys()...))
-		body = fitLines(c.editorLines(), max(h-len(head)-len(tail), 3))
+		var rows int
+		head, tail, rows = c.editorChrome()
+		body = fitLines(c.editorLines(rows), rows)
 	} else {
-		tail = append(c.messageLines(), a.formFooter()...)
-		budget := max(h-len(head)-len(tail), 3)
+		head, tail = fitChrome(h, []string{c.headerLine(), ""}, append(c.messageLines(), a.formFooter()...))
+		budget := max(h-len(head)-len(tail), 0)
 		boxes, focus := a.formBoxes(budget)
 		body = scrollBoxes(boxes, focus, budget)
 	}
@@ -172,9 +197,16 @@ func (a app) formBoxes(avail int) (boxes [][]string, focus int) {
 	if c.instrumental {
 		vocals, vocalsHint = "instrumental", "the draft writes section tags, no sung lines"
 	}
+	length := "‹ " + fmtDuration(c.seconds) + " ›" + dimStyle.Render("  the longest it may run")
+	switch {
+	case c.autoLength && c.draftedLength:
+		length = "‹ " + fmtDuration(c.seconds) + " ›" + dimStyle.Render("  the writer's pick; set it to choose")
+	case c.autoLength:
+		length = "‹ auto ›" + dimStyle.Render("  the writer picks; set it to choose")
+	}
 	song := []string{
 		row(rowTitle, c.title.View()),
-		row(rowLength, "‹ "+fmtDuration(c.seconds)+" ›"+dimStyle.Render("  the longest it may run")),
+		row(rowLength, length),
 		row(rowVocals, "‹ "+vocals+" ›"+dimStyle.Render("  "+vocalsHint)),
 		row(rowSeed, c.seed.View()),
 	}
@@ -291,10 +323,16 @@ func fitLines(lines []string, n int) []string {
 	return lines
 }
 
-func (c composeModel) editorLines() []string {
+// editorLines is the editor in its box, or bare when rows leaves no room
+// for the box border.
+func (c composeModel) editorLines(rows int) []string {
+	body := c.editor.bodyLines(c.editorMenuRows())
+	if rows < 3 {
+		return body
+	}
 	title := headerStyle.Render(c.editorRow.name()) + "  " + c.editor.modeChip()
 	if c.editorRow == rowLyrics {
 		title += dimStyle.Render("  [Verse] [Chorus] tags on their own lines")
 	}
-	return formBox(title, c.editor.bodyLines(c.editorMenuRows()), c.boxWidth(), true)
+	return formBox(title, body, c.boxWidth(), true)
 }

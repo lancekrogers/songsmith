@@ -38,7 +38,7 @@ func newGenerateCmd(a *app) *cobra.Command {
 			out := cmd.OutOrStdout()
 			idea := strings.TrimSpace(strings.Join(args, " "))
 
-			song := library.Song{Idea: idea, Title: title, Seed: seed, Seconds: f.seconds}
+			song := library.Song{Idea: idea, Title: title, Seed: seed, SeedPinned: cmd.Flags().Changed("seed"), Seconds: f.seconds}
 			switch {
 			case lyricsFile != "" || captionFile != "":
 				if lyricsFile == "" || captionFile == "" {
@@ -68,7 +68,7 @@ func newGenerateCmd(a *app) *cobra.Command {
 			default:
 				return errors.New("give a song idea, or --lyrics and --caption files")
 			}
-			if err := (writer.Draft{Lyrics: song.Lyrics, Caption: song.Caption, Seconds: song.Seconds}).Validate(); err != nil {
+			if err := song.CheckRender(); err != nil {
 				return err
 			}
 

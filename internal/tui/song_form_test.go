@@ -87,7 +87,7 @@ func TestLengthStepsAndClamps(t *testing.T) {
 		want float64
 	}{
 		{120, 1, 135}, {120, -1, 105}, {20, 1, 30}, {20, -1, 15},
-		{300, 1, 300}, {15, -1, 15}, {10, -1, 15}, {295, 1, 300},
+		{300, 1, 300}, {15, -1, 10}, {10, -1, 10}, {10, 1, 15}, {295, 1, 300}, {100, 1, 105}, {100, -1, 90},
 	}
 	for _, c := range cases {
 		if got := stepLength(c.from, c.dir); got != c.want {
@@ -97,6 +97,13 @@ func TestLengthStepsAndClamps(t *testing.T) {
 
 	m, _ := openNewSong(t, fakeDrafter{})
 	m = press(t, m, "down", "down")
+	if !strings.Contains(plain(m), "‹ auto ›") {
+		t.Fatalf("a new song's length starts on auto:\n%s", plain(m))
+	}
+	m = press(t, m, "right")
+	if m.compose.seconds != 120 || m.compose.autoLength || !strings.Contains(plain(m), "‹ 2:00 ›") {
+		t.Fatalf("the first step from auto lands on the default length, got %v", m.compose.seconds)
+	}
 	m = press(t, m, "right")
 	if m.compose.seconds != 135 || !strings.Contains(plain(m), "‹ 2:15 ›") {
 		t.Fatalf("seconds %v:\n%s", m.compose.seconds, plain(m))
@@ -104,7 +111,7 @@ func TestLengthStepsAndClamps(t *testing.T) {
 	for range 30 {
 		m = press(t, m, "left")
 	}
-	if m.compose.seconds != minLength || !strings.Contains(plain(m), "‹ 0:15 ›") {
+	if m.compose.seconds != minLength || !strings.Contains(plain(m), "‹ 0:10 ›") {
 		t.Fatalf("clamped low to %v", m.compose.seconds)
 	}
 	for range 30 {
@@ -119,7 +126,7 @@ func TestVocalsAndLengthReachTheDraftAndTheSong(t *testing.T) {
 	d := newRecordingDrafter(writer.Draft{Title: "Drift", Lyrics: "[Intro]\n[Instrumental]\n[Outro]",
 		Caption: writer.Caption{GlobalMetadata: "Ambient", VocalDetails: "Instrumental; lead is a synth", Arrangement: "Intro: pads."}}, nil)
 	m, store := openNewSong(t, d)
-	m = press(t, m, "down", "down", "left", "down", "right")
+	m = press(t, m, "down", "down", "left", "left", "down", "right")
 	if !m.compose.instrumental || !strings.Contains(plain(m), "‹ instrumental ›") {
 		t.Fatalf("vocals did not cycle:\n%s", plain(m))
 	}
@@ -160,9 +167,9 @@ func TestSeedField(t *testing.T) {
 		want int64
 		ok   bool
 	}{{"", 0, true}, {"  ", 0, true}, {"42", 42, true}, {"0", 0, true}, {"-1", 0, false}, {"4.2", 0, false}, {"abc", 0, false}} {
-		got, err := parseSeed(c.in)
-		if (err == nil) != c.ok || got != c.want {
-			t.Errorf("parseSeed(%q) = %d, %v", c.in, got, err)
+		got, pinned, err := parseSeed(c.in)
+		if (err == nil) != c.ok || got != c.want || pinned != (c.ok && strings.TrimSpace(c.in) != "") {
+			t.Errorf("parseSeed(%q) = %d, %v, %v", c.in, got, pinned, err)
 		}
 	}
 
@@ -177,7 +184,7 @@ func TestSeedField(t *testing.T) {
 	m, cmd := send(t, m, key("ctrl+d"))
 	runCmd(t, m, cmd)
 	songs, _ := store.List()
-	if len(songs) != 1 || songs[0].Seed != 42 || songs[0].Status != library.StatusDraft {
+	if len(songs) != 1 || songs[0].Seed != 42 || !songs[0].SeedPinned || songs[0].Status != library.StatusDraft {
 		t.Fatalf("songs %+v", songs)
 	}
 
@@ -190,8 +197,8 @@ func TestSeedField(t *testing.T) {
 	m.compose.seed.SetValue("")
 	m, cmd = send(t, m, key("ctrl+d"))
 	runCmd(t, m, cmd)
-	if s, _ := store.Load(songs[0].ID); s.Seed != 0 {
-		t.Fatalf("blank seed saved as %d", s.Seed)
+	if s, _ := store.Load(songs[0].ID); s.SeedPinned {
+		t.Fatalf("blank seed saved pinned: %+v", s)
 	}
 }
 
@@ -563,7 +570,7 @@ func TestFormFitsAt80x24(t *testing.T) {
 
 func TestEditExistingSongFillsEveryField(t *testing.T) {
 	m, store := newTestModel(t, fakeDrafter{})
-	song, err := store.Create(library.Song{Title: "Tide", Idea: "the sea", Lyrics: "[Intro]\n[Outro]", Seconds: 37, Seed: 7, Instrumental: true,
+	song, err := store.Create(library.Song{Title: "Tide", Idea: "the sea", Lyrics: "[Intro]\n[Outro]", Seconds: 37, Seed: 7, SeedPinned: true, Instrumental: true,
 		Caption: writer.Caption{GlobalMetadata: "Ambient", VocalDetails: "None", Arrangement: "Pads."}, Status: library.StatusDraft})
 	if err != nil {
 		t.Fatal(err)

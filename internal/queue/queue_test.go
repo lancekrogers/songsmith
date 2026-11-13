@@ -12,6 +12,7 @@ import (
 
 	"github.com/lancekrogers/songsmith/internal/backend"
 	"github.com/lancekrogers/songsmith/internal/library"
+	"github.com/lancekrogers/songsmith/internal/writer"
 )
 
 type fakeBackend struct {
@@ -66,7 +67,8 @@ func setup(t *testing.T, b *fakeBackend) (*Queue, *library.Store) {
 }
 
 func create(t *testing.T, store *library.Store, title string, status library.Status) library.Song {
-	s, err := store.Create(library.Song{Title: title, Lyrics: "[Verse]\nla", Seconds: 30, Status: status})
+	s, err := store.Create(library.Song{Title: title, Lyrics: "[Verse]\nla", Seconds: 30, Status: status,
+		Caption: writer.Caption{GlobalMetadata: "Folk", VocalDetails: "Soft lead", Arrangement: "Verse: guitar."}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,5 +395,86 @@ func TestCancelDetachedSongAbandonsJob(t *testing.T) {
 	got, _ := store.Load(song.ID)
 	if got.JobID != "" || len(b.abandoned) != 1 {
 		t.Fatalf("job %q abandoned %v", got.JobID, b.abandoned)
+	}
+}
+
+func TestEnqueueRefusesASongThatCannotRender(t *testing.T) {
+	q, store := setup(t, &fakeBackend{})
+	song, err := store.Create(library.Song{Title: "Half", Lyrics: "[Verse]\nla", Seconds: 30, Status: library.StatusDraft})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fe *writer.FieldError
+	if _, err := q.Enqueue(song); !errors.As(err, &fe) {
+		t.Fatalf("enqueue an incomplete song: %v", err)
+	}
+	if got, _ := store.Load(song.ID); got.Status != library.StatusDraft {
+		t.Fatalf("status %s", got.Status)
+	}
+}
+
+func TestEnqueueDrawsAFreshSeedForEachNewRenderOfAnUnpinnedSong(t *testing.T) {
+	b := &fakeBackend{}
+	q, store := setup(t, b)
+	song := create(t, store, "Song", library.StatusDraft)
+	song.Seed = 1234
+	queued, _ := q.Enqueue(song)
+	first := queued.Seed
+	if first == 0 || first == 1234 {
+		t.Fatalf("first render seed %d", first)
+	}
+	done := q.Render(t.Context(), queued)
+	again, _ := q.Enqueue(done)
+	if again.Seed == first {
+		t.Fatal("a new take of an unpinned song reused its seed")
+	}
+	b.err = errors.New("boom")
+	failed := q.Render(t.Context(), create(t, store, "Other", library.StatusQueued))
+	if failed.Status != library.StatusFailed {
+		t.Fatalf("status %s", failed.Status)
+	}
+	retry, _ := q.Enqueue(failed)
+	if retry.Seed == failed.Seed {
+		t.Fatal("a retry after a failure reused the seed")
+	}
+}
+
+func TestEnqueueKeepsAPinnedSeed(t *testing.T) {
+	q, store := setup(t, &fakeBackend{})
+	song := create(t, store, "Song", library.StatusDraft)
+	song.Seed, song.SeedPinned = 0, true
+	got, _ := q.Enqueue(song)
+	if got.Seed != 0 {
+		t.Fatalf("a pinned seed of 0 became %d", got.Seed)
+	}
+	if got = q.Render(t.Context(), got); got.Seed != 0 {
+		t.Fatalf("rendered with seed %d", got.Seed)
+	}
+	song = got
+	song.Seed = 42
+	got, _ = q.Enqueue(song)
+	if got = q.Render(t.Context(), got); got.Seed != 42 {
+		t.Fatalf("a new take of a pinned song used seed %d", got.Seed)
+	}
+}
+
+func TestEnqueueKeepsTheSeedOfADetachedRenderItResumes(t *testing.T) {
+	b := &fakeBackend{}
+	q, store := setup(t, b)
+	song := create(t, store, "Song", library.StatusQueued)
+	song.Seed, song.JobID = 77, "prompt-1"
+	store.Save(song)
+	// Saved as a draft by a title-only edit, then queued again.
+	song.Title, song.Status = "Renamed", library.StatusDraft
+	if err := q.SaveEdit(song); err != nil {
+		t.Fatal(err)
+	}
+	got, err := q.Enqueue(song)
+	if err != nil || got.Seed != 77 || got.JobID != "prompt-1" {
+		t.Fatalf("enqueue: %v %+v", err, got)
+	}
+	q.Render(t.Context(), got)
+	if b.calls[0].ResumeID != "prompt-1" || b.calls[0].Seed != 77 || len(b.abandoned) != 0 {
+		t.Fatalf("resume %q seed %d abandoned %v", b.calls[0].ResumeID, b.calls[0].Seed, b.abandoned)
 	}
 }

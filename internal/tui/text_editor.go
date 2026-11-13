@@ -97,6 +97,13 @@ func (t *textEditor) setSize(width, height int) {
 
 func (t *textEditor) update(msg tea.KeyMsg) editorEvent {
 	t.note = ""
+	if msg.Paste {
+		t.paste(string(msg.Runes))
+		return editorNone
+	}
+	if msg.Type == tea.KeyCtrlC {
+		msg = tea.KeyMsg{Type: tea.KeyEsc}
+	}
 	switch msg.String() {
 	case "ctrl+s":
 		return editorSaveQueue
@@ -145,6 +152,37 @@ func (t *textEditor) update(msg tea.KeyMsg) editorEvent {
 		t.note = "Unknown command :" + cmd + ". Use :w, :q or :wq."
 	}
 	return editorNone
+}
+
+// normalizeNewlines turns \r\n and lone \r, which a paste keeps, into \n.
+func normalizeNewlines(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
+}
+
+// paste inserts pasted text at the cursor in every mode but COMMAND, where
+// it joins the command line without its line breaks.
+func (t *textEditor) paste(text string) {
+	text = normalizeNewlines(text)
+	switch t.ed.Mode() {
+	case vim.ModeCommand:
+		if text = strings.ReplaceAll(text, "\n", " "); text != "" {
+			t.ed.Update(runeKey(text))
+		}
+		return
+	case vim.ModeInsert:
+		t.ed.Update(runeKey(text))
+	default:
+		if t.ed.Mode() != vim.ModeNormal {
+			t.ed.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		}
+		t.ed.Update(runeKey("i"))
+		t.ed.Update(runeKey(text))
+		t.ed.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	}
+	t.ed.EnsureCursorVisible()
+	if t.menu != nil {
+		t.refreshMenu()
+	}
 }
 
 // idleNormal is NORMAL mode with nothing pending, the only state where esc
@@ -198,16 +236,27 @@ func runeBoundary(s string, col int) int {
 	return col
 }
 
-// openTag finds an unclosed [ that starts the cursor's line and the text
-// typed after it.
-func (t *textEditor) openTag() (bracket int, partial string, ok bool) {
+// openTag finds the tag the cursor is in: a [ that starts the cursor's
+// line with no bracket between it and the cursor. partial is the text from
+// the [ to the cursor; end is where the tag's token ends, past its ] when
+// the line closes it, otherwise at the end of the word under the cursor.
+func (t *textEditor) openTag() (bracket, end int, partial string, ok bool) {
 	line, col := t.ed.CurrentLine(), t.ed.Cursor().Col
-	before := line[:min(col, len(line))]
+	col = min(col, len(line))
+	before := line[:col]
 	i := strings.IndexByte(before, '[')
 	if i < 0 || strings.TrimSpace(before[:i]) != "" || strings.ContainsAny(before[i+1:], "[]") {
-		return 0, "", false
+		return 0, 0, "", false
 	}
-	return i, before[i+1:], true
+	after := line[col:]
+	if j := strings.IndexAny(after, "[]"); j >= 0 && after[j] == ']' {
+		return i, col + j + 1, before[i+1:], true
+	}
+	end = col + len(after)
+	if j := strings.IndexAny(after, " \t[]"); j >= 0 {
+		end = col + j
+	}
+	return i, end, before[i+1:], true
 }
 
 func tagCandidates(partial string) []string {
@@ -223,7 +272,7 @@ func tagCandidates(partial string) []string {
 // openMenu opens tag completion after a [ that starts the line. It reports
 // whether tab was used for that rather than typed.
 func (t *textEditor) openMenu() bool {
-	_, partial, ok := t.openTag()
+	_, _, partial, ok := t.openTag()
 	if !ok {
 		return false
 	}
@@ -239,7 +288,7 @@ func (t *textEditor) closeMenu() { t.menu, t.menuSel = nil, 0 }
 
 // refreshMenu filters the open menu by what has been typed since.
 func (t *textEditor) refreshMenu() {
-	_, partial, ok := t.openTag()
+	_, _, partial, ok := t.openTag()
 	if !ok || t.ed.Mode() != vim.ModeInsert {
 		t.closeMenu()
 		return
@@ -268,20 +317,14 @@ func (t *textEditor) menuKey(msg tea.KeyMsg) bool {
 	return true
 }
 
-// insertTag completes the tag being typed and closes its bracket.
+// insertTag replaces the tag token under the cursor with tag, closed.
 func (t *textEditor) insertTag(tag string) {
-	bracket, _, ok := t.openTag()
+	bracket, end, _, ok := t.openTag()
 	t.closeMenu()
 	if !ok {
 		return
 	}
-	col := t.ed.Cursor().Col
-	line := t.ed.CurrentLine()
-	if col < len(line) && line[col] == ']' {
-		t.ed.ReplaceLineRange(bracket+1, col+1, tag+"]")
-	} else {
-		t.ed.ReplaceLineRange(bracket+1, col, tag+"]")
-	}
+	t.ed.ReplaceLineRange(bracket+1, end, tag+"]")
 	t.ed.EnsureCursorVisible()
 }
 
@@ -356,22 +399,39 @@ func tagStyle(line string) (lipgloss.Style, bool) {
 }
 
 // bodyLines is the editor text with the completion menu right under the
-// text, above the empty rows.
+// row the cursor is on.
 func (t *textEditor) bodyLines(menuRows int) []string {
 	lines := strings.Split(t.ed.View(t.viewConfig()), "\n")
 	menu := t.menuLines(menuRows)
 	if len(menu) == 0 {
 		return lines
 	}
-	end := slices.Index(lines, emptyRow)
-	if end < 0 {
-		end = len(lines)
-	}
-	return slices.Concat(lines[:end], menu, lines[end:])
+	at := min(t.cursorRow()+1, len(lines))
+	return slices.Concat(lines[:at], menu, lines[at:])
 }
 
-// emptyRow is how the editor draws a row past the end of the text.
-var emptyRow = strings.Split(vim.NewEditor("").View(vim.ViewConfig{ShowLineNums: true}), "\n")[1]
+// cursorMark stands in for the cursor cell in cursorRow's plain render.
+const cursorMark = '\uE000'
+
+// cursorRow is the view row the cursor is drawn on. It draws the view once
+// more without styles, with the cursor cell replaced by a mark of the same
+// width, so colour and tag styling cannot move the answer.
+func (t *textEditor) cursorRow() int {
+	mark := func(s string) string {
+		return strings.Repeat(string(cursorMark), max(ansi.StringWidth(s), 1))
+	}
+	cfg := vim.ViewConfig{
+		ShowLineNums: true,
+		CursorInsert: lipgloss.NewStyle().Transform(mark),
+		CursorBlock:  lipgloss.NewStyle().Transform(mark),
+	}
+	for i, row := range strings.Split(t.ed.View(cfg), "\n") {
+		if strings.ContainsRune(row, cursorMark) {
+			return i
+		}
+	}
+	return 0
+}
 
 func (t *textEditor) modeChip() string {
 	chip := func(c lipgloss.Color, s string) string {

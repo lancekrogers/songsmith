@@ -133,3 +133,18 @@ func TestNextTake(t *testing.T) {
 		t.Fatalf("third take = %s", got)
 	}
 }
+
+func TestSongsSavedBeforeSeedPinningLoadUnpinned(t *testing.T) {
+	store := NewStore(t.TempDir())
+	dir := filepath.Join(store.Dir(), "old-song")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "song.json"), []byte(`{"id":"old-song","title":"Old","seed":99,"status":"done"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	song, err := store.Load("old-song")
+	if err != nil || song.SeedPinned || song.Seed != 99 {
+		t.Fatalf("%v %+v", err, song)
+	}
+}
