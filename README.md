@@ -77,16 +77,19 @@ songsmith config              # print the effective configuration
 
 | Key | Action |
 |---|---|
-| `n` | New song: type an idea, `enter` drafts it with Ollama, `tab` writes it yourself |
+| `n` | New song: type an idea and `enter` drafts it with Ollama, or fill in the fields yourself |
 | `e` | Edit the selected song (editing a finished song makes a copy) |
 | `enter` / `space` | Play or stop the selected finished song |
 | `r` | Queue the selected song (a finished song renders a new take with a new seed; earlier takes stay on disk) |
 | `x` | Cancel a queued or rendering song |
 | `q` | Quit; ComfyUI keeps rendering the current song and songsmith picks up the result next time it starts |
 
-In the editor: `tab` moves between title, length, lyrics and style, `ctrl+e` opens
-lyrics or style in `$EDITOR`, `ctrl+s` saves and queues, `ctrl+d` saves a draft, and
-`esc` discards changes.
+In the song form: `↑/↓` or `tab` move between fields, `←/→` change Length and Vocals,
+`enter` opens Lyrics or a Style part in the built-in vim-style editor (`:w` or `enter`
+in NORMAL goes back, `:q` drops that field's changes, `:wq` saves a draft, `[` then
+`tab` completes a section tag), `ctrl+e` opens the field in `$VISUAL` or `$EDITOR`,
+`ctrl+s` saves and queues, and `ctrl+d` saves a draft. `esc` on a changed form asks
+once before discarding.
 
 ### Writing for MiniMax Music 3
 
@@ -115,7 +118,7 @@ ollama:
   url: http://127.0.0.1:11434
   model: qwen3.8:latest
   temperature: 0.8
-  instructions_file: ""   # a text file that replaces the built-in writing instructions
+  instructions_file: ""   # a text file that replaces the built-in writing instructions; relative to this file
 render:
   steps: 30
   cfg_scale: 1.7

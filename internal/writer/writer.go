@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/lancekrogers/songsmith/internal/ollama"
@@ -75,6 +76,8 @@ type Draft struct {
 	Lyrics  string  `json:"lyrics" yaml:"lyrics"`
 	Caption Caption `json:"caption" yaml:"caption"`
 	Seconds float64 `json:"seconds" yaml:"seconds"`
+	// Instrumental drafts have section tags but no sung lines.
+	Instrumental bool `json:"instrumental,omitempty" yaml:"instrumental,omitempty"`
 }
 
 const (
@@ -82,28 +85,89 @@ const (
 	MaxSeconds = 300
 )
 
-var sectionTag = regexp.MustCompile(`(?m)^\s*\[(Intro|Verse|Pre-Chorus|Chorus|Post-Chorus|Bridge|Instrumental|Solo|Outro|Hook|Break|Interlude)[^\]]*\]\s*$`)
+// SectionTags are the lyric section tags the writer is asked to use and the
+// editor offers, in song order.
+var SectionTags = []string{"Intro", "Verse", "Pre-Chorus", "Chorus", "Post-Chorus", "Bridge", "Instrumental", "Solo", "Outro"}
 
-// Validate reports the first problem that would make a render fail or ignore
-// the user's structure.
+// AcceptedSectionTags are the tags Validate counts: SectionTags and a few
+// more that are not suggested.
+var AcceptedSectionTags = append(slices.Clone(SectionTags), "Hook", "Break", "Interlude")
+
+var (
+	sectionTag     = regexp.MustCompile(`(?m)^\s*\[(` + tagAlternation() + `)[^\]]*\]\s*$`)
+	sectionTagName = regexp.MustCompile(`^\[(` + tagAlternation() + `)[^\]]*\]$`)
+	tagLine        = regexp.MustCompile(`^\s*(\[[^\]]*\])\s*$`)
+)
+
+func tagAlternation() string {
+	var names []string
+	for _, t := range AcceptedSectionTags {
+		names = append(names, regexp.QuoteMeta(t))
+	}
+	return strings.Join(names, "|")
+}
+
+// TagLine reports whether line holds nothing but a [tag], and the byte span
+// of the tag. section is the tag Validate counts it as, such as "Verse" for
+// "[Verse 2]", or "" when it would not count.
+func TagLine(line string) (start, end int, section string, ok bool) {
+	loc := tagLine.FindStringSubmatchIndex(line)
+	if loc == nil {
+		return 0, 0, "", false
+	}
+	start, end = loc[2], loc[3]
+	if m := sectionTagName.FindStringSubmatch(line[start:end]); m != nil {
+		section = m[1]
+	}
+	return start, end, section, true
+}
+
+// IsSectionTag reports whether name is a tag Validate counts, such as "Verse".
+func IsSectionTag(name string) bool {
+	return slices.Contains(AcceptedSectionTags, name)
+}
+
+// Fields a FieldError can name.
+const (
+	FieldLyrics         = "lyrics"
+	FieldGlobalMetadata = "caption.global_metadata"
+	FieldVocalDetails   = "caption.vocal_details"
+	FieldArrangement    = "caption.arrangement"
+	FieldSeconds        = "seconds"
+)
+
+// FieldError is one Validate problem and the draft field it concerns.
+type FieldError struct {
+	Field string
+	Msg   string
+}
+
+func (e *FieldError) Error() string { return e.Msg }
+
+// Validate reports every problem that would make a render fail or ignore the
+// user's structure, as FieldErrors in field order.
 func (d Draft) Validate() error {
 	var errs []error
-	if strings.TrimSpace(d.Lyrics) == "" {
-		errs = append(errs, errors.New("lyrics are empty"))
-	} else if !sectionTag.MatchString(d.Lyrics) {
-		errs = append(errs, errors.New("lyrics need at least one section tag such as [Verse] or [Chorus] on its own line"))
+	problem := func(field, msg string) { errs = append(errs, &FieldError{Field: field, Msg: msg}) }
+	switch {
+	case d.Instrumental && !sectionTag.MatchString(d.Lyrics):
+		problem(FieldLyrics, "an instrumental still needs section tags such as [Intro], [Instrumental] and [Outro], each on its own line")
+	case strings.TrimSpace(d.Lyrics) == "":
+		problem(FieldLyrics, "lyrics are empty")
+	case !sectionTag.MatchString(d.Lyrics):
+		problem(FieldLyrics, "lyrics need at least one section tag such as [Verse] or [Chorus] on its own line")
 	}
 	if strings.TrimSpace(d.Caption.GlobalMetadata) == "" {
-		errs = append(errs, errors.New("caption global metadata is empty"))
+		problem(FieldGlobalMetadata, "caption global metadata is empty")
 	}
 	if strings.TrimSpace(d.Caption.VocalDetails) == "" {
-		errs = append(errs, errors.New("caption vocal details are empty"))
+		problem(FieldVocalDetails, "caption vocal details are empty")
 	}
 	if strings.TrimSpace(d.Caption.Arrangement) == "" {
-		errs = append(errs, errors.New("caption arrangement is empty"))
+		problem(FieldArrangement, "caption arrangement is empty")
 	}
 	if d.Seconds < MinSeconds || d.Seconds > MaxSeconds {
-		errs = append(errs, fmt.Errorf("length %.0fs is outside %d-%d seconds", d.Seconds, MinSeconds, MaxSeconds))
+		problem(FieldSeconds, fmt.Sprintf("length %.0fs is outside %d-%d seconds", d.Seconds, MinSeconds, MaxSeconds))
 	}
 	return errors.Join(errs...)
 }
@@ -184,17 +248,26 @@ var draftSchema = map[string]any{
 }
 
 // BuiltinInstructions is the system prompt drafts use unless configured.
-const BuiltinInstructions = `You write songs for MiniMax Music 3, a model that sings the lyrics it is given and follows a structured style caption.
+var BuiltinInstructions = `You write songs for MiniMax Music 3, a model that sings the lyrics it is given and follows a structured style caption.
 
 Return JSON with:
 - title: a short song title.
-- lyrics: the full lyrics. Put each section tag alone on its own line, using only these tags: [Intro], [Verse], [Pre-Chorus], [Chorus], [Post-Chorus], [Bridge], [Instrumental], [Solo], [Outro]. Write singable lines with natural rhythm and rhyme. Tags carry the structure; never write stage directions inside lyric lines.
+- lyrics: the full lyrics. Put each section tag alone on its own line, using only these tags: ` + bracketed(SectionTags) + `. Write singable lines with natural rhythm and rhyme. Tags carry the structure; never write stage directions inside lyric lines.
 - caption.global_metadata: genre and subgenres, tempo (BPM or a range), key and scale only when useful, the emotional progression across the song, listening scenario, and production profile.
 - caption.vocal_details: lead vocal gender, timbre, register and delivery, plus harmonies, backing vocals and restrained effects. For an instrumental, say it is instrumental and name the lead instrument.
 - caption.arrangement: a section-by-section timeline matching the lyric tags. For each section, state what enters, exits or intensifies: drums and groove, bass, harmonic instruments, leads, textures and transitions. Prefer concrete musical changes over decorative adjectives.
 - seconds: the song length in seconds that fits the lyrics, between 10 and 300.
 
 Keep the three caption parts together around 250-450 words. Never copy lyric lines into the caption. Write in English unless the idea asks for another language.`
+
+// bracketed lists tags as "[Intro], [Verse]".
+func bracketed(tags []string) string {
+	out := make([]string, len(tags))
+	for i, t := range tags {
+		out[i] = "[" + t + "]"
+	}
+	return strings.Join(out, ", ")
+}
 
 // Write drafts a song from idea.
 func (w *Writer) Write(ctx context.Context, idea string, opts Options) (Draft, error) {
@@ -229,6 +302,7 @@ func (w *Writer) Write(ctx context.Context, idea string, opts Options) (Draft, e
 		return Draft{}, fmt.Errorf("model %s returned invalid JSON: %w", w.model, err)
 	}
 	d.Lyrics = strings.TrimSpace(d.Lyrics)
+	d.Instrumental = opts.Instrumental
 	if opts.Seconds > 0 {
 		d.Seconds = opts.Seconds
 	}

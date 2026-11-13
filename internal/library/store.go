@@ -29,20 +29,23 @@ const (
 )
 
 type Song struct {
-	ID       string         `json:"id"`
-	Created  time.Time      `json:"created"`
-	Updated  time.Time      `json:"updated"`
-	Idea     string         `json:"idea,omitempty"`
-	Title    string         `json:"title"`
-	Lyrics   string         `json:"lyrics"`
-	Caption  writer.Caption `json:"caption"`
-	Seconds  float64        `json:"seconds"`
-	Seed     int64          `json:"seed"`
-	Status   Status         `json:"status"`
-	Error    string         `json:"error,omitempty"`
-	Audio    string         `json:"audio,omitempty"`
-	Duration float64        `json:"duration,omitzero"`
-	Backend  string         `json:"backend,omitempty"`
+	ID      string         `json:"id"`
+	Created time.Time      `json:"created"`
+	Updated time.Time      `json:"updated"`
+	Idea    string         `json:"idea,omitempty"`
+	Title   string         `json:"title"`
+	Lyrics  string         `json:"lyrics"`
+	Caption writer.Caption `json:"caption"`
+	Seconds float64        `json:"seconds"`
+	Seed    int64          `json:"seed"`
+	// SeedPinned keeps Seed for every render. Unpinned, each new render
+	// gets a fresh seed; Seed then records the latest one.
+	SeedPinned bool    `json:"seed_pinned,omitempty"`
+	Status     Status  `json:"status"`
+	Error      string  `json:"error,omitempty"`
+	Audio      string  `json:"audio,omitempty"`
+	Duration   float64 `json:"duration,omitzero"`
+	Backend    string  `json:"backend,omitempty"`
 	// JobID is the backend's ID for an unfinished render, kept so a render
 	// interrupted by a crash can be resumed instead of submitted twice.
 	JobID    string    `json:"job_id,omitempty"`
@@ -50,6 +53,14 @@ type Song struct {
 	Finished time.Time `json:"finished,omitzero"`
 	// Timings holds seconds spent in each render stage.
 	Timings map[string]float64 `json:"timings,omitempty"`
+	// Instrumental songs are drafted without sung lines.
+	Instrumental bool `json:"instrumental,omitempty"`
+}
+
+// CheckRender reports what stops the song from rendering, as the
+// writer.FieldErrors of its draft.
+func (s Song) CheckRender() error {
+	return writer.Draft{Lyrics: s.Lyrics, Caption: s.Caption, Seconds: s.Seconds, Instrumental: s.Instrumental}.Validate()
 }
 
 const songFile = "song.json"

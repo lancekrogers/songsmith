@@ -108,7 +108,7 @@ func TestLauncherOffersFinishSetupWhileABlockingCheckFails(t *testing.T) {
 	}
 
 	a = nav(t, a, "enter")
-	if a.screen != screenSetup || !strings.Contains(plain(a), "FAIL Model diffusion_models") {
+	if a.screen != screenSettings || a.settings.section != sectionSetup || !strings.Contains(plain(a), "Model diffusion_models  FAIL") {
 		t.Fatalf("Finish setup opened %v:\n%s", a.screen, plain(a))
 	}
 }
@@ -151,7 +151,8 @@ func TestLauncherWithNothingInstalled(t *testing.T) {
 	view := plain(a)
 	for _, s := range []string{
 		"Writer Ollama not reachable", "Music model files missing", "Server not installed", "Queue idle",
-		"▲ Missing: ComfyUI, music model files, Ollama, ffprobe",
+		"▲ ComfyUI install (+3 more): ComfyUI is not installed",
+		"Missing: ComfyUI, music model files, Ollama, ffprobe",
 		"songsmith can install ComfyUI and music model files (Finish setup) · get Ollama and ffprobe yourself",
 	} {
 		if !strings.Contains(view, s) {
@@ -260,12 +261,16 @@ func TestLauncherLibraryAndBack(t *testing.T) {
 func TestNewSongFromLauncherReturnsToLauncher(t *testing.T) {
 	a, _ := newLauncherApp(t, readyChecks())
 	a = nav(t, a, "enter")
-	if a.screen != screenCompose || a.compose.step != stepIdea {
+	if a.screen != screenCompose || a.compose.focus != rowIdea {
 		t.Fatalf("New song opened %v", a.screen)
 	}
 	a, _ = send(t, a, key("q"))
 	if a.screen != screenCompose || a.compose.idea.Value() != "q" {
 		t.Fatalf("q should type into the idea, not quit: screen %v idea %q", a.screen, a.compose.idea.Value())
+	}
+	a, _ = send(t, a, key("esc"))
+	if a.screen != screenCompose {
+		t.Fatal("esc on a changed form should warn first")
 	}
 	a, _ = send(t, a, key("esc"))
 	if a.screen != screenLauncher {
@@ -297,31 +302,6 @@ func TestNowRenderingOpensTheLibraryOnThatSong(t *testing.T) {
 	a = nav(t, a, "enter")
 	if s, _ := a.selected(); a.screen != screenLibrary || s.ID != busy.ID {
 		t.Fatalf("screen %v selected %q", a.screen, s.Title)
-	}
-}
-
-func TestReportScreenRerunsChecks(t *testing.T) {
-	a, _ := newLauncherApp(t, readyChecks())
-	a, _ = send(t, a, key("up"), key("down"), key("down"))
-	if selectedLabel(a) != "Settings" {
-		t.Fatalf("selected %q", selectedLabel(a))
-	}
-	a = nav(t, a, "enter")
-	if a.screen != screenSettings || !strings.Contains(plain(a), "r re-run checks   esc back") {
-		t.Fatalf("screen %v:\n%s", a.screen, plain(a))
-	}
-	a, cmd := send(t, a, key("r"))
-	if !a.health.running || cmd == nil || strings.Contains(plain(a), "r re-run") {
-		t.Fatalf("r did not start a run:\n%s", plain(a))
-	}
-	cmd()
-	a, _ = send(t, a, a.events.wait(t.Context())())
-	if a.health.running || !strings.Contains(plain(a), "OK   ComfyUI install") {
-		t.Fatalf("after re-run:\n%s", plain(a))
-	}
-	a = nav(t, a, "esc")
-	if a.screen != screenLauncher {
-		t.Fatalf("esc went to %v", a.screen)
 	}
 }
 
@@ -373,21 +353,100 @@ func TestLauncherFitsCommonSizes(t *testing.T) {
 	}
 }
 
-func TestReportScrollsWhenTallerThanTheTerminal(t *testing.T) {
-	a, _ := newLauncherApp(t, nothingInstalled())
-	a, _ = send(t, a, tea.WindowSizeMsg{Width: 80, Height: 14})
+func TestSecondOpenComposeKeepsTheOpenForm(t *testing.T) {
+	a, _ := newLauncherApp(t, readyChecks())
 	a = nav(t, a, "enter")
+	a, _ = send(t, a, key("a"), key("b"))
+	a, _ = send(t, a, openComposeMsg{})
+	if a.screen != screenCompose || a.compose.idea.Value() != "ab" {
+		t.Fatalf("second open reset the form: screen %v idea %q", a.screen, a.compose.idea.Value())
+	}
+	a, _ = send(t, a, key("esc"))
+	if a.screen != screenCompose || !strings.Contains(plain(a), unsavedChanges) {
+		t.Fatalf("first esc on the changed form should warn: screen %v", a.screen)
+	}
+	a, _ = send(t, a, key("esc"))
+	if a.screen != screenLauncher {
+		t.Fatalf("second esc went to %v, not where the form was opened from", a.screen)
+	}
+}
+
+// nodesBroken has a blocking failure that names nothing missing, next to a
+// missing non-blocking tool.
+func nodesBroken() []health.Check {
+	checks := append(readyChecks(),
+		health.Check{ID: health.IDNodes, Name: "ComfyUI nodes", Result: health.Fail, Blocking: true, Detail: "missing TextEncodeMiniMaxMusic"},
+		health.Check{ID: health.IDFFprobe, Name: "ffprobe", Result: health.Warn, Missing: "ffprobe", Detail: "not found"},
+	)
+	return checks
+}
+
+func TestNoticeLeadsWithTheBlockingFailure(t *testing.T) {
+	a, _ := newLauncherApp(t, nodesBroken())
+	a, _ = send(t, a, tea.WindowSizeMsg{Width: 80, Height: 40})
+	lines := a.launcherState().noticeLines(80)
+	if first := ansi.Strip(lines[0]); !strings.Contains(first, "▲ ComfyUI nodes: missing TextEncodeMiniMaxMusic") {
+		t.Fatalf("first notice line %q", first)
+	}
+	if view := plain(a); !strings.Contains(view, "Missing: ffprobe") {
+		t.Fatalf("non-blocking missing item dropped:\n%s", view)
+	}
+	a, _ = send(t, a, tea.WindowSizeMsg{Width: 80, Height: 12})
+	if view := plain(a); !strings.Contains(view, "▲ ComfyUI nodes: missing") {
+		t.Fatalf("compact view hides the blocker:\n%s", view)
+	}
+	a, _ = send(t, a, tea.WindowSizeMsg{Width: 80, Height: 40})
+	a = nav(t, a, "enter")
+	if a.screen != screenSettings || a.settings.section != sectionSetup {
+		t.Fatalf("Finish setup opened %v", a.screen)
+	}
+	if first := ansi.Strip(a.settingsContent()[0]); !strings.Contains(first, "▲ ComfyUI nodes: missing TextEncodeMiniMaxMusic") {
+		t.Fatalf("Setup does not lead with the blocker: %q\n%s", first, plain(a))
+	}
+}
+
+func TestSetupSaysNothingBlocks(t *testing.T) {
+	a, _ := newLauncherApp(t, readyChecks())
+	a, _ = send(t, a, switchScreenMsg(screenSetup))
+	if first := ansi.Strip(a.settingsContent()[0]); !strings.Contains(first, "✓ Nothing blocks rendering") {
+		t.Fatalf("first Setup line %q", first)
+	}
+}
+
+func TestNoticeSaysWhenMoreChecksBlock(t *testing.T) {
+	a, _ := newLauncherApp(t, nothingInstalled())
+	a, _ = send(t, a, tea.WindowSizeMsg{Width: 80, Height: 40})
+	if first := ansi.Strip(a.launcherState().noticeLines(80)[0]); !strings.HasPrefix(first, "▲ ComfyUI install (+3 more): ComfyUI is not installed") {
+		t.Fatalf("first notice line %q", first)
+	}
+}
+
+func TestCompactLauncherShowsTheMessage(t *testing.T) {
+	a, store := newLauncherApp(t, missingModelChecks())
+	song, err := store.Create(library.Song{Title: "Broken", Status: library.StatusFailed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ = send(t, a, updateMsg{SongID: song.ID, Status: library.StatusFailed, Err: "out of memory"})
+	for h := 10; h <= 22; h++ {
+		a, _ = send(t, a, tea.WindowSizeMsg{Width: 80, Height: h})
+		view := plain(a)
+		lines := strings.Split(view, "\n")
+		if len(lines) > h {
+			t.Errorf("height %d: %d lines:\n%s", h, len(lines), view)
+		}
+		if !strings.Contains(view, "render failed: out of memory") || !strings.Contains(view, "Finish setup") {
+			t.Errorf("height %d: message or selection missing:\n%s", h, view)
+		}
+	}
+}
+
+func TestLauncherWarnsAboutABadInstructionsFile(t *testing.T) {
+	checks := append(readyChecks(), health.Check{ID: health.IDInstructions, Name: "Writing instructions", Result: health.Warn,
+		Detail: "read writing instructions: no such file; drafts use the built-in instructions"})
+	a, _ := newLauncherApp(t, checks)
 	view := plain(a)
-	if n := len(strings.Split(view, "\n")); n > 14 {
-		t.Fatalf("%d lines in a 14-line terminal:\n%s", n, view)
-	}
-	if !strings.Contains(view, "↑/↓ scroll   r re-run checks   esc back") || strings.Contains(view, "WARN ffprobe") {
-		t.Fatalf("top of report:\n%s", view)
-	}
-	for range 30 {
-		a, _ = send(t, a, key("down"))
-	}
-	if view := plain(a); !strings.Contains(view, "WARN ffprobe") || !strings.Contains(view, "♪ Finish setup") {
-		t.Fatalf("bottom of report:\n%s", view)
+	if strings.Contains(view, "Ready to render") || !strings.Contains(view, "! Writing instructions: read writing instructions") {
+		t.Fatalf("view:\n%s", view)
 	}
 }

@@ -152,15 +152,20 @@ func (q *Queue) SaveEdit(song library.Song) error {
 	return nil
 }
 
-// Enqueue marks a song queued and wakes the worker.
+// Enqueue marks a song queued and wakes the worker. A song that cannot
+// render is refused with its library.Song.CheckRender error. An unpinned
+// seed is drawn afresh unless the song resumes a detached render.
 func (q *Queue) Enqueue(song library.Song) (library.Song, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.busy(song.ID) {
 		return song, ErrBusy
 	}
-	if song.Seed == 0 {
-		song.Seed = rand.Int64N(1 << 48)
+	if err := song.CheckRender(); err != nil {
+		return song, err
+	}
+	if !song.SeedPinned && !q.resumes(song) {
+		song.Seed = newSeed()
 	}
 	q.dropStaleJob(&song, false)
 	song.Status = library.StatusQueued
@@ -172,6 +177,19 @@ func (q *Queue) Enqueue(song library.Song) (library.Song, error) {
 	q.Wake()
 	return song, nil
 }
+
+// resumes reports whether song still matches the detached render its stored
+// copy is waiting on, so queueing it picks that render up again. Call with
+// q.mu held.
+func (q *Queue) resumes(song library.Song) bool {
+	if song.ID == "" || song.JobID == "" {
+		return false
+	}
+	stored, err := q.store.Load(song.ID)
+	return err == nil && stored.JobID == song.JobID && !renderInputsChanged(stored, song)
+}
+
+func newSeed() int64 { return rand.Int64N(1 << 48) }
 
 // Wake makes an idle worker look for queued songs now.
 func (q *Queue) Wake() {
@@ -280,8 +298,8 @@ func (q *Queue) claim(song library.Song, cancel context.CancelCauseFunc) (librar
 	song.Started = q.now()
 	song.Finished = time.Time{}
 	song.Backend = q.backend.Name()
-	if song.Seed == 0 {
-		song.Seed = rand.Int64N(1 << 48)
+	if song.Seed == 0 && !song.SeedPinned {
+		song.Seed = newSeed()
 	}
 	q.save(song)
 	return song, true

@@ -22,6 +22,10 @@ func (a *app) runTUI(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	installer, err := tuiInstaller(version, cfg)
+	if err != nil {
+		return err
+	}
 	live := config.NewLive(a.configPath, cfg)
 	r := newRenderer(live)
 	var note atomic.Value
@@ -34,6 +38,8 @@ func (a *app) runTUI(ctx context.Context) error {
 		Config:     live,
 		Checks:     health.Run,
 		WorkerNote: func() string { return note.Load().(string) },
+		Server:     tui.NewComfyServer(r.server),
+		Installer:  installer,
 	}
 
 	ctx, cancel := context.WithCancel(ctx)

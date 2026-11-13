@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +15,7 @@ import (
 	"github.com/lancekrogers/songsmith/internal/comfy"
 	"github.com/lancekrogers/songsmith/internal/comfy/server"
 	"github.com/lancekrogers/songsmith/internal/config"
+	"github.com/lancekrogers/songsmith/internal/setup"
 )
 
 func comfyCfg(dir string) config.ComfyUI {
@@ -22,30 +26,46 @@ func comfyCfg(dir string) config.ComfyUI {
 
 func TestInstallCheck(t *testing.T) {
 	c := comfyCfg("/x")
-	missing := errors.New("missing")
-	ch := installCheck(c, "/x/.venv/bin/python", missing, nil)
+	ch := installCheck(c, setup.ComfyState{Status: setup.ComfyMissing})
 	if ch.Result != Fail || !ch.Blocking || ch.Fix != FixComfyUI || ch.Missing != "ComfyUI" ||
-		!inOrder(ch.Detail, "not installed in /x", "songsmith can install it", "Finish setup", "Settings → ComfyUI → Install folder") {
+		!inOrder(ch.Detail, "not installed in /x", "songsmith can install it", "Finish setup", "Settings → Music engine → Install folder") {
 		t.Fatalf("no main.py: %+v", ch)
 	}
-	if ch := installCheck(c, "/x/.venv/bin/python", nil, missing); ch.Result != Fail || !inOrder(ch.Detail, "no Python environment at /x/.venv/bin/python", "Finish setup", "shell: `uv venv") {
-		t.Fatalf("no venv: %+v", ch)
+	ch = installCheck(c, setup.ComfyState{Status: setup.ComfyIncomplete, Detail: "Python packages not fully installed"})
+	if ch.Result != Fail || ch.Fix != FixComfyUI || !inOrder(ch.Detail, "not finished", "Python packages", "Finish setup", "shell: `songsmith setup") {
+		t.Fatalf("incomplete: %+v", ch)
 	}
-	if ch := installCheck(c, "", nil, nil); ch.Result != OK || ch.Detail != "/x" {
+	ch = installCheck(c, setup.ComfyState{Status: setup.ComfyBlocked, Detail: "/x holds something else"})
+	if ch.Result != Fail || ch.Fix != "" || ch.Missing != "" || ch.Detail != "/x holds something else" {
+		t.Fatalf("blocked: %+v", ch)
+	}
+	if ch := installCheck(c, setup.ComfyState{Status: setup.ComfyInstalled}); ch.Result != OK || ch.Detail != "/x" {
 		t.Fatalf("ok: %+v", ch)
 	}
+}
+
+func writeSized(t *testing.T, path string, size int64) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(size); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
 }
 
 func TestModelChecks(t *testing.T) {
 	dir := t.TempDir()
 	c := comfyCfg(dir)
-	vae := filepath.Join(dir, "models", "vae", c.VAE)
-	if err := os.MkdirAll(filepath.Dir(vae), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(vae, make([]byte, 200_000_000/1000), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	vae, _ := setup.Lookup(setup.DirVAE, c.VAE)
+	writeSized(t, filepath.Join(dir, "models", "vae", c.VAE), vae.Size)
+	dit, _ := setup.Lookup(setup.DirDiffusion, c.DiffusionModel)
+	writeSized(t, setup.PartPath(dir, dit), dit.Size/4)
 	checks := modelChecks(c)
 	if len(checks) != 3 {
 		t.Fatalf("checks = %+v", checks)
@@ -56,8 +76,76 @@ func TestModelChecks(t *testing.T) {
 			t.Errorf("missing file: %+v", ch)
 		}
 	}
-	if ch := checks[2]; ch.ID != IDVAE || ch.Name != "Model vae" || ch.Result != OK || ch.Detail != c.VAE+" (0.0 GB)" {
+	if !strings.Contains(checks[0].Detail, "25% downloaded") {
+		t.Errorf("partial file: %+v", checks[0])
+	}
+	if ch := checks[2]; ch.ID != IDVAE || ch.Name != "Model vae" || ch.Result != OK || ch.Detail != c.VAE+" (0.2 GB)" {
 		t.Errorf("present file: %+v", ch)
+	}
+
+	writeSized(t, filepath.Join(dir, "models", "vae", c.VAE), 1000)
+	if ch := modelChecks(c)[2]; ch.Result != Fail || !strings.Contains(ch.Detail, "expected 0.22 GB") {
+		t.Errorf("wrong size: %+v", ch)
+	}
+
+	c.TextEncoder = "custom.safetensors"
+	if ch := modelChecks(c)[1]; ch.Result != Fail || ch.Fix != "" || !strings.Contains(ch.Detail, "cannot download it") {
+		t.Errorf("unknown missing file: %+v", ch)
+	}
+	writeSized(t, filepath.Join(dir, "models", "text_encoders", "custom.safetensors"), 10)
+	if ch := modelChecks(c)[1]; ch.Result != OK {
+		t.Errorf("unknown present file: %+v", ch)
+	}
+}
+
+// TestChecksAgreeWithThePlan: a check is OK exactly when songsmith setup
+// has nothing left to do for it.
+func TestChecksAgreeWithThePlan(t *testing.T) {
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, `{"models":[{"name":"writer:latest"}]}`)
+	}))
+	defer ollama.Close()
+	in := setup.New("test")
+	in.Reach = func(context.Context, string) error { return nil }
+	in.FreeSpace = func(string) (uint64, error) { return 1 << 50, nil }
+	in.LookPath = func(f string) (string, error) { return "/bin/" + f, nil }
+
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.ComfyUI = comfyCfg(dir)
+	cfg.Ollama.URL, cfg.Ollama.Model = ollama.URL, "writer"
+	vae, _ := setup.Lookup(setup.DirVAE, cfg.ComfyUI.VAE)
+	dit, _ := setup.Lookup(setup.DirDiffusion, cfg.ComfyUI.DiffusionModel)
+
+	stages := []func(){
+		func() {},
+		func() { writeSized(t, filepath.Join(dir, "main.py"), 1) },
+		func() {
+			writeSized(t, filepath.Join(dir, ".venv", "bin", "python"), 1)
+			writeSized(t, filepath.Join(dir, ".venv", "lib", "python3.12", "site-packages", "torch", "__init__.py"), 1)
+		},
+		func() { writeSized(t, filepath.Join(dir, "models", "vae", vae.Name), vae.Size) },
+		func() { writeSized(t, setup.PartPath(dir, dit), 10) },
+		func() { writeSized(t, filepath.Join(dir, "models", "vae", vae.Name), 10) },
+	}
+	pairs := map[setup.ActionID]string{
+		setup.ActionComfyUI: IDComfyUI, setup.ActionDiffusion: IDDiffusionModel, setup.ActionTextEncoder: IDTextEncoder,
+		setup.ActionVAE: IDVAE, setup.ActionWriter: IDWriter,
+	}
+	for i, stage := range stages {
+		stage()
+		checks := []Check{installCheck(cfg.ComfyUI, setup.InspectComfyUI(dir))}
+		checks = append(checks, modelChecks(cfg.ComfyUI)...)
+		checks = append(checks, writerCheck(cfg.Ollama, []string{"writer:latest"}, nil))
+		for _, a := range in.Plan(t.Context(), cfg).Actions {
+			ch, ok := Find(checks, pairs[a.ID])
+			if !ok {
+				t.Fatalf("stage %d: no check for %s", i, a.ID)
+			}
+			if (ch.Result == OK) != (a.Status == setup.StatusDone) {
+				t.Errorf("stage %d: %s check %v (%s) but plan %v (%s)", i, a.ID, ch.Result, ch.Detail, a.Status, a.Detail)
+			}
+		}
 	}
 }
 
@@ -204,5 +292,30 @@ func TestSummaries(t *testing.T) {
 	}
 	if _, ok := Find(checks, "z"); ok {
 		t.Fatal("Find missing")
+	}
+}
+
+func TestInstructionsCheck(t *testing.T) {
+	dir := t.TempDir()
+	empty := filepath.Join(dir, "empty.txt")
+	good := filepath.Join(dir, "good.txt")
+	if err := os.WriteFile(empty, []byte(" \n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(good, []byte("Write sea shanties."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := instructionsCheck(""); ok {
+		t.Fatal("check reported with no instructions file set")
+	}
+	for _, p := range []string{filepath.Join(dir, "gone.txt"), empty, dir} {
+		ch, ok := instructionsCheck(p)
+		if !ok || ch.ID != IDInstructions || ch.Result != Warn || ch.Blocking || ch.Missing != "" ||
+			!inOrder(ch.Detail, p, "drafts use the built-in instructions", "Settings → Writer") {
+			t.Errorf("%s: %+v", p, ch)
+		}
+	}
+	if ch, ok := instructionsCheck(good); !ok || ch.Result != OK || ch.Detail != good {
+		t.Errorf("good file: %+v", ch)
 	}
 }

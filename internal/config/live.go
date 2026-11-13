@@ -10,14 +10,18 @@ import "sync"
 // its render lock and the ComfyUI client are built from them once.
 type Live struct {
 	path string
+	load func(string) (Config, error)
 
+	// setMu keeps each Set's write and reload together, so a slower reload
+	// cannot apply an older file over a newer one.
+	setMu sync.Mutex
 	mu    sync.RWMutex
 	cfg   Config
 	fixed Config
 }
 
 func NewLive(path string, cfg Config) *Live {
-	return &Live{path: Path(path), cfg: cfg, fixed: cfg}
+	return &Live{path: Path(path), load: Load, cfg: cfg, fixed: cfg}
 }
 
 // Path is the config file this process reads and writes.
@@ -44,10 +48,12 @@ func (l *Live) Replace(cfg Config) {
 // Set writes key to the config file and, only if that worked, reloads the
 // file into the running settings. A fixed setting is saved for the next start.
 func (l *Live) Set(key string, value any) error {
+	l.setMu.Lock()
+	defer l.setMu.Unlock()
 	if err := Set(l.path, key, value); err != nil {
 		return err
 	}
-	cfg, err := Load(l.path)
+	cfg, err := l.load(l.path)
 	if err != nil {
 		return err
 	}

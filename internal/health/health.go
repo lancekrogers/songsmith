@@ -16,6 +16,8 @@ import (
 	"github.com/lancekrogers/songsmith/internal/comfy/server"
 	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/ollama"
+	"github.com/lancekrogers/songsmith/internal/setup"
+	"github.com/lancekrogers/songsmith/internal/writer"
 )
 
 type Result int
@@ -48,6 +50,7 @@ const (
 	IDServerModelFiles = "comfyui-model-list"
 	IDWriter           = "ollama"
 	IDFFprobe          = "ffprobe"
+	IDInstructions     = "writer-instructions"
 )
 
 // Install actions that can fix a failing check.
@@ -115,9 +118,7 @@ func Find(checks []Check, id string) (Check, bool) {
 // Run runs every check. The server and Ollama probes use ctx for their timeouts.
 func Run(ctx context.Context, cfg config.Config) []Check {
 	m := server.New(cfg.ComfyUI, cfg.StateDir)
-	_, mainErr := os.Stat(filepath.Join(cfg.ComfyUI.Dir, "main.py"))
-	_, pyErr := os.Stat(m.Python())
-	out := []Check{installCheck(cfg.ComfyUI, m.Python(), mainErr, pyErr)}
+	out := []Check{installCheck(cfg.ComfyUI, setup.InspectComfyUI(cfg.ComfyUI.Dir))}
 	out = append(out, modelChecks(cfg.ComfyUI)...)
 
 	st, _ := m.Status(ctx)
@@ -128,43 +129,66 @@ func Run(ctx context.Context, cfg config.Config) []Check {
 
 	names, err := ollama.NewClient(cfg.Ollama.URL).Models(ctx)
 	out = append(out, writerCheck(cfg.Ollama, names, err))
+	if ch, ok := instructionsCheck(cfg.Ollama.InstructionsFile); ok {
+		out = append(out, ch)
+	}
 	_, err = exec.LookPath("ffprobe")
 	return append(out, ffprobeCheck(err))
 }
 
-func installCheck(c config.ComfyUI, python string, mainErr, pyErr error) Check {
+// installCheck and modelChecks read the install state the way songsmith
+// setup does, so the checks and the install plan never disagree.
+func installCheck(c config.ComfyUI, st setup.ComfyState) Check {
 	ch := Check{ID: IDComfyUI, Name: "ComfyUI install", Blocking: true, Fix: FixComfyUI, Missing: "ComfyUI"}
-	switch {
-	case mainErr != nil:
+	switch st.Status {
+	case setup.ComfyInstalled:
+		ch.Result, ch.Detail = OK, c.Dir
+	case setup.ComfyIncomplete:
+		ch.Result = Fail
+		ch.Detail = fmt.Sprintf("the ComfyUI install in %s is not finished (%s). songsmith can finish it: Finish setup (shell: `songsmith setup --install --comfyui`)",
+			c.Dir, st.Detail)
+	case setup.ComfyBlocked:
+		ch.Result, ch.Fix, ch.Missing, ch.Detail = Fail, "", "", st.Detail
+	default:
 		ch.Result = Fail
 		ch.Detail = fmt.Sprintf("ComfyUI is not installed in %s. songsmith can install it there: Finish setup. "+
-			"To use a ComfyUI you already have, set Settings → ComfyUI → Install folder (config key comfyui.dir)", c.Dir)
-	case pyErr != nil:
-		ch.Result = Fail
-		ch.Detail = fmt.Sprintf("no Python environment at %s. songsmith can create it: Finish setup (shell: `uv venv --python 3.12 %s`)",
-			python, filepath.Join(c.Dir, ".venv"))
-	default:
-		ch.Result, ch.Detail = OK, c.Dir
+			"To use a ComfyUI you already have, set Settings → Music engine → Install folder (config key comfyui.dir)", c.Dir)
 	}
 	return ch
 }
 
 func modelChecks(c config.ComfyUI) []Check {
-	files := []struct{ id, dir, file string }{
-		{IDDiffusionModel, "diffusion_models", c.DiffusionModel},
-		{IDTextEncoder, "text_encoders", c.TextEncoder},
-		{IDVAE, "vae", c.VAE},
-	}
-	out := make([]Check, 0, len(files))
-	for _, f := range files {
-		ch := Check{ID: f.id, Name: "Model " + f.dir, Blocking: true, Fix: FixMusicModel, Missing: "music model files"}
-		p := filepath.Join(c.Dir, "models", f.dir, f.file)
-		if fi, err := os.Stat(p); err != nil {
+	slots := setup.ModelSlots(c)
+	ids := map[setup.ActionID]string{setup.ActionDiffusion: IDDiffusionModel, setup.ActionTextEncoder: IDTextEncoder, setup.ActionVAE: IDVAE}
+	out := make([]Check, 0, len(slots))
+	for _, s := range slots {
+		ch := Check{ID: ids[s.ID], Name: "Model " + s.Dir, Blocking: true, Fix: FixMusicModel, Missing: "music model files"}
+		p := filepath.Join(c.Dir, "models", s.Dir, s.Name)
+		download := fmt.Sprintf("songsmith can download it from %s: Finish setup "+
+			"(shell: `hf download %s %s/%s --local-dir %s`)", setup.Repo, setup.Repo, s.Dir, s.Name, filepath.Join(c.Dir, "models"))
+		f, known := setup.Lookup(s.Dir, s.Name)
+		if !known {
+			if fi, err := os.Stat(p); err == nil {
+				ch.Result, ch.Detail = OK, fmt.Sprintf("%s (%.1f GB, not from %s)", s.Name, float64(fi.Size())/1e9, setup.Repo)
+			} else {
+				ch.Result, ch.Fix = Fail, ""
+				ch.Detail = fmt.Sprintf("missing %s, which is not a file in %s, so songsmith cannot download it: choose a listed file in Settings → Music model, or put it in %s yourself",
+					s.Name, setup.Repo, filepath.Dir(p))
+			}
+			out = append(out, ch)
+			continue
+		}
+		switch st := setup.State(c.Dir, f); st.Status {
+		case setup.FileInstalled:
+			ch.Result, ch.Detail = OK, fmt.Sprintf("%s (%.1f GB)", s.Name, float64(st.Bytes)/1e9)
+		case setup.FilePartial:
 			ch.Result = Fail
-			ch.Detail = fmt.Sprintf("missing %s. songsmith can download it from Comfy-Org/MiniMax-Music-3: Finish setup "+
-				"(shell: `hf download Comfy-Org/MiniMax-Music-3 %s/%s --local-dir %s`)", f.file, f.dir, f.file, filepath.Join(c.Dir, "models"))
-		} else {
-			ch.Result, ch.Detail = OK, fmt.Sprintf("%s (%.1f GB)", f.file, float64(fi.Size())/1e9)
+			ch.Detail = fmt.Sprintf("%s is %.0f%% downloaded; the download resumes where it stopped. %s", s.Name, st.Percent(), download)
+		case setup.FileWrongSize:
+			ch.Result = Fail
+			ch.Detail = fmt.Sprintf("%s is %s on disk, expected %s. %s", s.Name, setup.GB(st.Bytes), setup.GB(f.Size), download)
+		default:
+			ch.Result, ch.Detail = Fail, fmt.Sprintf("missing %s. %s", s.Name, download)
 		}
 		out = append(out, ch)
 	}
@@ -236,7 +260,7 @@ func writerCheck(o config.Ollama, names []string, err error) Check {
 		ch.Result, ch.Missing = Warn, "Ollama"
 		ch.Detail = fmt.Sprintf("Ollama is not reachable at %s, and songsmith cannot install it: get it from https://ollama.com. "+
 			"Lyrics can still be written by hand (%v)", o.URL, err)
-	case !slices.Contains(names, o.Model):
+	case !slices.Contains(names, setup.ModelTag(o.Model)):
 		ch.Result, ch.Fix, ch.Missing = Warn, FixWriterModel, "writer model "+o.Model
 		pull := fmt.Sprintf("songsmith can pull %s: Finish setup (shell: `ollama pull %s`)", o.Model, o.Model)
 		if len(names) == 0 {
@@ -249,6 +273,21 @@ func writerCheck(o config.Ollama, names []string, err error) Check {
 		ch.Result, ch.Detail = OK, fmt.Sprintf("%s at %s", o.Model, o.URL)
 	}
 	return ch
+}
+
+// instructionsCheck reports on a configured instructions file; ok is false
+// when none is set. It never blocks: drafts fall back to the built-in prompt.
+func instructionsCheck(path string) (ch Check, ok bool) {
+	if path == "" {
+		return Check{}, false
+	}
+	ch = Check{ID: IDInstructions, Name: "Writing instructions", Result: OK, Detail: path}
+	if _, err := writer.Instructions(path); err != nil {
+		ch.Result = Warn
+		ch.Detail = fmt.Sprintf("%v, so drafts use the built-in instructions. "+
+			"Fix the file or change it in Settings → Writer (config key ollama.instructions_file)", err)
+	}
+	return ch, true
 }
 
 // ffprobeCheck never blocks: without ffprobe songs render but their length

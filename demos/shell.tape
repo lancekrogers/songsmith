@@ -1,7 +1,8 @@
 # First run on a machine with nothing installed: no ComfyUI, no model files,
 # no reachable Ollama, no ffprobe on PATH and an empty library. Finish setup is
 # offered first. Uses a throwaway config under /tmp/songsmith-demo-shell (see
-# demos/shell.yaml); nothing is installed or rendered.
+# demos/shell.yaml); nothing is installed or rendered, and the install plan
+# reads demos/setupfake on a loopback port (SONGSMITH_DEMO_SETUP), not a real host.
 # Record with: just demo-shell
 
 Output demos/shell.gif
@@ -21,7 +22,7 @@ Set Theme {"name":"termcast","background":"#0d0d11","foreground":"#f8f8f2","curs
 Hide
 Type "unset NO_COLOR CLICOLOR; export CLICOLOR_FORCE=1 FORCE_COLOR=1 TERM=xterm-256color SONGSMITH_COLOR_PROFILE=ansi" Enter
 Type "rm -rf /tmp/songsmith-demo-shell && mkdir -p /tmp/songsmith-demo-shell && cp demos/shell.yaml /tmp/songsmith-demo-shell/config.yaml" Enter
-Type "export PATH=$PWD/bin:/usr/bin:/bin SONGSMITH_CONFIG=/tmp/songsmith-demo-shell/config.yaml" Enter
+Type "export PATH=$PWD/bin:/usr/bin:/bin SONGSMITH_CONFIG=/tmp/songsmith-demo-shell/config.yaml SONGSMITH_DEMO_SETUP=http://127.0.0.1:18490" Enter
 Type "clear" Enter
 Show
 

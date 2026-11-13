@@ -121,13 +121,17 @@ func (a app) updateLibrary(msg tea.Msg) (app, tea.Cmd) {
 			a.notice = "Already " + string(song.Status) + "."
 			break
 		}
-		if song.Status == library.StatusDone {
-			song.Seed = 0
+		if err := song.CheckRender(); err != nil {
+			a.notice = "Can't queue " + song.Title + " yet: " + renderProblems(err) + ". Press e to edit it."
+			break
 		}
 		if _, err := a.d.Queue.Enqueue(song); err != nil {
 			a.err = "queue " + song.Title + ": " + err.Error()
 		} else {
 			a.notice = "Queued " + song.Title + "."
+			if song.Status == library.StatusDone && song.SeedPinned {
+				a.notice = fmt.Sprintf("Queued a new take of %s with seed %d; it will be identical unless the lyrics, style or seed change.", song.Title, song.Seed)
+			}
 		}
 		return a, a.loadSongs()
 	case "x":
@@ -145,6 +149,19 @@ func (a app) updateLibrary(msg tea.Msg) (app, tea.Cmd) {
 		return a, cmd
 	}
 	return a, nil
+}
+
+// renderProblems lists what CheckRender found, in one line.
+func renderProblems(err error) string {
+	var msgs []string
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, e := range joined.Unwrap() {
+			msgs = append(msgs, e.Error())
+		}
+	} else {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
 }
 
 // libraryKeys lists the keys that do something for the selected song.

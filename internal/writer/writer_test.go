@@ -163,3 +163,57 @@ func TestParseCaptionRoundTrip(t *testing.T) {
 		t.Fatalf("mixed case = %+v", got)
 	}
 }
+
+func TestPromptListsTheSuggestedTags(t *testing.T) {
+	want := "using only these tags: [Intro], [Verse], [Pre-Chorus], [Chorus], [Post-Chorus], [Bridge], [Instrumental], [Solo], [Outro]. Write singable"
+	if !strings.Contains(BuiltinInstructions, want) {
+		t.Fatalf("prompt tag sentence changed:\n%s", BuiltinInstructions)
+	}
+}
+
+func TestTagLine(t *testing.T) {
+	cases := []struct {
+		line, tag, section string
+		ok                 bool
+	}{
+		{"[Chorus]", "[Chorus]", "Chorus", true},
+		{"  [Verse 2]  ", "[Verse 2]", "Verse", true},
+		{"[Hook]", "[Hook]", "Hook", true},
+		{"[Chrous]", "[Chrous]", "", true},
+		{"[verse]", "[verse]", "", true},
+		{"[Verse] and words", "", "", false},
+		{"no tag", "", "", false},
+	}
+	for _, c := range cases {
+		start, end, section, ok := TagLine(c.line)
+		if ok != c.ok || section != c.section || (ok && c.line[start:end] != c.tag) {
+			t.Errorf("TagLine(%q) = %d,%d,%q,%v", c.line, start, end, section, ok)
+		}
+	}
+	if !IsSectionTag("Interlude") || IsSectionTag("Chrous") {
+		t.Fatal("IsSectionTag")
+	}
+}
+
+func TestValidateNamesTheFirstProblemField(t *testing.T) {
+	err := Draft{Lyrics: "[Verse]\nla", Caption: Caption{GlobalMetadata: "pop"}, Seconds: 60}.Validate()
+	var fe *FieldError
+	if !errors.As(err, &fe) || fe.Field != FieldVocalDetails {
+		t.Fatalf("first problem = %v", err)
+	}
+	err = Draft{Caption: Caption{"a", "b", "c"}, Seconds: 60}.Validate()
+	if !errors.As(err, &fe) || fe.Field != FieldLyrics || fe.Msg != "lyrics are empty" {
+		t.Fatalf("empty lyrics = %v", err)
+	}
+}
+
+func TestValidateInstrumentalNeedsTagsNotLines(t *testing.T) {
+	d := Draft{Lyrics: "[Intro]\n[Instrumental]\n[Outro]", Caption: Caption{"a", "Instrumental; lead synth", "c"}, Seconds: 60, Instrumental: true}
+	if err := d.Validate(); err != nil {
+		t.Fatalf("tags-only instrumental: %v", err)
+	}
+	d.Lyrics = ""
+	if err := d.Validate(); err == nil || !strings.Contains(err.Error(), "instrumental still needs section tags") {
+		t.Fatalf("untagged instrumental: %v", err)
+	}
+}

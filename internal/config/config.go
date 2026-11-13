@@ -30,7 +30,8 @@ type Ollama struct {
 	URL         string  `yaml:"url"`
 	Model       string  `yaml:"model"`
 	Temperature float64 `yaml:"temperature"`
-	// InstructionsFile replaces the built-in system prompt when set.
+	// InstructionsFile replaces the built-in system prompt when set. Load
+	// resolves a relative path against the config file's folder.
 	InstructionsFile string `yaml:"instructions_file"`
 }
 
@@ -38,7 +39,8 @@ type Render struct {
 	Steps    int     `yaml:"steps"`
 	CFGScale float64 `yaml:"cfg_scale"`
 	TopK     int     `yaml:"top_k"`
-	// DefaultSeconds is the length a new song starts with.
+	// DefaultSeconds is the length a new song starts with; Load turns a
+	// non-positive value into the default.
 	DefaultSeconds int    `yaml:"default_seconds"`
 	Sampler        string `yaml:"sampler"`
 	Scheduler      string `yaml:"scheduler"`
@@ -118,6 +120,16 @@ func Load(path string) (Config, error) {
 	cfg.StateDir = expandHome(cfg.StateDir)
 	cfg.ComfyUI.Dir = expandHome(cfg.ComfyUI.Dir)
 	cfg.Ollama.InstructionsFile = expandHome(cfg.Ollama.InstructionsFile)
+	if f := cfg.Ollama.InstructionsFile; f != "" && !filepath.IsAbs(f) {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return Config{}, fmt.Errorf("resolve config path %s: %w", path, err)
+		}
+		cfg.Ollama.InstructionsFile = filepath.Join(filepath.Dir(abs), f)
+	}
+	if cfg.Render.DefaultSeconds <= 0 {
+		cfg.Render.DefaultSeconds = Default().Render.DefaultSeconds
+	}
 	return cfg, nil
 }
 

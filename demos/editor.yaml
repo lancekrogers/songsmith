@@ -1,0 +1,10 @@
+# Throwaway settings for demos/editor.tape. Every path is under
+# /tmp/songsmith-demo-editor and nothing listens on these ports, so the
+# recording never touches a real install and the writer is unavailable.
+library_dir: /tmp/songsmith-demo-editor/library
+state_dir: /tmp/songsmith-demo-editor/state
+comfyui:
+  dir: /tmp/songsmith-demo-editor/ComfyUI
+  port: 18188
+ollama:
+  url: http://127.0.0.1:18434

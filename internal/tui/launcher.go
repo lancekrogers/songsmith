@@ -12,6 +12,7 @@ import (
 	"github.com/lancekrogers/songsmith/internal/backend"
 	"github.com/lancekrogers/songsmith/internal/health"
 	"github.com/lancekrogers/songsmith/internal/library"
+	"github.com/lancekrogers/songsmith/internal/setup"
 )
 
 type launcherAction int
@@ -50,6 +51,8 @@ type launcherState struct {
 	writerModel string
 	workerNote  string
 	notice, err string
+	// musicJob, writerJob and comfyJob say how a running install is doing.
+	musicJob, writerJob, comfyJob string
 }
 
 func (a app) launcherState() launcherState {
@@ -73,6 +76,20 @@ func (a app) launcherState() launcherState {
 	if a.d.WorkerNote != nil {
 		st.workerNote = a.d.WorkerNote()
 	}
+	for _, j := range a.runningJobs() {
+		switch j.target.kind {
+		case setup.KindModel:
+			if st.musicJob == "" {
+				st.musicJob = jobStatus(j)
+			}
+		case setup.KindWriter:
+			if st.writerJob == "" {
+				st.writerJob = j.target.model + " " + jobStatus(j)
+			}
+		case setup.KindComfyUI:
+			st.comfyJob = jobStatus(j)
+		}
+	}
 	return st
 }
 
@@ -85,7 +102,7 @@ func (st launcherState) blocker() (health.Check, bool) {
 func (st launcherState) items() []launcherItem {
 	var items []launcherItem
 	if _, ok := st.blocker(); ok {
-		items = append(items, launcherItem{actionSetup, "▲", "Finish setup", "See what is missing and how to fix it"})
+		items = append(items, launcherItem{actionSetup, "▲", "Finish setup", "Install what is missing, or see where to get it"})
 	}
 	newHint := fmt.Sprintf("Describe a song; %s drafts lyrics and a style for you to edit", st.writerModel)
 	if w, ok := health.Find(st.checks, health.IDWriter); ok && w.Result != health.OK {
@@ -98,7 +115,7 @@ func (st launcherState) items() []launcherItem {
 	}
 	items = append(items,
 		launcherItem{actionLibrary, "▤", fmt.Sprintf("Library (%d)", st.songs), "Play, edit and re-render your songs"},
-		launcherItem{actionSettings, "⚙", "Settings", "Setup checks and the config file"},
+		launcherItem{actionSettings, "⚙", "Settings", "Writer, music model, render, engine and folders"},
 	)
 	quitHint := "Exit songsmith"
 	if st.rendering != nil {
@@ -216,12 +233,15 @@ func (m launcherModel) fullView(st launcherState, width int) string {
 	return lipgloss.NewStyle().Padding(1, 2).Render(b.String())
 }
 
-// compactView fits short terminals: a title, the notice, a window of the menu
-// around the selection, and the footer.
+// compactView fits short terminals: a title, the notice, the latest message, a
+// window of the menu around the selection, and the footer.
 func (m launcherModel) compactView(st launcherState, width, height int) string {
 	var lines []string
 	lines = append(lines, ansi.Truncate(headerStyle.Render(" ♪ SONGSMITH"), width, "…"))
 	lines = append(lines, st.noticeLines(width)[0])
+	if msg := st.message(width); msg != "" {
+		lines = append(lines, msg)
+	}
 	items := st.items()
 	cur := m.cursor(items)
 	visible := max(1, height-len(lines)-1)
@@ -294,6 +314,9 @@ func (st launcherState) chips(width int) string {
 const checkingLabel = "checking…"
 
 func (st launcherState) writerChip() (string, chipTone) {
+	if st.writerJob != "" {
+		return st.writerJob, toneWarn
+	}
 	if st.checking {
 		return checkingLabel, toneDim
 	}
@@ -311,6 +334,9 @@ func (st launcherState) writerChip() (string, chipTone) {
 }
 
 func (st launcherState) musicChip() (string, chipTone) {
+	if st.musicJob != "" {
+		return st.musicJob, toneWarn
+	}
 	if st.checking {
 		return checkingLabel, toneDim
 	}
@@ -327,6 +353,9 @@ func (st launcherState) musicChip() (string, chipTone) {
 }
 
 func (st launcherState) serverChip() (string, chipTone) {
+	if st.comfyJob != "" {
+		return st.comfyJob, toneWarn
+	}
 	if st.checking {
 		return checkingLabel, toneDim
 	}
@@ -376,20 +405,20 @@ func progressLabel(p backend.Progress) string {
 }
 
 // noticeLines name what stops rendering and who can fix it: while setup is
-// incomplete, everything missing and whether songsmith can install it;
-// otherwise the first problem and its fix.
+// incomplete, the first blocking failure, then everything missing and whether
+// songsmith can install it; otherwise the first problem and its fix.
 func (st launcherState) noticeLines(width int) []string {
 	var lines []string
 	switch {
 	case !st.checked:
 		lines = []string{dimStyle.Render("Checking ComfyUI, the music model files, Ollama and ffprobe…")}
 	default:
-		b, blocked := st.blocker()
+		b, blocked := blockerSummary(st.checks)
 		if !blocked {
 			// A stopped server is normal (it starts on the first render) and
-			// its chip already says so; only failures and missing pieces count.
+			// its chip already says so; every other problem counts.
 			i := slices.IndexFunc(st.checks, func(c health.Check) bool {
-				return c.Result == health.Fail || c.Result != health.OK && c.Missing != ""
+				return c.Result == health.Fail || c.Result == health.Warn && c.ID != health.IDServer
 			})
 			if i < 0 {
 				lines = []string{statusStyle.Render("✓ Ready to render")}
@@ -398,22 +427,39 @@ func (st launcherState) noticeLines(width int) []string {
 			}
 			break
 		}
+		lines = []string{errorStyle.Render("▲ " + b)}
 		if head, fix, ok := missingSummary(st.checks); ok {
 			// The fix line wraps: it says who installs what, and none of it may be cut.
 			wrapped := lipgloss.NewStyle().Width(max(10, width-2)).Render(fix)
-			lines = []string{ansi.Truncate(errorStyle.Render("▲ "+head), width, "…")}
+			lines = append(lines, warningStyle.Render("  "+head))
 			for _, l := range strings.Split(wrapped, "\n") {
 				lines = append(lines, dimStyle.Render("  "+strings.TrimRight(l, " ")))
 			}
-			return lines
-		} else {
-			lines = []string{errorStyle.Render("▲ " + b.Name + ": " + b.Detail)}
 		}
 	}
 	for i, l := range lines {
 		lines[i] = ansi.Truncate(l, width, "…")
 	}
 	return lines
+}
+
+// blockerSummary names the first check that stops rendering and its detail,
+// and says how many more block.
+func blockerSummary(checks []health.Check) (string, bool) {
+	b, ok := health.Blocker(checks)
+	if !ok {
+		return "", false
+	}
+	name, more := b.Name, -1
+	for _, c := range checks {
+		if c.Result == health.Fail && c.Blocking {
+			more++
+		}
+	}
+	if more > 0 {
+		name += fmt.Sprintf(" (+%d more)", more)
+	}
+	return name + ": " + b.Detail, true
 }
 
 // missingSummary lists what is missing and splits it into what Finish setup
