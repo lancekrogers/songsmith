@@ -352,8 +352,7 @@ func (c *composeModel) openEditor() tea.Cmd {
 		c.err = "could not write temp file for $EDITOR"
 		return nil
 	}
-	parts := strings.Fields(cmp.Or(strings.TrimSpace(os.Getenv("VISUAL")), strings.TrimSpace(os.Getenv("EDITOR")), "vi"))
-	cmd := exec.Command(parts[0], append(parts[1:], f.Name())...)
+	cmd := editorCommand(f.Name())
 	path := f.Name()
 	return tea.ExecProcess(cmd, func(err error) tea.Msg { return editorDoneMsg{field: field, path: path, err: err} })
 }
@@ -394,4 +393,10 @@ func (c composeModel) view(ideaMode bool, w int) string {
 	}
 	b.WriteString(mutedStyle.Render("ctrl+s save & queue · ctrl+d save draft · tab next field · ctrl+e open in $EDITOR · esc discard"))
 	return b.String()
+}
+
+// editorCommand opens path in $VISUAL, then $EDITOR, then vi.
+func editorCommand(path string) *exec.Cmd {
+	parts := strings.Fields(cmp.Or(strings.TrimSpace(os.Getenv("VISUAL")), strings.TrimSpace(os.Getenv("EDITOR")), "vi"))
+	return exec.Command(parts[0], append(parts[1:], path)...)
 }

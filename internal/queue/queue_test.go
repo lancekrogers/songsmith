@@ -15,15 +15,23 @@ import (
 )
 
 type fakeBackend struct {
-	mu      sync.Mutex
-	calls   []backend.Request
-	err     error
-	started chan string
-	block   bool
-	jobID   string
+	mu        sync.Mutex
+	calls     []backend.Request
+	err       error
+	started   chan string
+	block     bool
+	jobID     string
+	abandoned []string
 }
 
 func (f *fakeBackend) Name() string { return "fake" }
+
+func (f *fakeBackend) Abandon(_ context.Context, jobID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.abandoned = append(f.abandoned, jobID)
+	return nil
+}
 
 func (f *fakeBackend) Generate(ctx context.Context, req backend.Request, progress func(backend.Progress)) (backend.Result, error) {
 	f.mu.Lock()
@@ -335,4 +343,55 @@ func runQueue(t *testing.T, q *Queue) {
 		cancel()
 		<-done
 	})
+}
+
+func TestEditingDetachedSongDropsStaleJob(t *testing.T) {
+	b := &fakeBackend{}
+	q, store := setup(t, b)
+	song := create(t, store, "Song", library.StatusQueued)
+	song.JobID = "old-prompt"
+	store.Save(song)
+
+	song.Lyrics = "[Verse]\nnew words"
+	if err := q.SaveEdit(song); err != nil {
+		t.Fatal(err)
+	}
+	q.Render(t.Context(), song)
+	if got := b.calls[0].ResumeID; got != "" {
+		t.Fatalf("edited song resumed stale job %q", got)
+	}
+	if len(b.abandoned) != 1 || b.abandoned[0] != "old-prompt" {
+		t.Fatalf("abandoned = %v", b.abandoned)
+	}
+}
+
+func TestTitleOnlyEditKeepsDetachedJob(t *testing.T) {
+	b := &fakeBackend{}
+	q, store := setup(t, b)
+	song := create(t, store, "Song", library.StatusQueued)
+	song.JobID = "prompt-1"
+	store.Save(song)
+	song.Title = "Renamed"
+	if err := q.SaveEdit(song); err != nil {
+		t.Fatal(err)
+	}
+	q.Render(t.Context(), song)
+	if b.calls[0].ResumeID != "prompt-1" || len(b.abandoned) != 0 {
+		t.Fatalf("resume %q abandoned %v", b.calls[0].ResumeID, b.abandoned)
+	}
+}
+
+func TestCancelDetachedSongAbandonsJob(t *testing.T) {
+	b := &fakeBackend{}
+	q, store := setup(t, b)
+	song := create(t, store, "Song", library.StatusQueued)
+	song.JobID = "prompt-1"
+	store.Save(song)
+	if err := q.Cancel(song.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := store.Load(song.ID)
+	if got.JobID != "" || len(b.abandoned) != 1 {
+		t.Fatalf("job %q abandoned %v", got.JobID, b.abandoned)
+	}
 }

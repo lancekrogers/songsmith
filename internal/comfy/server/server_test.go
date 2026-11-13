@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -75,5 +76,63 @@ func TestStartMissingInstall(t *testing.T) {
 	m := New(config.ComfyUI{Dir: filepath.Join(t.TempDir(), "nope"), Host: "127.0.0.1", Port: 1}, t.TempDir())
 	if _, err := m.Start(t.Context()); err == nil || !strings.Contains(err.Error(), "comfyui not found") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestStopIgnoresReusedPID(t *testing.T) {
+	state := t.TempDir()
+	m := New(config.ComfyUI{Host: "127.0.0.1", Port: 1}, state)
+	// Our own pid is alive but is not ComfyUI, like a pid reused after a reboot.
+	if err := os.WriteFile(m.pidPath(), []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.ourPID(); ok {
+		t.Fatal("test process mistaken for ComfyUI")
+	}
+	if err := m.Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(m.pidPath()); !os.IsNotExist(err) {
+		t.Fatal("stale pid file kept")
+	}
+}
+
+func TestStartWaitsForOurStartingServer(t *testing.T) {
+	l, _ := net.Listen("tcp", "127.0.0.1:0")
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+	// A process that looks like a ComfyUI songsmith launched but is not answering yet.
+	fake := exec.Command("/bin/sh", "-c", "sleep 30; true", "main.py", "--port", strconv.Itoa(port))
+	if err := fake.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer fake.Process.Kill()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		out, _ := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(fake.Process.Pid)).Output()
+		if strings.Contains(string(out), "main.py") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("fake ComfyUI did not start")
+		}
+	}
+
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "main.py"), nil, 0o644)
+	py := filepath.Join(dir, ".venv", "bin", "python")
+	os.MkdirAll(filepath.Dir(py), 0o755)
+	launched := filepath.Join(t.TempDir(), "launched")
+	os.WriteFile(py, []byte("#!/bin/sh\ntouch "+launched+"\nsleep 30\n"), 0o755)
+
+	m := New(config.ComfyUI{Dir: dir, Host: "127.0.0.1", Port: port}, t.TempDir())
+	m.ReadyTimeout = 1500 * time.Millisecond
+	os.MkdirAll(m.stateDir, 0o755)
+	os.WriteFile(m.pidPath(), []byte(strconv.Itoa(fake.Process.Pid)), 0o644)
+
+	if _, err := m.Start(t.Context()); err == nil || !strings.Contains(err.Error(), "did not become ready") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Stat(launched); err == nil {
+		t.Fatal("launched a second ComfyUI while ours was still starting")
 	}
 }

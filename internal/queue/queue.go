@@ -116,6 +116,27 @@ func (q *Queue) busy(id string) bool {
 	return err == nil && stored.Status == library.StatusRendering
 }
 
+// renderInputsChanged reports whether a render of a and b would differ.
+func renderInputsChanged(a, b library.Song) bool {
+	return a.Lyrics != b.Lyrics || a.Caption != b.Caption || a.Seed != b.Seed || a.Seconds != b.Seconds
+}
+
+// dropStaleJob clears song's detached job when its render inputs changed, and
+// stops that job in the backend. Call with q.mu held.
+func (q *Queue) dropStaleJob(song *library.Song, force bool) {
+	stored, err := q.store.Load(song.ID)
+	if err != nil || stored.JobID == "" {
+		return
+	}
+	if !force && !renderInputsChanged(stored, *song) && song.JobID == stored.JobID {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = q.backend.Abandon(ctx, stored.JobID)
+	song.JobID = ""
+}
+
 // SaveEdit saves changes to an existing song unless it is rendering.
 func (q *Queue) SaveEdit(song library.Song) error {
 	q.mu.Lock()
@@ -123,6 +144,7 @@ func (q *Queue) SaveEdit(song library.Song) error {
 	if q.busy(song.ID) {
 		return ErrBusy
 	}
+	q.dropStaleJob(&song, false)
 	if err := q.store.Save(song); err != nil {
 		return err
 	}
@@ -140,6 +162,7 @@ func (q *Queue) Enqueue(song library.Song) (library.Song, error) {
 	if song.Seed == 0 {
 		song.Seed = rand.Int64N(1 << 48)
 	}
+	q.dropStaleJob(&song, false)
 	song.Status = library.StatusQueued
 	song.Error = ""
 	if err := q.store.Save(song); err != nil {
@@ -177,6 +200,7 @@ func (q *Queue) Cancel(id string) error {
 	default:
 		return fmt.Errorf("%s is %s, not queued or rendering", song.Title, song.Status)
 	}
+	q.dropStaleJob(&song, true)
 	song.Status = library.StatusDraft
 	if q.store.HasAudio(song) {
 		song.Status = library.StatusDone

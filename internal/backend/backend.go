@@ -49,4 +49,7 @@ type Result struct {
 type Backend interface {
 	Name() string
 	Generate(ctx context.Context, req Request, progress func(Progress)) (Result, error)
+	// Abandon stops a job left running by a detached render whose result is no
+	// longer wanted.
+	Abandon(ctx context.Context, jobID string) error
 }

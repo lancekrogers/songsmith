@@ -28,7 +28,8 @@ func (f fakeDrafter) Write(context.Context, string, writer.Options) (writer.Draf
 
 type nopBackend struct{}
 
-func (nopBackend) Name() string { return "nop" }
+func (nopBackend) Name() string                          { return "nop" }
+func (nopBackend) Abandon(context.Context, string) error { return nil }
 func (nopBackend) Generate(context.Context, backend.Request, func(backend.Progress)) (backend.Result, error) {
 	return backend.Result{}, nil
 }
@@ -239,7 +240,8 @@ func TestSelectionSurvivesStaleReload(t *testing.T) {
 
 type blockingBackend struct{ started chan struct{} }
 
-func (blockingBackend) Name() string { return "block" }
+func (blockingBackend) Name() string                          { return "block" }
+func (blockingBackend) Abandon(context.Context, string) error { return nil }
 func (b blockingBackend) Generate(ctx context.Context, _ backend.Request, _ func(backend.Progress)) (backend.Result, error) {
 	close(b.started)
 	<-ctx.Done()
@@ -279,4 +281,23 @@ func TestSavingEditsToASongThatStartedRenderingMakesACopy(t *testing.T) {
 	}
 	cancel()
 	<-done
+}
+
+func TestEditorCommand(t *testing.T) {
+	cases := []struct{ visual, editor, want string }{
+		{"   ", "", "vi"},
+		{"", "nvim -u NONE", "nvim -u NONE /tmp/x"},
+		{"code --wait", "nvim", "code --wait /tmp/x"},
+	}
+	for _, c := range cases {
+		t.Setenv("VISUAL", c.visual)
+		t.Setenv("EDITOR", c.editor)
+		got := strings.Join(editorCommand("/tmp/x").Args, " ")
+		if c.want == "vi" {
+			c.want = "vi /tmp/x"
+		}
+		if got != c.want {
+			t.Errorf("VISUAL=%q EDITOR=%q: %q, want %q", c.visual, c.editor, got, c.want)
+		}
+	}
 }

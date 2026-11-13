@@ -40,6 +40,10 @@ func NewComfyMiniMax(client *comfy.Client, starter Starter, models config.ComfyU
 
 func (b *ComfyMiniMax) Name() string { return "minimax-music3 (comfyui)" }
 
+func (b *ComfyMiniMax) Abandon(ctx context.Context, jobID string) error {
+	return errors.Join(b.client.Interrupt(ctx, jobID), b.client.DeleteQueued(ctx, jobID))
+}
+
 var nodeStage = map[string]Stage{
 	comfy.NodeTextEncoder: StageLoading,
 	comfy.NodeDiffusion:   StageLoading,
