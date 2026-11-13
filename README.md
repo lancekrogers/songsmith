@@ -12,7 +12,7 @@
   <a href="https://huggingface.co/MiniMaxAI/MiniMax-Music3"><img src="https://img.shields.io/badge/music-MiniMax%20Music%203-FF6F3C" alt="Music by MiniMax Music 3"></a>
   <a href="https://ollama.com"><img src="https://img.shields.io/badge/writer-Ollama-000000?logo=ollama&logoColor=white" alt="Writer: Ollama"></a>
   <img src="https://img.shields.io/badge/runs-100%25%20local-2EA44F" alt="Runs 100% locally">
-  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-1ABC9C" alt="License: MIT or Apache-2.0"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-1ABC9C" alt="License: Apache 2.0"></a>
   <a href="https://github.com/Obedience-Corp/festival"><img src="https://img.shields.io/badge/built%20with-Festival-7c3aed.svg" alt="Built with Festival"></a>
 </p>
 
@@ -343,8 +343,7 @@ This project is planned and built with [Festival](https://github.com/Obedience-C
 
 ## License
 
-songsmith is dual licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at
-your option.
+songsmith is licensed under the [Apache License 2.0](LICENSE).
 
 The MiniMax Music 3 weights are not part of songsmith and have their own
 [MiniMax-Music3 Community License](https://huggingface.co/MiniMaxAI/MiniMax-Music3/blob/main/LICENSE).
