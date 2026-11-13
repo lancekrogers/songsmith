@@ -73,6 +73,31 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 	return st, nil
 }
 
+// InstallDir asks the server on the configured port which folder it runs
+// from: the parent of its first custom_nodes folder. It is "" when the
+// server does not say, or was started with --base-directory, which moves
+// that folder away from the install.
+func (m *Manager) InstallDir(ctx context.Context) (string, error) {
+	stats, err := m.client.SystemStats(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, arg := range stats.System.Argv {
+		if arg == "--base-directory" || strings.HasPrefix(arg, "--base-directory=") {
+			return "", nil
+		}
+	}
+	paths, err := m.client.FolderPaths(ctx)
+	if err != nil {
+		return "", err
+	}
+	nodes := paths["custom_nodes"]
+	if len(nodes) == 0 || !filepath.IsAbs(nodes[0]) {
+		return "", nil
+	}
+	return filepath.Dir(filepath.Clean(nodes[0])), nil
+}
+
 // ourPID returns the pid and port from the pid file when that process is
 // still the ComfyUI songsmith started, guarding against pid reuse after a
 // crash or reboot.

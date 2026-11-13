@@ -28,7 +28,7 @@ func TestInstallCheck(t *testing.T) {
 	c := comfyCfg("/x")
 	ch := installCheck(c, setup.ComfyState{Status: setup.ComfyMissing})
 	if ch.Result != Fail || !ch.Blocking || ch.Fix != FixComfyUI || ch.Missing != "ComfyUI" ||
-		!inOrder(ch.Detail, "not installed in /x", "songsmith can install it", "Finish setup", "Settings → Server → Install folder") {
+		ch.Detail != "No ComfyUI in /x. Set the folder in Settings → Server, or install it there from Setup." {
 		t.Fatalf("no main.py: %+v", ch)
 	}
 	ch = installCheck(c, setup.ComfyState{Status: setup.ComfyIncomplete, Detail: "Python packages not fully installed"})

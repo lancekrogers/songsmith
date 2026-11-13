@@ -148,7 +148,7 @@ func TestFoldersAndHostSaveOnlyTheirKeyForTheNextStart(t *testing.T) {
 	}
 	mine := filepath.Join(t.TempDir(), "MyComfyUI")
 	a = typeIntoSettings(t, a, mine)
-	a = pressSettings(t, a, "enter")
+	a = pressSettings(t, a, "enter", "enter")
 	if got := changedLines(t, a.d.Config.Path(), base); !slices.Equal(got, []string{"  dir: " + mine}) {
 		t.Fatalf("changed lines %q", got)
 	}

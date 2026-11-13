@@ -45,6 +45,37 @@ func TestStatusReportsGPUOnly(t *testing.T) {
 	}
 }
 
+func TestInstallDirIsTheParentOfTheCustomNodesFolder(t *testing.T) {
+	argv := `["main.py"]`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/system_stats":
+			io.WriteString(w, `{"system":{"argv":`+argv+`}}`)
+		case "/internal/folder_paths":
+			io.WriteString(w, `{"custom_nodes":["/srv/comfy/custom_nodes"],"vae":["/srv/comfy/models/vae"]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	host, port := hostPort(t, srv.URL)
+	m := New(config.ComfyUI{Host: host, Port: port}, t.TempDir())
+	if dir, err := m.InstallDir(t.Context()); err != nil || dir != "/srv/comfy" {
+		t.Fatalf("dir %q, err %v", dir, err)
+	}
+	argv = `["main.py","--base-directory","/data"]`
+	if dir, err := m.InstallDir(t.Context()); err != nil || dir != "" {
+		t.Fatalf("with --base-directory: dir %q, err %v", dir, err)
+	}
+	l, _ := net.Listen("tcp", "127.0.0.1:0")
+	_, closed := hostPort(t, "http://"+l.Addr().String())
+	l.Close()
+	m = New(config.ComfyUI{Host: "127.0.0.1", Port: closed}, t.TempDir())
+	if dir, err := m.InstallDir(t.Context()); err == nil || dir != "" {
+		t.Fatalf("no server: dir %q, err %v", dir, err)
+	}
+}
+
 func TestStartFailsFastWhenProcessExits(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "main.py"), nil, 0o644); err != nil {

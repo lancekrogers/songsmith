@@ -219,6 +219,7 @@ func (a app) update(msg tea.Msg) (app, tea.Cmd) {
 		a.health.running = false
 		a.health.done = true
 		a.health.checks = msg.checks
+		a.health.serverDir = msg.serverDir
 		if msg.planned {
 			a.health.plan, a.health.planned = msg.plan, true
 		}
@@ -286,6 +287,8 @@ func (a app) update(msg tea.Msg) (app, tea.Cmd) {
 		return a.quit()
 	case settingsAsync:
 		return a.receiveSettings(msg)
+	case useServerFolderMsg:
+		return a.receiveUseServerFolder(msg)
 	case tea.KeyMsg:
 		// The song form and the text editors handle ctrl+c themselves, so a
 		// reflex copy or cancel there never loses work.

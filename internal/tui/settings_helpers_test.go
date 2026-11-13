@@ -27,6 +27,14 @@ type fakeServer struct {
 	stops    int
 	// objectInfo answers ObjectInfo; nil means the server is unreachable.
 	objectInfo func(ctx context.Context, class string) (comfy.NodeInfo, bool, error)
+	// installDir is the folder the server says it runs from.
+	installDir string
+}
+
+func (f *fakeServer) InstallDir(context.Context) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.installDir, nil
 }
 
 func (f *fakeServer) Status(context.Context) (server.Status, error) {

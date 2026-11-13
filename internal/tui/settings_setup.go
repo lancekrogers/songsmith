@@ -29,11 +29,15 @@ func (a app) setupRows() []settingRow {
 		rows = append(rows, settingRow{name: "Checks", kind: rowInfo, group: requirementsGroup,
 			value: "checking ComfyUI, the music model files, Ollama and ffprobe…"})
 	} else {
-		if names := a.blockingNames(); len(names) > 0 {
+		if dir, ok := a.serverFolder(); ok {
+			rows = append(rows, a.serverFolderRows(dir, width)...)
+		}
+		names := a.blockingNames()
+		if len(names) > 0 {
 			rows = append(rows, styledReportRows("Blocked", "▲ Rendering is blocked by "+joinAnd(names), width, &errorStyle)...)
 		}
 		reqs := a.requirementRows(width)
-		if len(rows) == 0 {
+		if len(names) == 0 {
 			for i := range reqs {
 				if reqs[i].group == requirementsGroup {
 					reqs[i].group = readyGroup
@@ -213,6 +217,8 @@ func (a app) checkRows(c health.Check, width int, sub bool) []settingRow {
 	var below []settingRow
 	switch {
 	case c.Result == health.OK:
+	case hasAct && installable(act) && !a.canInstall(act):
+		row.detail = a.withheldNote()
 	case hasAct && installable(act):
 		row.kind, row.verb, row.applies = rowAction, "install", appliesNow
 		row.detail = installOffer(act)
@@ -411,7 +417,7 @@ func (a app) cancelRow(j *job) settingRow {
 // first, so while ComfyUI is missing it installs that, then the file.
 func (a *app) installAction(id setup.ActionID) tea.Cmd {
 	act, ok := a.planAction(id)
-	if !ok || !installable(act) {
+	if !ok || !a.canInstall(act) {
 		return nil
 	}
 	t, _ := a.targetOf(act)
@@ -442,7 +448,7 @@ func (a app) missingTargets() ([]installTarget, int64) {
 	var out []installTarget
 	var bytes int64
 	for _, act := range a.health.plan.Actions {
-		if !installable(act) {
+		if !a.canInstall(act) {
 			continue
 		}
 		if t, ok := a.targetOf(act); ok {
@@ -476,7 +482,7 @@ func (a app) installAllRows(width int) []settingRow {
 		return []settingRow{row, cancel}
 	}
 	targets, bytes := a.missingTargets()
-	if len(targets) == 0 {
+	if len(targets) == 0 || a.installsWithheld() {
 		return nil
 	}
 	names := make([]string, len(targets))

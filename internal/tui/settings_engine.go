@@ -15,7 +15,6 @@ import (
 
 	"github.com/lancekrogers/songsmith/internal/comfy"
 	"github.com/lancekrogers/songsmith/internal/comfy/server"
-	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/setup"
 )
 
@@ -28,6 +27,8 @@ type ComfyServer interface {
 	Stop(ctx context.Context) error
 	LogPath() string
 	ObjectInfo(ctx context.Context, class string) (comfy.NodeInfo, bool, error)
+	// InstallDir is the folder a running server says it runs from, or "".
+	InstallDir(ctx context.Context) (string, error)
 }
 
 // NewComfyServer adapts a server manager to ComfyServer.
@@ -157,11 +158,7 @@ func (a app) serverRows() []settingRow {
 	dir := settingRow{key: "comfyui.dir", name: "Install folder", kind: rowText,
 		desc: "Where ComfyUI is, or where setup installs it",
 		help: "Where ComfyUI is, or where setup installs it. Have your own ComfyUI? Point this at its folder",
-		run: func(a *app) tea.Cmd {
-			return a.beginEdit("Install folder", a.settings.saved.ComfyUI.Dir, func(a *app, v string) (tea.Cmd, error) {
-				return a.commitFolder("comfyui.dir", "Install folder", v)
-			})
-		}}
+		run:  func(a *app) tea.Cmd { return a.editInstallFolder() }}
 	restartValue(&dir, saved.ComfyUI.Dir, cfg.ComfyUI.Dir)
 	log := settingRow{name: "Log", kind: rowInfo, value: a.comfyServer().LogPath(),
 		help: "The output of a server songsmith started"}
@@ -246,19 +243,11 @@ func (a app) stopFirstHelp(row *settingRow, saved, running string) {
 	}
 }
 
-// commitFolder takes an absolute folder or one under ~. A ~/ path is saved
-// as typed so the config stays portable; anything else is saved absolute.
+// commitFolder takes an absolute folder or one under ~.
 func (a *app) commitFolder(key, name, v string) (tea.Cmd, error) {
-	if v == "" {
-		return nil, errors.New(name + " cannot be empty; type a folder")
-	}
-	abs := config.ExpandHome(v)
-	if !filepath.IsAbs(abs) {
-		return nil, errors.New(name + " must be a full path, such as /Users/you/Music or ~/Music")
-	}
-	save := filepath.Clean(abs)
-	if strings.HasPrefix(v, "~/") {
-		save = v
+	save, _, err := folderValue(name, v)
+	if err != nil {
+		return nil, err
 	}
 	note := ""
 	if key == "state_dir" {
@@ -334,6 +323,8 @@ func (a app) installComfyRows() []settingRow {
 	row := settingRow{name: "Install ComfyUI", kind: rowInfo, value: "no ComfyUI in the install folder"}
 	var below []settingRow
 	switch {
+	case planned && installable(act) && !a.canInstall(act):
+		row.detail = a.withheldNote()
 	case planned && installable(act):
 		row.kind, row.verb, row.applies = rowAction, "install", appliesNow
 		row.detail = installOffer(act)

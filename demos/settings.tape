@@ -1,6 +1,6 @@
 # Settings: walk all seven sections on a machine that is ready to render,
 # filter the writer's model list, change the temperature and the render
-# steps, then show that the config file changed only those keys and kept its
+# steps, have the install folder catch a mistyped path, then show that the config file changed only those keys and kept its
 # comments. Uses a throwaway config under /tmp/songsmith-demo-settings (see
 # demos/settings.yaml) with stand-in ComfyUI and model files made there;
 # Ollama, ComfyUI and the install plan are demos/setupfake on loopback ports.
@@ -72,9 +72,28 @@ Sleep 1.5s
 Type@600ms "++"
 Sleep 2.5s
 
-# Server, Advanced with the server's samplers, and Library.
+# Server: a mistyped install folder is not saved on the first enter; tab
+# completes the real one, which is saved with what it holds.
 Right
-Sleep 3s
+Sleep 2.5s
+Down
+Sleep 600ms
+Enter
+Sleep 600ms
+Ctrl+U
+Type@30ms "/tmp/songsmith-demo-settings/ComfyIU"
+Sleep 1.2s
+Enter
+Sleep 3.5s
+Backspace@120ms 7
+Type "C"
+Sleep 500ms
+Tab
+Sleep 1.5s
+Enter
+Sleep 3.5s
+
+# Advanced with the server's samplers, and Library.
 Right
 Sleep 3s
 Down@400ms 4

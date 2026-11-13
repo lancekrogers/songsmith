@@ -74,6 +74,13 @@ type settingsModel struct {
 	// recheck is set when a saved change affects the setup checks; they
 	// run again on leaving Settings or opening Setup.
 	recheck bool
+
+	// restartDir is an install folder saved for the next start, and after
+	// its checks; separateCopy is set once the user chose to install apart
+	// from the folder a running server uses.
+	restartDir   string
+	after        afterRestartState
+	separateCopy bool
 }
 
 // checkedKeys are the settings the setup checks read.
@@ -330,6 +337,17 @@ type settingsEditor struct {
 	// commit applies the typed value. A non-nil error is a problem with the
 	// value: it is shown and the editor stays open for a fix.
 	commit func(a *app, value string) (tea.Cmd, error)
+
+	// live says what the typed value is, on the line under it; complete
+	// completes it on tab. Either may be nil.
+	live     func(value string) string
+	complete func(value string) (string, []string)
+	hint     string
+	// note stands in for the hint after enter: why the value was not saved.
+	// confirm is a value a second enter saves as typed.
+	note       string
+	noteFailed bool
+	confirm    string
 }
 
 func (a *app) beginEdit(label, initial string, commit func(a *app, value string) (tea.Cmd, error)) tea.Cmd {
@@ -353,6 +371,22 @@ func (a app) updateSettingsEditor(key tea.KeyMsg) (app, tea.Cmd) {
 		a.settings.edit = settingsEditor{}
 		a.settingsNote("Cancelled; nothing saved")
 		return a, nil
+	case "tab":
+		if e := &a.settings.edit; e.complete != nil {
+			before := e.input.Value()
+			next, matches := e.complete(before)
+			if next != before {
+				e.input.SetValue(next)
+				e.input.CursorEnd()
+				a.editorChanged()
+			}
+			hint := ""
+			if e.live != nil {
+				hint = e.live(next)
+			}
+			e.hint = completionHint(matches, hint)
+			return a, nil
+		}
 	case "enter":
 		value := strings.TrimSpace(a.settings.edit.input.Value())
 		cmd, err := a.settings.edit.commit(&a, value)
@@ -369,8 +403,21 @@ func (a app) updateSettingsEditor(key tea.KeyMsg) (app, tea.Cmd) {
 		return a, cmd
 	}
 	var cmd tea.Cmd
+	before := a.settings.edit.input.Value()
 	a.settings.edit.input, cmd = a.settings.edit.input.Update(key)
+	if a.settings.edit.input.Value() != before {
+		a.editorChanged()
+	}
 	return a, cmd
+}
+
+// editorChanged drops what was said about the value before it changed.
+func (a *app) editorChanged() {
+	e := &a.settings.edit
+	e.note, e.noteFailed, e.confirm = "", false, ""
+	if e.live != nil {
+		e.hint = e.live(e.input.Value())
+	}
 }
 
 // receiveSettings applies a background result started from Settings, on
@@ -385,6 +432,8 @@ func (a app) receiveSettings(msg settingsAsync) (app, tea.Cmd) {
 		a.receiveInstructions(msg)
 	case serverStatusMsg, serverActionMsg:
 		return a.receiveServer(msg)
+	case afterRestartMsg:
+		a.receiveAfterRestart(msg)
 	}
 	return a, nil
 }

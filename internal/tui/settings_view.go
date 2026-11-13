@@ -101,9 +101,30 @@ func (a app) settingsBodyRows() int {
 func (a app) settingsListRows() int {
 	rows := a.settingsBodyRows()
 	if a.settings.edit.active {
-		rows -= 2
+		rows -= len(a.editorLines())
 	}
 	return max(rows, 1)
+}
+
+// editorLines are the one-line editor and what is under it: why the value
+// was not saved, wrapped so a long path is read whole, or what the typed
+// value is, or a blank line.
+func (a app) editorLines() []string {
+	e := a.settings.edit
+	out := []string{"  " + selectedStyle.Render(e.label+": ") + e.input.View()}
+	switch {
+	case e.note != "":
+		style := warningStyle
+		if e.noteFailed {
+			style = errorStyle
+		}
+		for _, l := range wrapText(e.note, a.settingsContentWidth()-4) {
+			out = append(out, "    "+style.Render(l))
+		}
+	case e.hint != "":
+		out = append(out, "    "+dimStyle.Render(e.hint))
+	}
+	return append(out, "")
 }
 
 func (a app) settingsView() string {
@@ -172,21 +193,29 @@ func (a app) messageStyle() lipgloss.Style {
 // statusArea is the latest message or, without one, when a change to the
 // focused line applies, with whatever of its help the line under it could
 // not show, wrapped to statusLines lines.
+// A new install folder waiting for a restart takes the first line until then.
 func (a app) statusArea(width int) []string {
+	var out []string
+	if a.settings.restartDir != "" {
+		line := "↻ " + restartNote + " · after restart: " + a.afterRestart()
+		out = append(out, "  "+warningStyle.Render(ansi.Truncate(line, max(width-4, 1), "…")))
+	}
 	text, style := a.settings.message, a.messageStyle()
 	if text == "" {
 		text, style = a.statusHelp(), dimStyle
 	}
+	n := statusLines - len(out)
 	wrapped := strings.Split(lipgloss.NewStyle().Width(max(width-4, 10)).Render(text), "\n")
-	out := make([]string, statusLines)
-	for i := range out {
-		if i < len(wrapped) {
-			line := strings.TrimRight(wrapped[i], " ")
-			if i == statusLines-1 && len(wrapped) > statusLines {
-				line = ansi.Truncate(line+" "+wrapped[i+1], width-4, "…")
-			}
-			out[i] = "  " + style.Render(line)
+	for i := range n {
+		if i >= len(wrapped) {
+			out = append(out, "")
+			continue
 		}
+		line := strings.TrimRight(wrapped[i], " ")
+		if i == n-1 && len(wrapped) > n {
+			line = ansi.Truncate(line+" "+strings.Join(wrapped[i+1:], " "), width-4, "…")
+		}
+		out = append(out, "  "+style.Render(line))
 	}
 	return out
 }
@@ -245,6 +274,9 @@ func capitalize(s string) string {
 // settingsKeys names the keys that do something on the focused line.
 func (a app) settingsKeys() []string {
 	if a.settings.edit.active {
+		if a.settings.edit.complete != nil {
+			return []string{"enter save", "tab complete", "esc cancel"}
+		}
 		return []string{"enter save", "esc cancel"}
 	}
 	if a.settings.filter.on {
@@ -317,7 +349,7 @@ func padRight(s string, width int) string {
 func (a app) settingsContent() []string {
 	var out []string
 	if a.settings.edit.active {
-		out = append(out, "  "+selectedStyle.Render(a.settings.edit.label+": ")+a.settings.edit.input.View(), "")
+		out = append(out, a.editorLines()...)
 	}
 	rows, lines := a.settingsLayout()
 	disp, _ := a.settingsDisplay(rows, lines)

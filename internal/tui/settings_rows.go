@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"strings"
-
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -126,10 +124,9 @@ func reportRows(name, text string, width int) []settingRow {
 }
 
 func styledReportRows(name, text string, width int, style *lipgloss.Style) []settingRow {
-	wrapped := lipgloss.NewStyle().Width(max(width, 10)).Render(text)
 	var rows []settingRow
-	for _, l := range strings.Split(wrapped, "\n") {
-		rows = append(rows, settingRow{name: name, kind: rowReport, value: strings.TrimRight(l, " "), style: style})
+	for _, l := range wrapText(text, width) {
+		rows = append(rows, settingRow{name: name, kind: rowReport, value: l, style: style})
 	}
 	return rows
 }
