@@ -273,7 +273,7 @@ func (a app) update(msg tea.Msg) (app, tea.Cmd) {
 	case tea.KeyMsg:
 		// The song form and the text editors handle ctrl+c themselves, so a
 		// reflex copy or cancel there never loses work.
-		if msg.String() == "ctrl+c" && a.screen != screenCompose {
+		if msg.String() == "ctrl+c" && a.screen != screenCompose && !(a.screen == screenSettings && a.settings.text != nil) {
 			return a.quit()
 		}
 	}

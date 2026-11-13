@@ -42,21 +42,57 @@ func (a app) settingsContentWidth() int {
 // statusLines is how many lines the status takes under the section.
 const statusLines = 2
 
+// settingsChrome is what surrounds the section lines. Full: title, rule,
+// status and footer. Compact: title and one bottom line. On a narrow
+// terminal a section strip stands in for the sidebar. A screen too short
+// for all of it drops the rule, the title, the bottom lines, then the strip,
+// so at least one section line is always drawn.
+type settingsChrome struct {
+	title, rule, strip bool
+	bottom             int
+}
+
+func (c settingsChrome) lines() int {
+	n := c.bottom
+	for _, on := range []bool{c.title, c.rule, c.strip} {
+		if on {
+			n++
+		}
+	}
+	return n
+}
+
+func (a app) settingsHeight() int {
+	if a.height <= 0 {
+		return 24
+	}
+	return a.height
+}
+
+func (a app) settingsChrome() settingsChrome {
+	h := a.settingsHeight()
+	c := settingsChrome{title: true, rule: !a.settingsCompact(), strip: a.settingsSidebarWidth() == 0, bottom: statusLines + 1}
+	if a.settingsCompact() {
+		c.bottom = 1
+	}
+	if c.lines() >= h {
+		c.rule = false
+	}
+	if c.lines() >= h {
+		c.title = false
+	}
+	for c.lines() >= h && c.bottom > 0 {
+		c.bottom--
+	}
+	if c.lines() >= h {
+		c.strip = false
+	}
+	return c
+}
+
 // settingsBodyRows is the height of the sidebar and section area.
 func (a app) settingsBodyRows() int {
-	h := a.height
-	if h <= 0 {
-		h = 24
-	}
-	// Full: title, rule, status, footer. Compact: title and one bottom line.
-	chrome := 3 + statusLines
-	if a.settingsCompact() {
-		chrome = 2
-	}
-	if a.settingsSidebarWidth() == 0 {
-		chrome++
-	}
-	return max(h-chrome, 1)
+	return max(a.settingsHeight()-a.settingsChrome().lines(), 1)
 }
 
 // settingsListRows is how many section lines fit under the editor, if open.
@@ -69,16 +105,23 @@ func (a app) settingsListRows() int {
 }
 
 func (a app) settingsView() string {
+	if a.settings.text != nil {
+		return a.settingsTextView()
+	}
 	width := a.settingsWidth()
 	compact := a.settingsCompact()
 	body := a.settingsBodyRows()
+	chrome := a.settingsChrome()
 
-	parts := []string{headerStyle.Render("  ♪ Settings")}
-	if !compact {
+	var parts []string
+	if chrome.title {
+		parts = append(parts, headerStyle.Render("  ♪ Settings"))
+	}
+	if chrome.rule {
 		parts = append(parts, dimStyle.Render(strings.Repeat("─", width)))
 	}
 	side := a.settingsSidebarWidth()
-	if side == 0 {
+	if chrome.strip {
 		parts = append(parts, a.sectionStrip())
 	}
 
@@ -98,17 +141,21 @@ func (a app) settingsView() string {
 	parts = append(parts, content...)
 
 	keys := a.settingsKeys()
+	var bottom []string
 	switch {
 	case compact && a.settings.message != "":
-		parts = append(parts, a.messageStyle().Render("  "+a.settings.message))
+		bottom = []string{a.messageStyle().Render("  " + a.settings.message)}
+	case compact && a.focusedHelp() != "":
+		// Without room for the status area, say when a change applies here.
+		bottom = []string{dimStyle.Render("  " + a.focusedHelp())}
 	case compact:
-		parts = append(parts, footer(width, "  ", keys...))
+		bottom = []string{footer(width, "  ", keys...)}
 	default:
-		parts = append(parts, a.statusArea(width)...)
-		parts = append(parts, footer(width, "  ", keys...))
+		bottom = append(a.statusArea(width), footer(width, "  ", keys...))
 	}
+	parts = append(parts, bottom[:min(chrome.bottom, len(bottom))]...)
 	for i := range parts {
-		parts[i] = ansi.Truncate(parts[i], width, "…")
+		parts[i] = ansi.Truncate(parts[i], max(a.width, 0), "…")
 	}
 	return strings.Join(parts, "\n")
 }
@@ -180,8 +227,6 @@ func (a app) settingsKeys() []string {
 			keys = append(keys, "enter choose")
 		case row.kind == rowChoice:
 			keys = append(keys, "enter/space/+/- step")
-		case row.kind == rowToggle:
-			keys = append(keys, "enter/space toggle")
 		case row.kind == rowSlider:
 			keys = append(keys, "+/- adjust")
 		case row.kind == rowText:
@@ -341,11 +386,6 @@ func rowValue(row settingRow) string {
 	switch row.kind {
 	case rowPick:
 		return dimStyle.Render(row.value)
-	case rowToggle:
-		if row.value == "on" {
-			return statusStyle.Render("on")
-		}
-		return dimStyle.Render("off")
 	case rowSlider:
 		return normalStyle.Render(row.value) + dimStyle.Render("  - / +")
 	case rowInfo:

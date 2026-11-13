@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/lancekrogers/songsmith/internal/comfy"
 	"github.com/lancekrogers/songsmith/internal/comfy/server"
+	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/setup"
 )
 
@@ -83,9 +85,11 @@ type serverState struct {
 	seq    int
 	known  bool
 	status server.Status
-	// busy is "starting" or "stopping" while an action runs.
-	busy      string
-	actionSeq int
+	// busy is "starting" or "stopping" while an action runs; confirming is
+	// set from its result until the status check after it lands.
+	busy       string
+	confirming bool
+	actionSeq  int
 }
 
 type serverStatusMsg struct {
@@ -142,14 +146,17 @@ func (a app) receiveServer(msg settingsAsync) (app, tea.Cmd) {
 	switch msg := msg.(type) {
 	case serverStatusMsg:
 		if msg.seq == sv.seq {
-			sv.known, sv.status = true, msg.status
+			sv.known, sv.status, sv.confirming = true, msg.status, false
 		}
 		return a, nil
 	case serverActionMsg:
 		if msg.seq != sv.actionSeq {
 			return a, nil
 		}
-		sv.busy = ""
+		sv.busy, sv.confirming = "", true
+		if msg.err == nil {
+			sv.known, sv.status = true, msg.status
+		}
 		switch {
 		case errors.Is(msg.err, server.ErrNotManaged):
 			a.settingsError("This server was not started by songsmith, so songsmith leaves it running; stop it where it was started")
@@ -196,6 +203,7 @@ func (a app) comfyRows() []settingRow {
 			return a.beginEdit("Port", strconv.Itoa(a.settings.saved.ComfyUI.Port), (*app).commitPort)
 		}}
 	restartValue(&port, strconv.Itoa(saved.ComfyUI.Port), strconv.Itoa(cfg.ComfyUI.Port))
+	a.stopFirstHelp(&port, strconv.Itoa(saved.ComfyUI.Port), strconv.Itoa(cfg.ComfyUI.Port))
 	log := settingRow{name: "Log", kind: rowInfo, value: a.comfyServer().LogPath(),
 		help: "The output of a server songsmith started"}
 	return append(rows, dir, host, port, log)
@@ -211,14 +219,26 @@ func (a app) serverRow() settingRow {
 		row.help = "Wait for the server to finish " + sv.busy
 	case !sv.known:
 		row.value = "checking…"
+	case sv.status.OtherPort != 0 && !sv.status.Running && !a.rendering():
+		row.value = "songsmith's server still runs on port " + strconv.Itoa(sv.status.OtherPort)
+		row.detail = "this session uses port " + strconv.Itoa(cfg.ComfyUI.Port)
+		row.verb = "stop"
+		row.help = "enter stops the server songsmith started on port " + strconv.Itoa(sv.status.OtherPort) + "; the next render starts one on port " + strconv.Itoa(cfg.ComfyUI.Port)
+		row.run = func(a *app) tea.Cmd { return a.serverAction("stop") }
+	case sv.status.Running && !sv.status.Managed:
+		row.kind, row.applies = rowInfo, ""
+		row.value = "running (started outside songsmith) at " + cfg.ComfyUI.BaseURL()
+		row.help = "songsmith leaves a server it did not start running; stop it where it was started"
+	case sv.status.Running && a.rendering():
+		row.kind, row.applies = rowInfo, ""
+		row.value = "running at " + cfg.ComfyUI.BaseURL()
+		row.detail = "rendering — stop is unavailable until the song finishes or is cancelled"
+		row.help = "Rendering — stop is unavailable until the song finishes or is cancelled"
 	case sv.status.Running:
 		row.value = "running at " + cfg.ComfyUI.BaseURL()
-		row.detail = "not started by songsmith"
-		if sv.status.Managed {
-			row.detail = "started by songsmith"
-		}
+		row.detail = "started by songsmith"
 		row.verb = "stop"
-		row.help = "enter stops the server; songsmith only stops a server it started"
+		row.help = "enter stops the server"
 		row.run = func(a *app) tea.Cmd { return a.serverAction("stop") }
 	default:
 		row.value = "stopped · " + cfg.ComfyUI.BaseURL()
@@ -226,23 +246,101 @@ func (a app) serverRow() settingRow {
 		row.help = "enter starts ComfyUI from the install folder; it also starts by itself on the first render"
 		row.run = func(a *app) tea.Cmd { return a.serverAction("start") }
 	}
+	if sv.confirming && sv.busy == "" {
+		row.kind, row.verb, row.run = rowInfo, "", nil
+		row.help = "Checking the server after that change…"
+	}
 	return row
 }
 
+// rendering reports whether a song is rendering, here or in another process.
+func (a app) rendering() bool {
+	if a.d.Queue != nil && a.d.Queue.Current() != "" {
+		return true
+	}
+	_, _, ok := a.renderingSong()
+	return ok
+}
+
+// managedServerRunning reports whether the last check found a server
+// songsmith started running.
+func (a app) managedServerRunning() bool {
+	sv := a.settings.server
+	return sv.known && sv.status.Running && sv.status.Managed
+}
+
+// keepsRunningNote is added to a saved port or state folder while a server
+// songsmith started runs on the old one.
+func (a app) keepsRunningNote() string {
+	if !a.managedServerRunning() {
+		return ""
+	}
+	return " · the running server keeps port " + strconv.Itoa(a.cfg().ComfyUI.Port) + " until you stop it here, in this session"
+}
+
+// stopFirstHelp tells to stop a server songsmith started before restarting
+// with a changed port or state folder, while one runs.
+func (a app) stopFirstHelp(row *settingRow, saved, running string) {
+	if saved != running && a.managedServerRunning() {
+		row.help += " · Stop the server in Settings → Music engine before restarting, or songsmith will not recognise it as its own"
+	}
+}
+
+// commitFolder takes an absolute folder or one under ~. A ~/ path is saved
+// as typed so the config stays portable; anything else is saved absolute.
 func (a *app) commitFolder(key, name, v string) (tea.Cmd, error) {
 	if v == "" {
 		return nil, errors.New(name + " cannot be empty; type a folder")
 	}
-	a.saved(key, v, name+": "+v, appliesRestart)
+	abs := config.ExpandHome(v)
+	if !filepath.IsAbs(abs) {
+		return nil, errors.New(name + " must be a full path, such as /Users/you/Music or ~/Music")
+	}
+	save := filepath.Clean(abs)
+	if strings.HasPrefix(v, "~/") {
+		save = v
+	}
+	note := ""
+	if key == "state_dir" {
+		note = a.keepsRunningNote()
+	}
+	if !a.saveSetting(key, save) {
+		return nil, errSaveFailed
+	}
+	a.settingsNote(capitalize(appliesRestart) + " · " + name + ": " + save + note)
 	return nil, nil
 }
 
+// errSaveFailed keeps the one-line editor open after a save that failed;
+// the reason is already on the status line.
+var errSaveFailed = errors.New("not saved")
+
+// commitHost takes a host name or an IP address, without a port.
 func (a *app) commitHost(v string) (tea.Cmd, error) {
-	if v == "" || strings.ContainsAny(v, " \t/") {
-		return nil, errors.New("Type a host name or address, such as 127.0.0.1")
+	if net.ParseIP(v) == nil && !validHostname(v) {
+		return nil, errors.New("Type a host name or IP address without a port, such as 127.0.0.1")
 	}
-	a.saved("comfyui.host", v, "Host: "+v, appliesRestart)
+	if !a.saved("comfyui.host", v, "Host: "+v, appliesRestart) {
+		return nil, errSaveFailed
+	}
 	return nil, nil
+}
+
+func validHostname(v string) bool {
+	if v == "" || len(v) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(strings.TrimSuffix(v, "."), ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (a *app) commitPort(v string) (tea.Cmd, error) {
@@ -250,7 +348,11 @@ func (a *app) commitPort(v string) (tea.Cmd, error) {
 	if err != nil || port < 1 || port > 65535 {
 		return nil, errors.New("Port must be a whole number from 1 to 65535")
 	}
-	a.saved("comfyui.port", port, "Port: "+v, appliesRestart)
+	note := a.keepsRunningNote()
+	if !a.saveSetting("comfyui.port", port) {
+		return nil, errSaveFailed
+	}
+	a.settingsNote(capitalize(appliesRestart) + " · Port: " + v + note)
 	return nil, nil
 }
 

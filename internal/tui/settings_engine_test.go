@@ -83,18 +83,17 @@ func TestServerStartAndStopRunInTheBackground(t *testing.T) {
 	}
 }
 
-func TestServerStopLeavesAServerSongsmithDidNotStart(t *testing.T) {
+func TestServerStartedOutsideSongsmithOffersNoStop(t *testing.T) {
 	a, srv := newSettingsApp(t, readyChecks())
 	srv.status = server.Status{Running: true, Device: "mps"}
-	srv.stopErr = server.ErrNotManaged
 	a = openSettingsOn(t, a, sectionEngine)
-	if !strings.Contains(plain(a), "not started by songsmith") {
+	a = focus(t, a, "Server", -1)
+	if !strings.Contains(plain(a), "running (started outside songsmith)") || strings.Contains(footerLine(a), "enter stop") {
 		t.Fatalf("view:\n%s", plain(a))
 	}
-	a = focus(t, a, "Server", -1)
 	a = pressSettings(t, a, "enter")
-	if !a.settings.failed || !strings.Contains(plain(a), "This server was not started by songsmith, so songsmith leaves it running") {
-		t.Fatalf("not-managed stop:\n%s", plain(a))
+	if srv.stops != 0 {
+		t.Fatal("enter tried to stop a server songsmith did not start")
 	}
 	srv.status = server.Status{}
 	srv.startErr = errors.New("comfyui not found at /x")
@@ -161,7 +160,7 @@ func TestFoldersAndHostSaveOnlyTheirKeyForTheNextStart(t *testing.T) {
 	a = clearEditor(t, a)
 	a = typeIntoSettings(t, a, "http://box/")
 	a = pressSettings(t, a, "enter")
-	if !strings.Contains(plain(a), "Type a host name or address, such as 127.0.0.1") {
+	if !strings.Contains(plain(a), "Type a host name or IP address without a port, such as 127.0.0.1") {
 		t.Fatalf("bad host:\n%s", plain(a))
 	}
 	a = clearEditor(t, a)

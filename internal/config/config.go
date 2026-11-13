@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -22,8 +24,9 @@ type ComfyUI struct {
 	VAE            string `yaml:"vae"`
 }
 
+// BaseURL is the server's address; an IPv6 host is bracketed.
 func (c ComfyUI) BaseURL() string {
-	return fmt.Sprintf("http://%s:%d", c.Host, c.Port)
+	return "http://" + net.JoinHostPort(c.Host, strconv.Itoa(c.Port))
 }
 
 type Ollama struct {
@@ -116,10 +119,10 @@ func Load(path string) (Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
-	cfg.LibraryDir = expandHome(cfg.LibraryDir)
-	cfg.StateDir = expandHome(cfg.StateDir)
-	cfg.ComfyUI.Dir = expandHome(cfg.ComfyUI.Dir)
-	cfg.Ollama.InstructionsFile = expandHome(cfg.Ollama.InstructionsFile)
+	cfg.LibraryDir = ExpandHome(cfg.LibraryDir)
+	cfg.StateDir = ExpandHome(cfg.StateDir)
+	cfg.ComfyUI.Dir = ExpandHome(cfg.ComfyUI.Dir)
+	cfg.Ollama.InstructionsFile = ExpandHome(cfg.Ollama.InstructionsFile)
 	if f := cfg.Ollama.InstructionsFile; f != "" && !filepath.IsAbs(f) {
 		abs, err := filepath.Abs(path)
 		if err != nil {
@@ -133,8 +136,13 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
-func expandHome(p string) string {
+// ExpandHome turns ~ and a path starting with ~/ into one under the home
+// folder; any other path is returned as it is.
+func ExpandHome(p string) string {
 	rest, ok := strings.CutPrefix(p, "~/")
+	if p == "~" {
+		rest, ok = "", true
+	}
 	if !ok {
 		return p
 	}

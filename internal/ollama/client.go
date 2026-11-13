@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -17,7 +18,7 @@ type Client struct {
 }
 
 func NewClient(baseURL string) *Client {
-	return &Client{base: baseURL, http: &http.Client{Timeout: 10 * time.Minute}}
+	return &Client{base: strings.TrimRight(baseURL, "/"), http: &http.Client{Timeout: 10 * time.Minute}}
 }
 
 type Message struct {
