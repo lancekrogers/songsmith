@@ -90,18 +90,23 @@ func newGenerateCmd(a *app) *cobra.Command {
 
 			updates, stop := r.queue.Subscribe()
 			defer stop()
-			go printProgress(out, updates)
+			printed := make(chan struct{})
+			go func() {
+				defer close(printed)
+				printProgress(out, updates)
+			}()
 			start := time.Now()
 			song = r.queue.Render(cmd.Context(), song)
 			stop()
+			<-printed
 
 			switch song.Status {
 			case library.StatusDone:
 				fmt.Fprintf(out, "\nDone in %s: %s (%.0fs)\n", time.Since(start).Round(time.Second), r.store.AudioPath(song), song.Duration)
 				return nil
 			case library.StatusQueued:
-				fmt.Fprintf(out, "\nInterrupted; %s stays queued and renders the next time songsmith runs its queue.\n", song.ID)
-				return cmd.Context().Err()
+				fmt.Fprintf(out, "\nDetached; ComfyUI keeps rendering %s and songsmith picks up the result the next time it runs its queue.\n", song.ID)
+				return nil
 			default:
 				return fmt.Errorf("render failed: %s", song.Error)
 			}

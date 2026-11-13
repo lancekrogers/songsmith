@@ -34,6 +34,11 @@ type Request struct {
 	MaxSeconds float64
 	// OutPath is where the finished audio file is written.
 	OutPath string
+	// ResumeID reattaches to a render started earlier, if the backend still has it.
+	ResumeID string
+	// OnStarted receives the backend's job ID as soon as the render is submitted,
+	// so it can be resumed after a crash.
+	OnStarted func(jobID string)
 }
 
 type Result struct {

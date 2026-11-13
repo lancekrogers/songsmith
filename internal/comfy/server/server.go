@@ -60,10 +60,25 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 	if len(stats.Devices) > 0 {
 		st.Device = stats.Devices[0].Type
 	}
-	if pid, ok := m.readPID(); ok && alive(pid) {
+	if pid, ok := m.ourPID(); ok {
 		st.Managed, st.PID = true, pid
 	}
 	return st, nil
+}
+
+// ourPID returns the pid from the pid file when that process is still the
+// ComfyUI songsmith started, guarding against pid reuse after a crash or reboot.
+func (m *Manager) ourPID() (int, bool) {
+	pid, ok := m.readPID()
+	if !ok || !alive(pid) {
+		return 0, false
+	}
+	out, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return 0, false
+	}
+	cmdline := string(out)
+	return pid, strings.Contains(cmdline, "main.py") && strings.Contains(cmdline, "--port "+strconv.Itoa(m.cfg.Port))
 }
 
 // Start launches ComfyUI unless one is already listening, then waits until
@@ -72,6 +87,11 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 func (m *Manager) Start(ctx context.Context) (Status, error) {
 	if st, _ := m.Status(ctx); st.Running {
 		return st, nil
+	}
+	if _, ok := m.ourPID(); ok {
+		// A server songsmith started is still loading; wait for it instead of
+		// launching a second one.
+		return m.waitReady(ctx, nil)
 	}
 	if _, err := os.Stat(filepath.Join(m.cfg.Dir, "main.py")); err != nil {
 		return Status{}, fmt.Errorf("comfyui not found at %s: %w", m.cfg.Dir, err)
@@ -106,6 +126,12 @@ func (m *Manager) Start(ctx context.Context) (Status, error) {
 		return Status{}, fmt.Errorf("write pid file: %w", err)
 	}
 
+	return m.waitReady(ctx, exited)
+}
+
+// waitReady waits for the API to answer. exited, when not nil, reports the
+// launched process dying first.
+func (m *Manager) waitReady(ctx context.Context, exited <-chan error) (Status, error) {
 	ctx, cancel := context.WithTimeoutCause(ctx, m.ReadyTimeout, errors.New("comfyui did not become ready in time"))
 	defer cancel()
 	tick := time.NewTicker(time.Second)
@@ -143,8 +169,8 @@ var ErrNotManaged = errors.New("comfyui is running but was not started by songsm
 
 // Stop terminates a server that songsmith started.
 func (m *Manager) Stop(ctx context.Context) error {
-	pid, ok := m.readPID()
-	if !ok || !alive(pid) {
+	pid, ok := m.ourPID()
+	if !ok {
 		_ = os.Remove(m.pidPath())
 		if st, _ := m.Status(ctx); st.Running {
 			return ErrNotManaged

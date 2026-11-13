@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/lancekrogers/songsmith/internal/backend"
 	"github.com/lancekrogers/songsmith/internal/library"
@@ -29,8 +30,8 @@ type Deps struct {
 	Queue   *queue.Queue
 	Drafter Drafter
 	Player  *player.Player
-	// WorkerNote explains why this process is not rendering, if it is not.
-	WorkerNote string
+	// WorkerNote explains why this process is not rendering, or "" when it is.
+	WorkerNote func() string
 	// DraftModel names the LLM used for drafts.
 	DraftModel string
 }
@@ -67,8 +68,9 @@ type model struct {
 	detail   viewport.Model
 	notice   string
 	err      string
-	// selectID is the song to select after the next library reload.
+	// selectID is the song to select once a reload contains it.
 	selectID string
+	ticks    int
 
 	compose composeModel
 }
@@ -142,7 +144,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case songsMsg:
 		keep := m.selectID
-		m.selectID = ""
 		if s, ok := m.selected(); ok && keep == "" {
 			keep = s.ID
 		}
@@ -150,10 +151,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.err = msg.err.Error()
 		}
-		m.cursor = 0
+		m.cursor = min(m.cursor, max(0, len(m.songs)-1))
 		for i, s := range m.songs {
 			if s.ID == keep {
 				m.cursor = i
+				if keep == m.selectID {
+					m.selectID = ""
+				}
 			}
 		}
 		m.layoutDetail()
@@ -175,8 +179,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.layoutDetail()
 		return m, waitPlayDone(m.d.Player)
 	case tickMsg:
+		m.ticks++
 		if m.d.Queue.Current() != "" {
 			m.layoutDetail()
+		}
+		// Other processes can change the library; refresh now and then.
+		if m.ticks%5 == 0 {
+			return m, tea.Batch(tick(), m.loadSongs())
 		}
 		return m, tick()
 	}
@@ -247,7 +256,7 @@ func (m model) libraryKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			song.Seed = 0
 		}
 		if _, err := m.d.Queue.Enqueue(song); err != nil {
-			m.err = err.Error()
+			m.err = "queue " + song.Title + ": " + err.Error()
 		} else {
 			m.notice = "Queued " + song.Title + "."
 		}
@@ -375,8 +384,10 @@ func (m model) View() string {
 		return m.compose.view(m.mode == modeIdea, m.width)
 	}
 	header := titleStyle.Render("♪ Songsmith") + mutedStyle.Render(fmt.Sprintf("  %d songs · %s", len(m.songs), m.d.Store.Dir()))
-	if m.d.WorkerNote != "" {
-		header += "  " + errStyle.Render(m.d.WorkerNote)
+	if m.d.WorkerNote != nil {
+		if note := m.d.WorkerNote(); note != "" {
+			header += "  " + errStyle.Render(note)
+		}
 	}
 
 	listW := m.listWidth()
@@ -384,15 +395,13 @@ func (m model) View() string {
 	// Row: "› " + badge(11) + " " + title + " " + length(5) + " " + age(4), inside 2 columns of padding.
 	titleW := max(8, listW-2-2-11-1-1-5-1-4)
 	for i, s := range m.songs {
-		title := s.Title
-		if lipgloss.Width(title) > titleW {
-			title = string([]rune(title)[:titleW-1]) + "…"
-		}
+		title := ansi.Truncate(s.Title, titleW, "…")
+		title += strings.Repeat(" ", max(0, titleW-ansi.StringWidth(title)))
 		length := "    "
 		if s.Duration > 0 {
 			length = fmtDuration(s.Duration)
 		}
-		line := fmt.Sprintf("%s %-*s %5s %4s", statusBadge(s.Status), titleW, title, length, age(s.Created))
+		line := fmt.Sprintf("%s %s %5s %4s", statusBadge(s.Status), title, length, age(s.Created))
 		if i == m.cursor {
 			line = selectedStyle.Render("› ") + line
 		} else {
@@ -416,5 +425,5 @@ func (m model) View() string {
 	} else if m.notice != "" {
 		status = m.notice
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, status)
+	return lipgloss.JoinVertical(lipgloss.Left, ansi.Truncate(header, m.width, "…"), body, ansi.Truncate(status, m.width, "…"))
 }

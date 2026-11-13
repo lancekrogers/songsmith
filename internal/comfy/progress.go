@@ -96,9 +96,42 @@ func (e *ExecutionError) Error() string {
 	return fmt.Sprintf("comfyui failed at node %s: %s", e.Node, e.Message)
 }
 
-// Run queues g, reports its events to onEvent, and returns the finished
-// history entry. Cancelling ctx interrupts the running prompt.
-func (c *Client) Run(ctx context.Context, g Graph, onEvent func(Event)) (HistoryEntry, error) {
+// ErrPromptLost means ComfyUI no longer knows a prompt, for example after the
+// server restarted mid-render.
+var ErrPromptLost = errors.New("comfyui lost the prompt (server restarted?)")
+
+// ErrDetach, used as a context cancellation cause, makes Run return without
+// stopping the prompt, so a later Run with ResumeID can pick up its result.
+var ErrDetach = errors.New("detached from render")
+
+type RunOptions struct {
+	// ResumeID reattaches to a prompt queued earlier, if ComfyUI still has it.
+	ResumeID string
+	// OnQueued receives the prompt ID once the prompt is queued or reattached.
+	OnQueued func(promptID string)
+	OnEvent  func(Event)
+}
+
+// Run queues g (or reattaches to opts.ResumeID), reports its events and
+// returns the finished history entry. Cancelling ctx stops only this prompt.
+func (c *Client) Run(ctx context.Context, g Graph, opts RunOptions) (HistoryEntry, error) {
+	if opts.ResumeID != "" {
+		if h, ok, err := c.History(ctx, opts.ResumeID); err == nil && ok {
+			if opts.OnQueued != nil {
+				opts.OnQueued(opts.ResumeID)
+			}
+			return finished(h)
+		}
+		if known, err := c.QueueContains(ctx, opts.ResumeID); err == nil && known {
+			if opts.OnQueued != nil {
+				opts.OnQueued(opts.ResumeID)
+			}
+			// Progress events go to the client that queued the prompt, so a
+			// reattached render can only be followed through history.
+			return c.waitHistory(ctx, opts.ResumeID)
+		}
+	}
+
 	clientID := newClientID()
 	conn, err := c.dial(ctx, clientID)
 	if err != nil {
@@ -110,12 +143,15 @@ func (c *Client) Run(ctx context.Context, g Graph, onEvent func(Event)) (History
 	if err != nil {
 		return HistoryEntry{}, err
 	}
+	if opts.OnQueued != nil {
+		opts.OnQueued(promptID)
+	}
 
 	for {
 		typ, data, err := conn.Read(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
-				return HistoryEntry{}, c.interruptFor(ctx)
+				return HistoryEntry{}, c.stopPrompt(ctx, promptID)
 			}
 			return c.waitHistory(ctx, promptID)
 		}
@@ -126,8 +162,8 @@ func (c *Client) Run(ctx context.Context, g Graph, onEvent func(Event)) (History
 		if !ok || ev.PromptID != promptID {
 			continue
 		}
-		if onEvent != nil {
-			onEvent(ev)
+		if opts.OnEvent != nil {
+			opts.OnEvent(ev)
 		}
 		switch ev.Type {
 		case EventSuccess:
@@ -140,36 +176,52 @@ func (c *Client) Run(ctx context.Context, g Graph, onEvent func(Event)) (History
 	}
 }
 
+func finished(h HistoryEntry) (HistoryEntry, error) {
+	if h.Status.StatusStr == "error" {
+		return h, &ExecutionError{Node: "?", Message: "see ComfyUI log"}
+	}
+	return h, nil
+}
+
 // waitHistory polls until the prompt appears in history. It also covers a
-// dropped websocket mid-render.
+// dropped websocket mid-render and reattached prompts.
 func (c *Client) waitHistory(ctx context.Context, promptID string) (HistoryEntry, error) {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
-	for {
+	for n := 1; ; n++ {
 		h, ok, err := c.History(ctx, promptID)
 		if err != nil && ctx.Err() == nil {
 			return HistoryEntry{}, err
 		}
 		if ok {
-			if h.Status.StatusStr == "error" {
-				return h, &ExecutionError{Node: "?", Message: "see ComfyUI log"}
+			return finished(h)
+		}
+		if n%5 == 0 {
+			if known, err := c.QueueContains(ctx, promptID); err == nil && !known {
+				if h, ok, err := c.History(ctx, promptID); err == nil && ok {
+					return finished(h)
+				}
+				return HistoryEntry{}, ErrPromptLost
 			}
-			return h, nil
 		}
 		select {
 		case <-ctx.Done():
-			return HistoryEntry{}, c.interruptFor(ctx)
+			return HistoryEntry{}, c.stopPrompt(ctx, promptID)
 		case <-tick.C:
 		}
 	}
 }
 
-// interruptFor stops the running prompt after ctx was cancelled and returns
-// the error Run reports.
-func (c *Client) interruptFor(ctx context.Context) error {
-	ictx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+// stopPrompt interrupts promptID if it is running and drops it from the queue
+// if it is still pending, then returns the error Run reports.
+func (c *Client) stopPrompt(ctx context.Context, promptID string) error {
+	if errors.Is(context.Cause(ctx), ErrDetach) {
+		return context.Cause(ctx)
+	}
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if err := c.Interrupt(ictx); err != nil {
+	err := errors.Join(c.Interrupt(sctx, promptID), c.DeleteQueued(sctx, promptID))
+	if err != nil {
 		return fmt.Errorf("%w (%w); also failed to stop ComfyUI: %w", ErrInterrupted, context.Cause(ctx), err)
 	}
 	return fmt.Errorf("%w: %w", ErrInterrupted, context.Cause(ctx))

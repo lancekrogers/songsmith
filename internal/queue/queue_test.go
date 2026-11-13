@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +20,7 @@ type fakeBackend struct {
 	err     error
 	started chan string
 	block   bool
+	jobID   string
 }
 
 func (f *fakeBackend) Name() string { return "fake" }
@@ -26,6 +29,9 @@ func (f *fakeBackend) Generate(ctx context.Context, req backend.Request, progres
 	f.mu.Lock()
 	f.calls = append(f.calls, req)
 	f.mu.Unlock()
+	if f.jobID != "" && req.OnStarted != nil {
+		req.OnStarted(f.jobID)
+	}
 	if f.started != nil {
 		f.started <- req.ID
 	}
@@ -47,6 +53,7 @@ func setup(t *testing.T, b *fakeBackend) (*Queue, *library.Store) {
 	store := library.NewStore(t.TempDir())
 	q := New(store, b)
 	q.probe = func(string) float64 { return 61.2 }
+	q.poll = 50 * time.Millisecond
 	return q, store
 }
 
@@ -183,5 +190,138 @@ func TestRecoverRequeuesRendering(t *testing.T) {
 	}
 	if s, _ := store.Load(done.ID); s.Status != library.StatusDone {
 		t.Fatalf("done = %s", s.Status)
+	}
+}
+
+func TestShutdownKeepsJobForResume(t *testing.T) {
+	b := &fakeBackend{block: true, started: make(chan string, 2), jobID: "prompt-1"}
+	q, store := setup(t, b)
+	song := create(t, store, "Song", library.StatusQueued)
+	ctx, cancel := context.WithCancel(t.Context())
+	result := make(chan library.Song)
+	go func() { result <- q.Render(ctx, song) }()
+	<-b.started
+	if s, _ := store.Load(song.ID); s.JobID != "prompt-1" || s.Status != library.StatusRendering {
+		t.Fatalf("job id not saved while rendering: %+v", s)
+	}
+	cancel()
+	got := <-result
+	if got.Status != library.StatusQueued || got.JobID != "prompt-1" {
+		t.Fatalf("after shutdown: %+v", got)
+	}
+	b.block = false
+	q.Render(t.Context(), got)
+	if b.calls[1].ResumeID != "prompt-1" {
+		t.Fatalf("resume id = %q", b.calls[1].ResumeID)
+	}
+	if s, _ := store.Load(song.ID); s.Status != library.StatusDone || s.JobID != "" {
+		t.Fatalf("after resume: %+v", s)
+	}
+}
+
+func TestRerenderKeepsPreviousTake(t *testing.T) {
+	b := &fakeBackend{}
+	q, store := setup(t, b)
+	song := q.Render(t.Context(), create(t, store, "Song", library.StatusQueued))
+	if song.Audio != "song.flac" {
+		t.Fatalf("first take = %q", song.Audio)
+	}
+
+	b.err = errors.New("MPS out of memory")
+	song, _ = q.Enqueue(song)
+	got := q.Render(t.Context(), song)
+	if got.Status != library.StatusDone || got.Audio != "song.flac" || !strings.Contains(got.Error, "kept the previous take") {
+		t.Fatalf("failed re-render: %+v", got)
+	}
+
+	b.err = nil
+	got, _ = q.Enqueue(got)
+	got = q.Render(t.Context(), got)
+	if got.Audio != "song-2.flac" || !store.HasAudio(got) {
+		t.Fatalf("second take = %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(store.Dir(), got.ID, "song.flac")); err != nil {
+		t.Fatal("first take was removed")
+	}
+}
+
+func TestCancelQueuedRerenderStaysDone(t *testing.T) {
+	q, store := setup(t, &fakeBackend{})
+	song := q.Render(t.Context(), create(t, store, "Song", library.StatusQueued))
+	song, _ = q.Enqueue(song)
+	if err := q.Cancel(song.ID); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := store.Load(song.ID); s.Status != library.StatusDone {
+		t.Fatalf("status = %s", s.Status)
+	}
+}
+
+func TestRenderSkipsSongNoLongerQueued(t *testing.T) {
+	b := &fakeBackend{}
+	q, store := setup(t, b)
+	song := create(t, store, "Song", library.StatusQueued)
+	listed := song
+	if err := q.Cancel(song.ID); err != nil {
+		t.Fatal(err)
+	}
+	got := q.Render(t.Context(), listed)
+	if got.Status != library.StatusDraft || len(b.calls) != 0 {
+		t.Fatalf("rendered a cancelled song: %+v calls %d", got, len(b.calls))
+	}
+}
+
+func TestSaveEditRefusesRenderingSong(t *testing.T) {
+	b := &fakeBackend{block: true, started: make(chan string, 1)}
+	q, store := setup(t, b)
+	song := create(t, store, "Song", library.StatusQueued)
+	done := make(chan library.Song)
+	go func() { done <- q.Render(t.Context(), song) }()
+	<-b.started
+	song.Lyrics = "[Verse]\nedited"
+	if err := q.SaveEdit(song); !errors.Is(err, ErrBusy) {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := q.Enqueue(song); !errors.Is(err, ErrBusy) {
+		t.Fatalf("enqueue err = %v", err)
+	}
+	q.Cancel(song.ID)
+	<-done
+}
+
+func TestRunPicksUpSongsQueuedElsewhere(t *testing.T) {
+	b := &fakeBackend{started: make(chan string, 1)}
+	q, store := setup(t, b)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go q.Run(ctx)
+	time.Sleep(20 * time.Millisecond)
+	song := create(t, store, "From another process", library.StatusQueued)
+	select {
+	case id := <-b.started:
+		if id != song.ID {
+			t.Fatalf("rendered %s", id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not poll for new songs")
+	}
+}
+
+func TestRunSurvivesCorruptSong(t *testing.T) {
+	b := &fakeBackend{started: make(chan string, 1)}
+	q, store := setup(t, b)
+	os.MkdirAll(filepath.Join(store.Dir(), "bad"), 0o755)
+	os.WriteFile(filepath.Join(store.Dir(), "bad", "song.json"), []byte("{"), 0o644)
+	song := create(t, store, "Good", library.StatusQueued)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go q.Run(ctx)
+	select {
+	case id := <-b.started:
+		if id != song.ID {
+			t.Fatalf("rendered %s", id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a corrupt song stopped the worker")
 	}
 }

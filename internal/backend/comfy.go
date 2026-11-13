@@ -12,6 +12,14 @@ import (
 	"github.com/lancekrogers/songsmith/internal/config"
 )
 
+// Errors the queue reacts to, shared with the ComfyUI client.
+var (
+	// ErrDetach as a cancellation cause leaves the render running so it can be resumed.
+	ErrDetach = comfy.ErrDetach
+	// ErrJobLost means the backend no longer knows a resumed job.
+	ErrJobLost = comfy.ErrPromptLost
+)
+
 // Starter makes sure a ComfyUI server is reachable before a render.
 type Starter interface {
 	Start(ctx context.Context) error
@@ -81,7 +89,7 @@ func (b *ComfyMiniMax) Generate(ctx context.Context, req Request, progress func(
 		cur, since = s, now
 	}
 
-	h, err := b.client.Run(ctx, g, func(e comfy.Event) {
+	h, err := b.client.Run(ctx, g, comfy.RunOptions{ResumeID: req.ResumeID, OnQueued: req.OnStarted, OnEvent: func(e comfy.Event) {
 		stage, ok := nodeStage[e.Node]
 		if !ok {
 			return
@@ -94,7 +102,7 @@ func (b *ComfyMiniMax) Generate(ctx context.Context, req Request, progress func(
 			enter(stage)
 			progress(Progress{Stage: stage, Value: e.Value, Max: e.Max})
 		}
-	})
+	}})
 	enter(StageSaving)
 	if err != nil {
 		return Result{Timings: timings}, err

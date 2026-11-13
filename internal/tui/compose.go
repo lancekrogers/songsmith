@@ -3,6 +3,7 @@ package tui
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,6 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/lancekrogers/songsmith/internal/library"
+	"github.com/lancekrogers/songsmith/internal/queue"
 	"github.com/lancekrogers/songsmith/internal/writer"
 )
 
@@ -100,8 +102,7 @@ func (c *composeModel) startEdit(song library.Song) tea.Cmd {
 	c.drafting = false
 	if song.Status == library.StatusDone || song.Status == library.StatusRendering {
 		// Keep finished audio: edits become a new song.
-		song.ID, song.Status, song.Audio, song.Duration, song.Seed, song.Error = "", "", "", 0, 0, ""
-		song.Started, song.Finished, song.Timings = time.Time{}, time.Time{}, nil
+		song = asCopy(song)
 	}
 	c.base = song
 	c.title.SetValue(song.Title)
@@ -111,6 +112,13 @@ func (c *composeModel) startEdit(song library.Song) tea.Cmd {
 	c.caption.SetValue(caption)
 	c.focus = fieldLyrics
 	return c.applyFocus()
+}
+
+// asCopy turns song into an unsaved new song with the same words and style.
+func asCopy(song library.Song) library.Song {
+	song.ID, song.Status, song.Audio, song.Duration, song.Seed, song.Error, song.JobID = "", "", "", 0, 0, "", ""
+	song.Started, song.Finished, song.Timings = time.Time{}, time.Time{}, nil
+	return song
 }
 
 func (c *composeModel) applyFocus() tea.Cmd {
@@ -269,19 +277,32 @@ func (m model) editKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		song.Status = library.StatusDraft
+		if m.d.Store.HasAudio(song) {
+			song.Status = library.StatusDone
+		}
+		copied := false
+		if song.ID != "" {
+			err = m.d.Queue.SaveEdit(song)
+			if errors.Is(err, queue.ErrBusy) {
+				// It started rendering while being edited: keep the edits as a new song.
+				song = asCopy(song)
+				copied = true
+			}
+		}
 		if song.ID == "" {
 			song, err = m.d.Store.Create(song)
-		} else {
-			err = m.d.Store.Save(song)
 		}
 		if err != nil {
 			c.err = err.Error()
 			return m, nil
 		}
-		m.notice = "Saved draft " + song.Title + "."
+		m.notice = "Saved " + song.Title + "."
+		if copied {
+			m.notice = "That song started rendering, so your edits were saved as a new song."
+		}
 		if key.String() == "ctrl+s" {
 			if _, err := m.d.Queue.Enqueue(song); err != nil {
-				m.err = err.Error()
+				m.err = "queue " + song.Title + ": " + err.Error()
 			} else {
 				m.notice = "Queued " + song.Title + ". Rendering takes several minutes per minute of song."
 			}
@@ -331,8 +352,7 @@ func (c *composeModel) openEditor() tea.Cmd {
 		c.err = "could not write temp file for $EDITOR"
 		return nil
 	}
-	editor := cmp.Or(os.Getenv("VISUAL"), os.Getenv("EDITOR"), "vi")
-	parts := strings.Fields(editor)
+	parts := strings.Fields(cmp.Or(strings.TrimSpace(os.Getenv("VISUAL")), strings.TrimSpace(os.Getenv("EDITOR")), "vi"))
 	cmd := exec.Command(parts[0], append(parts[1:], f.Name())...)
 	path := f.Name()
 	return tea.ExecProcess(cmd, func(err error) tea.Msg { return editorDoneMsg{field: field, path: path, err: err} })

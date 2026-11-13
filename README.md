@@ -63,9 +63,9 @@ songsmith config              # print the effective configuration
 | `n` | New song: type an idea, `enter` drafts it with Ollama, `tab` writes it yourself |
 | `e` | Edit the selected song (editing a finished song makes a copy) |
 | `enter` / `space` | Play or stop the selected finished song |
-| `r` | Queue the selected song (a finished song renders again with a new seed) |
+| `r` | Queue the selected song (a finished song renders a new take with a new seed; earlier takes stay on disk) |
 | `x` | Cancel a queued or rendering song |
-| `q` | Quit; a song mid-render goes back to the queue and resumes next time |
+| `q` | Quit; ComfyUI keeps rendering the current song and songsmith picks up the result next time it starts |
 
 In the editor: `tab` moves between title, length, lyrics and style, `ctrl+e` opens
 lyrics or style in `$EDITOR`, `ctrl+s` saves and queues, `ctrl+d` saves a draft, and
@@ -106,7 +106,9 @@ state_dir: ~/.local/state/songsmith
 ```
 
 Each song lives in its own folder under `library_dir` with `song.json` (lyrics, style,
-seed, status, timings) and `song.flac`.
+seed, status, timings) and its audio (`song.flac`, then `song-2.flac` and so on for
+later takes). Only one songsmith process renders at a time; another open TUI waits and
+takes over when the first one quits.
 
 ## Development
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/coder/websocket"
 )
@@ -22,13 +23,17 @@ type fakeComfy struct {
 	promptCode int
 	events     []string
 	history    string
-	interrupts int
+	interrupts []string
+	deletes    []string
+	queueJSON  string
+	histCalls  int
 	queued     chan struct{}
 	hold       chan struct{}
 }
 
 func newFake(t *testing.T) (*fakeComfy, *Client) {
-	f := &fakeComfy{t: t, promptCode: 200, promptResp: `{"prompt_id":"p1","node_errors":{}}`, queued: make(chan struct{}, 1)}
+	f := &fakeComfy{t: t, promptCode: 200, promptResp: `{"prompt_id":"p1","node_errors":{}}`, queued: make(chan struct{}, 1),
+		queueJSON: `{"queue_running":[],"queue_pending":[]}`}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, nil)
@@ -63,11 +68,34 @@ func newFake(t *testing.T) (*fakeComfy, *Client) {
 		f.queued <- struct{}{}
 	})
 	mux.HandleFunc("GET /history/{id}", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, f.history)
+		f.mu.Lock()
+		f.histCalls++
+		h := f.history
+		f.mu.Unlock()
+		if h == "" {
+			h = "{}"
+		}
+		io.WriteString(w, h)
+	})
+	mux.HandleFunc("GET /queue", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		io.WriteString(w, f.queueJSON)
+	})
+	mux.HandleFunc("POST /queue", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Delete []string }
+		json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		f.deletes = append(f.deletes, body.Delete...)
+		f.mu.Unlock()
 	})
 	mux.HandleFunc("POST /interrupt", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			PromptID string `json:"prompt_id"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
 		f.mu.Lock()
-		f.interrupts++
+		f.interrupts = append(f.interrupts, body.PromptID)
 		f.mu.Unlock()
 	})
 	mux.HandleFunc("GET /view", func(w http.ResponseWriter, r *http.Request) {
@@ -98,9 +126,13 @@ func TestRunSuccess(t *testing.T) {
 	f.history = doneHistory
 
 	var got []Event
-	h, err := c.Run(t.Context(), MiniMaxGraph(MiniMaxParams{}), func(e Event) { got = append(got, e) })
+	var queuedID string
+	h, err := c.Run(t.Context(), MiniMaxGraph(MiniMaxParams{}), RunOptions{OnEvent: func(e Event) { got = append(got, e) }, OnQueued: func(id string) { queuedID = id }})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if queuedID != "p1" {
+		t.Fatalf("queued id = %q", queuedID)
 	}
 	if len(got) != 3 || got[0].Node != NodeEncode || got[0].Max != 751 || got[1].Node != NodeSampler {
 		t.Fatalf("events = %+v", got)
@@ -118,7 +150,7 @@ func TestRunSuccess(t *testing.T) {
 func TestRunExecutionError(t *testing.T) {
 	f, c := newFake(t)
 	f.events = []string{ev("execution_error", `{"prompt_id":"p1","node_id":"encode","exception_type":"RuntimeError","exception_message":"MPS out of memory"}`)}
-	_, err := c.Run(t.Context(), Graph{"x": {}}, nil)
+	_, err := c.Run(t.Context(), Graph{"x": {}}, RunOptions{})
 	var ee *ExecutionError
 	if !errors.As(err, &ee) || ee.Node != NodeEncode || !strings.Contains(ee.Message, "MPS out of memory") {
 		t.Fatalf("err = %v", err)
@@ -129,7 +161,7 @@ func TestRunRejectedPrompt(t *testing.T) {
 	f, c := newFake(t)
 	f.promptResp = `{"error":{"type":"prompt_outputs_failed_validation"},"node_errors":{"encode":{"errors":["bad"]}}}`
 	f.promptCode = 400
-	_, err := c.Run(t.Context(), Graph{"x": {}}, nil)
+	_, err := c.Run(t.Context(), Graph{"x": {}}, RunOptions{})
 	var pe *PromptError
 	if !errors.As(err, &pe) || pe.Status != 400 || !strings.Contains(pe.Body, "encode") {
 		t.Fatalf("err = %v", err)
@@ -142,14 +174,14 @@ func TestRunCancelInterrupts(t *testing.T) {
 	defer close(f.hold)
 	f.events = []string{ev("progress", `{"prompt_id":"p1","node":"encode","value":1,"max":751}`)}
 	ctx, cancel := context.WithCancel(t.Context())
-	_, err := c.Run(ctx, Graph{"x": {}}, func(Event) { cancel() })
+	_, err := c.Run(ctx, Graph{"x": {}}, RunOptions{OnEvent: func(Event) { cancel() }})
 	if !errors.Is(err, ErrInterrupted) {
 		t.Fatalf("err = %v", err)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.interrupts != 1 {
-		t.Fatalf("interrupts = %d", f.interrupts)
+	if len(f.interrupts) != 1 || f.interrupts[0] != "p1" || len(f.deletes) != 1 || f.deletes[0] != "p1" {
+		t.Fatalf("interrupts = %v deletes = %v", f.interrupts, f.deletes)
 	}
 }
 
@@ -157,7 +189,7 @@ func TestRunFallsBackToHistoryWhenSocketDrops(t *testing.T) {
 	f, c := newFake(t)
 	f.events = nil
 	f.history = doneHistory
-	h, err := c.Run(t.Context(), Graph{"x": {}}, nil)
+	h, err := c.Run(t.Context(), Graph{"x": {}}, RunOptions{})
 	if err != nil || len(h.AudioFiles()) != 1 {
 		t.Fatalf("h = %+v, err = %v", h, err)
 	}
@@ -203,5 +235,58 @@ func TestComboOptions(t *testing.T) {
 	}
 	if !info.HasInput("weight_dtype") || info.HasInput("nope") {
 		t.Fatal("HasInput wrong")
+	}
+}
+
+func TestRunResumeFinishedPrompt(t *testing.T) {
+	f, c := newFake(t)
+	f.history = doneHistory
+	h, err := c.Run(t.Context(), Graph{"x": {}}, RunOptions{ResumeID: "p1"})
+	if err != nil || len(h.AudioFiles()) != 1 {
+		t.Fatalf("h = %+v err = %v", h, err)
+	}
+	if len(f.queued) != 0 {
+		t.Fatal("resuming a finished prompt must not queue a new one")
+	}
+}
+
+func TestRunResumeQueuedPromptWaitsForIt(t *testing.T) {
+	f, c := newFake(t)
+	f.queueJSON = `{"queue_running":[[1,"old",{},{},[]]],"queue_pending":[]}`
+	go func() {
+		time.Sleep(1500 * time.Millisecond)
+		f.mu.Lock()
+		f.history = `{"old":{"status":{"status_str":"success","completed":true},"outputs":{"save":{"audio":[{"filename":"a.flac","subfolder":"songsmith","type":"output"}]}}}}`
+		f.mu.Unlock()
+	}()
+	var queuedID string
+	h, err := c.Run(t.Context(), Graph{"x": {}}, RunOptions{ResumeID: "old", OnQueued: func(id string) { queuedID = id }})
+	if err != nil || queuedID != "old" || h.AudioFiles()[0].Filename != "a.flac" {
+		t.Fatalf("h = %+v err = %v id = %q", h, err, queuedID)
+	}
+}
+
+func TestRunUnknownResumeQueuesFresh(t *testing.T) {
+	f, c := newFake(t)
+	f.events = []string{ev("execution_success", `{"prompt_id":"p1"}`)}
+	f.history = doneHistory
+	var queuedID string
+	if _, err := c.Run(t.Context(), Graph{"x": {}}, RunOptions{ResumeID: "gone", OnQueued: func(id string) { queuedID = id }}); err != nil {
+		t.Fatal(err)
+	}
+	if queuedID != "p1" {
+		t.Fatalf("queued = %q", queuedID)
+	}
+}
+
+func TestWaitHistoryDetectsLostPrompt(t *testing.T) {
+	_, c := newFake(t)
+	start := time.Now()
+	_, err := c.waitHistory(t.Context(), "vanished")
+	if !errors.Is(err, ErrPromptLost) {
+		t.Fatalf("err = %v", err)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Fatal("took too long to notice")
 	}
 }

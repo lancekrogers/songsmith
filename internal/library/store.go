@@ -43,8 +43,11 @@ type Song struct {
 	Audio    string         `json:"audio,omitempty"`
 	Duration float64        `json:"duration,omitzero"`
 	Backend  string         `json:"backend,omitempty"`
-	Started  time.Time      `json:"started,omitzero"`
-	Finished time.Time      `json:"finished,omitzero"`
+	// JobID is the backend's ID for an unfinished render, kept so a render
+	// interrupted by a crash can be resumed instead of submitted twice.
+	JobID    string    `json:"job_id,omitempty"`
+	Started  time.Time `json:"started,omitzero"`
+	Finished time.Time `json:"finished,omitzero"`
 	// Timings holds seconds spent in each render stage.
 	Timings map[string]float64 `json:"timings,omitempty"`
 }
@@ -67,6 +70,29 @@ func (s *Store) songDir(id string) string { return filepath.Join(s.dir, id) }
 // AudioPath is where a song's rendered audio lives.
 func (s *Store) AudioPath(song Song) string {
 	return filepath.Join(s.songDir(song.ID), cmp.Or(song.Audio, "song.flac"))
+}
+
+// HasAudio reports whether the song's rendered audio file exists.
+func (s *Store) HasAudio(song Song) bool {
+	if song.Audio == "" {
+		return false
+	}
+	_, err := os.Stat(s.AudioPath(song))
+	return err == nil
+}
+
+// NextTake returns an unused audio file name for a new render, so a
+// re-render never overwrites the take that is already there.
+func (s *Store) NextTake(song Song) string {
+	if !s.HasAudio(song) {
+		return "song.flac"
+	}
+	for n := 2; ; n++ {
+		name := fmt.Sprintf("song-%d.flac", n)
+		if _, err := os.Stat(filepath.Join(s.songDir(song.ID), name)); errors.Is(err, fs.ErrNotExist) {
+			return name
+		}
+	}
 }
 
 var slugUnsafe = regexp.MustCompile(`[^a-z0-9]+`)

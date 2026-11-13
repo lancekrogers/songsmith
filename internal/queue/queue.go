@@ -25,16 +25,25 @@ type Update struct {
 	Err      string
 }
 
+// PollInterval is how often an idle worker looks for songs queued by other
+// processes.
+const PollInterval = 5 * time.Second
+
 type Queue struct {
 	store   *library.Store
 	backend backend.Backend
 	wake    chan struct{}
 	now     func() time.Time
 	probe   func(path string) float64
+	poll    time.Duration
 
+	// mu guards current and cancel, and serializes the status changes that
+	// race with a render being claimed: claim, cancel, enqueue and edit saves.
 	mu      sync.Mutex
 	current string
 	cancel  context.CancelCauseFunc
+
+	subMu   sync.Mutex
 	subs    map[int]chan Update
 	nextSub int
 }
@@ -46,25 +55,30 @@ func New(store *library.Store, b backend.Backend) *Queue {
 		wake:    make(chan struct{}, 1),
 		now:     time.Now,
 		probe:   probeDuration,
+		poll:    PollInterval,
 		subs:    map[int]chan Update{},
 	}
 }
 
-// ErrCancelled is the cause recorded when the user cancels a render.
-var ErrCancelled = errors.New("cancelled")
+var (
+	// ErrCancelled is the cause recorded when the user cancels a render.
+	ErrCancelled = errors.New("cancelled")
+	// ErrBusy means the song is rendering and cannot be changed in place.
+	ErrBusy = errors.New("song is rendering")
+)
 
 // Subscribe returns a channel of updates and a function that stops them.
 // Slow subscribers miss progress updates rather than stalling renders.
 func (q *Queue) Subscribe() (<-chan Update, func()) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
+	q.subMu.Lock()
+	defer q.subMu.Unlock()
 	id := q.nextSub
 	q.nextSub++
 	ch := make(chan Update, 64)
 	q.subs[id] = ch
 	return ch, func() {
-		q.mu.Lock()
-		defer q.mu.Unlock()
+		q.subMu.Lock()
+		defer q.subMu.Unlock()
 		if c, ok := q.subs[id]; ok {
 			delete(q.subs, id)
 			close(c)
@@ -73,8 +87,8 @@ func (q *Queue) Subscribe() (<-chan Update, func()) {
 }
 
 func (q *Queue) publish(u Update) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
+	q.subMu.Lock()
+	defer q.subMu.Unlock()
 	for _, ch := range q.subs {
 		select {
 		case ch <- u:
@@ -83,15 +97,46 @@ func (q *Queue) publish(u Update) {
 	}
 }
 
-// Current returns the ID of the song being rendered, if any.
+// Current returns the ID of the song this process is rendering, if any.
 func (q *Queue) Current() string {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return q.current
 }
 
+// busy reports whether id is rendering here or in another process. Call with q.mu held.
+func (q *Queue) busy(id string) bool {
+	if id == "" {
+		return false
+	}
+	if q.current == id {
+		return true
+	}
+	stored, err := q.store.Load(id)
+	return err == nil && stored.Status == library.StatusRendering
+}
+
+// SaveEdit saves changes to an existing song unless it is rendering.
+func (q *Queue) SaveEdit(song library.Song) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.busy(song.ID) {
+		return ErrBusy
+	}
+	if err := q.store.Save(song); err != nil {
+		return err
+	}
+	q.publish(Update{SongID: song.ID, Status: song.Status})
+	return nil
+}
+
 // Enqueue marks a song queued and wakes the worker.
 func (q *Queue) Enqueue(song library.Song) (library.Song, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.busy(song.ID) {
+		return song, ErrBusy
+	}
 	if song.Seed == 0 {
 		song.Seed = rand.Int64N(1 << 48)
 	}
@@ -101,45 +146,54 @@ func (q *Queue) Enqueue(song library.Song) (library.Song, error) {
 		return song, err
 	}
 	q.publish(Update{SongID: song.ID, Status: library.StatusQueued})
+	q.Wake()
+	return song, nil
+}
+
+// Wake makes an idle worker look for queued songs now.
+func (q *Queue) Wake() {
 	select {
 	case q.wake <- struct{}{}:
 	default:
 	}
-	return song, nil
 }
 
 // Cancel stops a rendering song or takes a queued one off the queue.
 func (q *Queue) Cancel(id string) error {
 	q.mu.Lock()
+	defer q.mu.Unlock()
 	if q.current == id && q.cancel != nil {
 		q.cancel(ErrCancelled)
-		q.mu.Unlock()
 		return nil
 	}
-	q.mu.Unlock()
 	song, err := q.store.Load(id)
 	if err != nil {
 		return err
 	}
-	if song.Status != library.StatusQueued {
-		return fmt.Errorf("song %s is %s, not queued or rendering", id, song.Status)
+	switch song.Status {
+	case library.StatusQueued:
+	case library.StatusRendering:
+		return errors.New("this song is rendering in another songsmith process; cancel it there")
+	default:
+		return fmt.Errorf("%s is %s, not queued or rendering", song.Title, song.Status)
 	}
 	song.Status = library.StatusDraft
+	if q.store.HasAudio(song) {
+		song.Status = library.StatusDone
+	}
 	if err := q.store.Save(song); err != nil {
 		return err
 	}
-	q.publish(Update{SongID: id, Status: library.StatusDraft})
+	q.publish(Update{SongID: id, Status: song.Status})
 	return nil
 }
 
 // Recover returns songs left "rendering" by a crashed or killed process to
-// the queue. Call it only while holding the library render lock.
+// the queue, keeping their job ID so the render can be resumed. Call it only
+// while holding the library render lock. Unreadable songs are skipped.
 func (q *Queue) Recover() error {
-	songs, err := q.store.List()
+	songs, _ := q.store.List()
 	var errs []error
-	if err != nil {
-		errs = append(errs, err)
-	}
 	for _, s := range songs {
 		if s.Status != library.StatusRendering {
 			continue
@@ -153,23 +207,21 @@ func (q *Queue) Recover() error {
 }
 
 // Run renders queued songs until ctx ends. Hold the library render lock while
-// it runs.
+// it runs. Songs queued by other processes are picked up within PollInterval.
 func (q *Queue) Run(ctx context.Context) error {
 	if err := q.Recover(); err != nil {
-		return fmt.Errorf("recover queue: %w", err)
+		q.publish(Update{Err: "recover queue: " + err.Error()})
 	}
 	for {
-		song, ok, err := q.next()
-		if err != nil {
-			return err
-		}
+		song, ok := q.next()
 		if !ok {
 			select {
 			case <-ctx.Done():
 				return nil
 			case <-q.wake:
-				continue
+			case <-time.After(q.poll):
 			}
+			continue
 		}
 		q.Render(ctx, song)
 		if ctx.Err() != nil {
@@ -178,48 +230,72 @@ func (q *Queue) Run(ctx context.Context) error {
 	}
 }
 
-func (q *Queue) next() (library.Song, bool, error) {
+func (q *Queue) next() (library.Song, bool) {
 	songs, _ := q.store.List()
 	queued := slices.DeleteFunc(songs, func(s library.Song) bool { return s.Status != library.StatusQueued })
 	if len(queued) == 0 {
-		return library.Song{}, false, nil
+		return library.Song{}, false
 	}
-	return slices.MinFunc(queued, func(a, b library.Song) int { return a.Updated.Compare(b.Updated) }), true, nil
+	return slices.MinFunc(queued, func(a, b library.Song) int { return a.Updated.Compare(b.Updated) }), true
 }
 
-// Render renders one song now and records the outcome in the library.
-func (q *Queue) Render(ctx context.Context, song library.Song) library.Song {
-	ctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
+// claim marks song as rendering if it is still queued, reading the stored
+// copy so edits and cancels made since it was listed win.
+func (q *Queue) claim(song library.Song, cancel context.CancelCauseFunc) (library.Song, bool) {
 	q.mu.Lock()
-	q.current, q.cancel = song.ID, cancel
-	q.mu.Unlock()
-	defer func() {
-		q.mu.Lock()
-		q.current, q.cancel = "", nil
-		q.mu.Unlock()
-	}()
-
-	if song.Seed == 0 {
-		song.Seed = rand.Int64N(1 << 48)
+	defer q.mu.Unlock()
+	if stored, err := q.store.Load(song.ID); err == nil {
+		song = stored
 	}
+	if song.Status != library.StatusQueued {
+		return song, false
+	}
+	q.current, q.cancel = song.ID, cancel
 	song.Status = library.StatusRendering
 	song.Error = ""
 	song.Started = q.now()
 	song.Finished = time.Time{}
 	song.Backend = q.backend.Name()
-	if song.Audio == "" {
-		song.Audio = "song.flac"
+	if song.Seed == 0 {
+		song.Seed = rand.Int64N(1 << 48)
 	}
 	q.save(song)
+	return song, true
+}
 
+// Render renders one queued song now and records the outcome in the library.
+// A song that is no longer queued is returned unchanged.
+func (q *Queue) Render(ctx context.Context, song library.Song) library.Song {
+	// Shutting down the caller detaches from the render instead of stopping
+	// it, so the backend keeps working and the next run picks up the result.
+	parent := ctx
+	ctx, cancel := context.WithCancelCause(context.WithoutCancel(parent))
+	defer cancel(nil)
+	stopDetach := context.AfterFunc(parent, func() { cancel(backend.ErrDetach) })
+	defer stopDetach()
+	song, ok := q.claim(song, cancel)
+	if !ok {
+		return song
+	}
+
+	hadTake := q.store.HasAudio(song)
+	take := q.store.NextTake(song)
+	out := song
+	out.Audio = take
 	res, err := q.backend.Generate(ctx, backend.Request{
 		ID:         song.ID,
 		Caption:    song.Caption.String(),
 		Lyrics:     song.Lyrics,
 		Seed:       song.Seed,
 		MaxSeconds: song.Seconds,
-		OutPath:    q.store.AudioPath(song),
+		OutPath:    q.store.AudioPath(out),
+		ResumeID:   song.JobID,
+		OnStarted: func(id string) {
+			if id != song.JobID {
+				song.JobID = id
+				q.save(song)
+			}
+		},
 	}, func(p backend.Progress) {
 		q.publish(Update{SongID: song.ID, Status: library.StatusRendering, Progress: p})
 	})
@@ -229,21 +305,38 @@ func (q *Queue) Render(ctx context.Context, song library.Song) library.Song {
 	for stage, d := range res.Timings {
 		song.Timings[string(stage)] = d.Round(100 * time.Millisecond).Seconds()
 	}
+	cancelled := errors.Is(context.Cause(ctx), ErrCancelled)
 	switch {
 	case err == nil:
 		song.Status = library.StatusDone
+		song.Audio = take
 		song.Duration = q.probe(res.AudioPath)
-	case errors.Is(context.Cause(ctx), ErrCancelled):
-		song.Status = library.StatusFailed
-		song.Error = "cancelled"
-	case ctx.Err() != nil:
-		// The app is shutting down; leave the song queued for next time.
+		song.JobID = ""
+	case errors.Is(context.Cause(ctx), backend.ErrDetach):
+		// The app is shutting down; leave the song queued so the next run
+		// reattaches to the render, which keeps going in the backend.
 		song.Status = library.StatusQueued
 	default:
+		song.JobID = ""
+		msg := err.Error()
+		if cancelled {
+			msg = "cancelled"
+		}
 		song.Status = library.StatusFailed
-		song.Error = err.Error()
+		song.Error = msg
+		if hadTake {
+			song.Status = library.StatusDone
+			song.Error = "re-render " + msg + "; kept the previous take"
+		}
 	}
+	if errors.Is(err, backend.ErrJobLost) {
+		song.JobID = ""
+	}
+
+	q.mu.Lock()
+	q.current, q.cancel = "", nil
 	q.save(song)
+	q.mu.Unlock()
 	return song
 }
 

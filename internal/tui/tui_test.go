@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/lancekrogers/songsmith/internal/backend"
 	"github.com/lancekrogers/songsmith/internal/library"
@@ -194,4 +195,88 @@ func TestLibraryKeysOnEmptyLibrary(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("q should quit")
 	}
+}
+
+func TestWideTitlesFitTheList(t *testing.T) {
+	for _, width := range []int{80, 120, 200} {
+		m, store := newTestModel(t, fakeDrafter{})
+		m, _ = send(t, m, tea.WindowSizeMsg{Width: width, Height: 30})
+		if _, err := store.Create(library.Song{Title: strings.Repeat("雨の日曜日リスボン", 4), Status: library.StatusDone, Duration: 61}); err != nil {
+			t.Fatal(err)
+		}
+		m = runCmd(t, m, m.loadSongs())
+		view := m.View()
+		for _, line := range strings.Split(view, "\n") {
+			if w := ansi.StringWidth(line); w > width {
+				t.Fatalf("width %d: line is %d wide: %q", width, w, line)
+			}
+		}
+		if strings.ContainsRune(view, 0) {
+			t.Fatalf("width %d: NUL in view", width)
+		}
+	}
+}
+
+func TestSelectionSurvivesStaleReload(t *testing.T) {
+	m, store := newTestModel(t, fakeDrafter{draft: sampleDraft})
+	old, _ := store.Create(library.Song{Title: "Old", Lyrics: sampleDraft.Lyrics, Caption: sampleDraft.Caption, Seconds: 30})
+	m = runCmd(t, m, m.loadSongs())
+	stale := m.loadSongs()()
+
+	m, _ = send(t, m, key("n"), key("idea"))
+	m, cmd := send(t, m, key("enter"))
+	m = runCmd(t, m, cmd)
+	m, cmd = send(t, m, key("ctrl+d"))
+	m, _ = send(t, m, stale)
+	if s, _ := m.selected(); s.ID != old.ID && m.selectID == "" {
+		t.Fatal("stale reload consumed the pending selection")
+	}
+	m = runCmd(t, m, cmd)
+	if s, _ := m.selected(); s.Title != "Sock Thief" {
+		t.Fatalf("selected %q after save", s.Title)
+	}
+}
+
+type blockingBackend struct{ started chan struct{} }
+
+func (blockingBackend) Name() string { return "block" }
+func (b blockingBackend) Generate(ctx context.Context, _ backend.Request, _ func(backend.Progress)) (backend.Result, error) {
+	close(b.started)
+	<-ctx.Done()
+	return backend.Result{}, ctx.Err()
+}
+
+func TestSavingEditsToASongThatStartedRenderingMakesACopy(t *testing.T) {
+	store := library.NewStore(t.TempDir())
+	bb := blockingBackend{started: make(chan struct{})}
+	q := queue.New(store, bb)
+	updates, stop := q.Subscribe()
+	defer stop()
+	m := newModel(t.Context(), Deps{Store: store, Queue: q, Drafter: fakeDrafter{}, Player: player.New()}, updates)
+	m, _ = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	song, _ := store.Create(library.Song{Title: "Queued", Lyrics: sampleDraft.Lyrics, Caption: sampleDraft.Caption, Seconds: 30, Status: library.StatusQueued})
+	m = runCmd(t, m, m.loadSongs())
+	m, _ = send(t, m, key("e"))
+	if m.compose.base.ID != song.ID {
+		t.Fatal("queued song should be edited in place")
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { q.Render(ctx, song); close(done) }()
+	<-bb.started
+
+	m.compose.lyrics.SetValue("[Verse]\nnew words")
+	m, cmd := send(t, m, key("ctrl+d"))
+	runCmd(t, m, cmd)
+	if !strings.Contains(m.notice, "saved as a new song") {
+		t.Fatalf("notice = %q err = %q", m.notice, m.compose.err)
+	}
+	songs, _ := store.List()
+	if len(songs) != 2 {
+		t.Fatalf("songs = %d", len(songs))
+	}
+	cancel()
+	<-done
 }

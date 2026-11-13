@@ -208,19 +208,51 @@ func (c *Client) Download(ctx context.Context, f OutputFile, w io.Writer) error 
 	return nil
 }
 
-// Interrupt stops the prompt that is currently executing.
-func (c *Client) Interrupt(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/interrupt", nil)
+// Interrupt stops promptID if it is the prompt currently executing.
+func (c *Client) Interrupt(ctx context.Context, promptID string) error {
+	return c.postJSON(ctx, "/interrupt", map[string]any{"prompt_id": promptID})
+}
+
+// DeleteQueued removes pending prompts from the queue.
+func (c *Client) DeleteQueued(ctx context.Context, promptIDs ...string) error {
+	return c.postJSON(ctx, "/queue", map[string]any{"delete": promptIDs})
+}
+
+// QueueContains reports whether promptID is running or pending.
+func (c *Client) QueueContains(ctx context.Context, promptID string) (bool, error) {
+	var q struct {
+		Running [][]json.RawMessage `json:"queue_running"`
+		Pending [][]json.RawMessage `json:"queue_pending"`
+	}
+	if err := c.getJSON(ctx, "/queue", &q); err != nil {
+		return false, err
+	}
+	for _, item := range append(q.Running, q.Pending...) {
+		var id string
+		if len(item) > 1 && json.Unmarshal(item[1], &id) == nil && id == promptID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (c *Client) postJSON(ctx context.Context, path string, body any) error {
+	data, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("interrupt: %w", err)
+		return fmt.Errorf("POST %s: %w", path, err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("interrupt: HTTP %d", resp.StatusCode)
+		return fmt.Errorf("POST %s: HTTP %d", path, resp.StatusCode)
 	}
 	return nil
 }

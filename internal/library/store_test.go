@@ -116,3 +116,20 @@ func TestTryLockIsExclusive(t *testing.T) {
 	}
 	l2.Release()
 }
+
+func TestNextTake(t *testing.T) {
+	s := NewStore(t.TempDir())
+	song, _ := s.Create(Song{Title: "Song"})
+	if got := s.NextTake(song); got != "song.flac" {
+		t.Fatalf("first take = %s", got)
+	}
+	song.Audio = "song.flac"
+	os.WriteFile(s.AudioPath(song), []byte("a"), 0o644)
+	if !s.HasAudio(song) || s.NextTake(song) != "song-2.flac" {
+		t.Fatalf("second take = %s", s.NextTake(song))
+	}
+	os.WriteFile(filepath.Join(s.Dir(), song.ID, "song-2.flac"), []byte("a"), 0o644)
+	if got := s.NextTake(song); got != "song-3.flac" {
+		t.Fatalf("third take = %s", got)
+	}
+}
