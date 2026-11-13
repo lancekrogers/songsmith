@@ -119,6 +119,9 @@ ollama:
   model: qwen3.8:latest
   temperature: 0.8
   instructions_file: ""   # a text file that replaces the built-in writing instructions; relative to this file
+  context: 0              # num_ctx for drafts; 0 uses the context Ollama is configured with
+  keep_alive: 5m          # how long Ollama keeps the writer loaded after a draft ("0" unloads at once)
+  unload_before_render: true  # ask Ollama to unload the writer when a song starts rendering
 render:
   steps: 30
   cfg_scale: 1.7

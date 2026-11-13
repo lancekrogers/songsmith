@@ -70,7 +70,7 @@ func TestFormFocusMovesAndWraps(t *testing.T) {
 	if m.compose.focus != rowIdea {
 		t.Fatalf("tab from Arrangement went to %v", m.compose.focus)
 	}
-	m = press(t, m, "down", "down", "shift+tab")
+	m = press(t, m, "down", "down", "down", "shift+tab")
 	if m.compose.focus != rowTitle {
 		t.Fatalf("focus %v", m.compose.focus)
 	}
@@ -96,7 +96,7 @@ func TestLengthStepsAndClamps(t *testing.T) {
 	}
 
 	m, _ := openNewSong(t, fakeDrafter{})
-	m = press(t, m, "down", "down")
+	m = press(t, m, "down", "down", "down")
 	if !strings.Contains(plain(m), "‹ auto ›") {
 		t.Fatalf("a new song's length starts on auto:\n%s", plain(m))
 	}
@@ -126,11 +126,11 @@ func TestVocalsAndLengthReachTheDraftAndTheSong(t *testing.T) {
 	d := newRecordingDrafter(writer.Draft{Title: "Drift", Lyrics: "[Intro]\n[Instrumental]\n[Outro]",
 		Caption: writer.Caption{GlobalMetadata: "Ambient", VocalDetails: "Instrumental; lead is a synth", Arrangement: "Intro: pads."}}, nil)
 	m, store := openNewSong(t, d)
-	m = press(t, m, "down", "down", "left", "left", "down", "right")
+	m = press(t, m, "down", "down", "down", "left", "left", "down", "right")
 	if !m.compose.instrumental || !strings.Contains(plain(m), "‹ instrumental ›") {
 		t.Fatalf("vocals did not cycle:\n%s", plain(m))
 	}
-	m = press(t, m, "up", "up", "up", "a slow drift")
+	m = press(t, m, "up", "up", "up", "up", "a slow drift")
 	m, cmd := send(t, m, key("enter"))
 	m = runCmd(t, m, cmd)
 	if *d.calls != 1 || !d.opts.Instrumental || d.opts.Seconds != 105 {
@@ -205,9 +205,9 @@ func TestSeedField(t *testing.T) {
 func TestEveryFieldMakesTheFormDirty(t *testing.T) {
 	changes := map[string]func(m app) app{
 		"idea":   func(m app) app { return press(t, m, "x") },
-		"title":  func(m app) app { return press(t, m, "down", "x") },
-		"length": func(m app) app { return press(t, m, "down", "down", "right") },
-		"vocals": func(m app) app { return press(t, m, "down", "down", "down", "right") },
+		"title":  func(m app) app { return press(t, m, "down", "down", "x") },
+		"length": func(m app) app { return press(t, m, "down", "down", "down", "right") },
+		"vocals": func(m app) app { return press(t, m, "down", "down", "down", "down", "right") },
 		"seed":   func(m app) app { return press(t, m, "up", "up", "up", "up", "up", "7") },
 		"lyrics": func(m app) app {
 			return press(t, m, "up", "up", "up", "up", "enter", "x", "esc", ":", "w", "enter")
@@ -255,10 +255,10 @@ func TestQueueValidationFocusesTheField(t *testing.T) {
 		want string
 	}{
 		{func(c *composeModel) { c.texts[0] = "words without tags" }, rowLyrics, "section tag"},
-		{func(c *composeModel) { c.texts[1] = " " }, rowGlobal, "global metadata is empty"},
-		{func(c *composeModel) { c.texts[2] = "" }, rowVocal, "vocal details are empty"},
-		{func(c *composeModel) { c.texts[3] = "" }, rowArrangement, "arrangement is empty"},
-		{func(c *composeModel) { c.texts[2], c.texts[3] = "", "" }, rowVocal, "vocal details are empty"},
+		{func(c *composeModel) { c.texts[1] = " " }, rowGlobal, "the Global metadata box is empty"},
+		{func(c *composeModel) { c.texts[2] = "" }, rowVocal, "the Vocal details box is empty"},
+		{func(c *composeModel) { c.texts[3] = "" }, rowArrangement, "the Arrangement box is empty"},
+		{func(c *composeModel) { c.texts[2], c.texts[3] = "", "" }, rowVocal, "the Vocal details box is empty"},
 	}
 	for _, c := range cases {
 		m, store := openNewSong(t, fakeDrafter{})
@@ -342,7 +342,7 @@ func TestFailedDraftKeepsWhatItCannotReplace(t *testing.T) {
 	m, cmd := send(t, m, key("enter"))
 	m = runCmd(t, m, cmd)
 	c := m.compose
-	if c.texts[0] != "[Verse]\nmine" || c.texts[1] != "Lo-fi" || c.title.Value() != "Half" || !strings.Contains(c.msg, "Draft failed") {
+	if c.texts[0] != "[Verse]\nmine" || c.texts[1] != "Lo-fi" || c.title.Value() != "Half" || !strings.Contains(c.msg, "failed: draft is incomplete") {
 		t.Fatalf("texts %q title %q msg %q", c.texts, c.title.Value(), c.msg)
 	}
 }
@@ -524,6 +524,9 @@ func TestFormFitsAt80x24(t *testing.T) {
 		}
 	}
 	for r := range rowCount {
+		if m.compose.skip[r] {
+			continue
+		}
 		check("focus " + r.name())
 		focused := false
 		for _, l := range strings.Split(plain(m), "\n") {

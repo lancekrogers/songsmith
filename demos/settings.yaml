@@ -1,15 +1,15 @@
 # Throwaway settings for demos/settings.tape. Every path is under
-# /tmp/songsmith-demo-settings and nothing listens on these ports, so the
-# recording never touches a real install.
+# /tmp/songsmith-demo-settings, where the tape lays out stand-in ComfyUI and
+# model files, and Ollama and ComfyUI are demos/setupfake on loopback ports,
+# so the recording never touches a real install.
 library_dir: /tmp/songsmith-demo-settings/library
 state_dir: /tmp/songsmith-demo-settings/state
 comfyui:
-  # A folder with no ComfyUI in it yet.
   dir: /tmp/songsmith-demo-settings/ComfyUI
-  port: 18188 # not the usual 8188
+  port: 18492 # the stand-in ComfyUI, not the usual 8188
 ollama:
-  # Nothing listens here, so Settings shows Ollama as unreachable.
-  url: http://127.0.0.1:18435
+  # A stand-in Ollama with a library of made-up models.
+  url: http://127.0.0.1:18491
   model: songwriter:7b
   temperature: 0.8 # how adventurous drafts are
 render:

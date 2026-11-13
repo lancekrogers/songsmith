@@ -134,11 +134,14 @@ func (a app) formFooter() []string {
 	}
 	var keys []string
 	_, down := a.writerUnavailable()
+	model := a.cfg().Ollama.Model
 	switch {
 	case c.focus == rowIdea && down:
 		keys = append(keys, "enter next field")
-	case c.focus == rowIdea:
-		keys = append(keys, "enter draft lyrics and style")
+	case c.focus == rowIdea || c.focus == rowDraft:
+		keys = append(keys, "enter drafts with "+model)
+	case c.focus == rowWriter:
+		keys = append(keys, "←/→ change the model that drafts")
 	case c.focus == rowLength:
 		keys = append(keys, "←/→ change length")
 	case c.focus == rowVocals:
@@ -150,6 +153,9 @@ func (a app) formFooter() []string {
 		}
 	}
 	keys = append(keys, "↑/↓/tab move")
+	if strings.TrimSpace(c.idea.Value()) != "" && !down {
+		keys = append(keys, "ctrl+g draft from idea")
+	}
 	esc := "esc back"
 	if c.armed == "esc" {
 		esc = "esc discard changes"
@@ -172,20 +178,6 @@ func (a app) formBoxes(avail int) (boxes [][]string, focus int) {
 		lines += len(box)
 	}
 
-	idea := []string{c.idea.View()}
-	why, down := a.writerUnavailable()
-	switch {
-	case c.drafting:
-		idea = append(idea, c.spinner.View()+" "+warningStyle.Render("Drafting lyrics and style with "+a.cfg().Ollama.Model+"…"))
-	case down:
-		idea = append(idea,
-			warningStyle.Render("Writer unavailable: "+why+"."),
-			dimStyle.Render("The fields below can be written by hand."))
-	default:
-		idea = append(idea, dimStyle.Render("enter drafts lyrics and a style with "+a.cfg().Ollama.Model))
-	}
-	add(c.focus == rowIdea, formBox(headerStyle.Render("Idea"), idea, boxW, c.focus == rowIdea))
-
 	row := func(r formRow, value string) string {
 		mark, label := "  ", dimStyle
 		if c.focus == r {
@@ -193,6 +185,35 @@ func (a app) formBoxes(avail int) (boxes [][]string, focus int) {
 		}
 		return mark + label.Render(fmt.Sprintf("%-*s", labelWidth, r.name())) + " " + value
 	}
+	model := a.cfg().Ollama.Model
+	idea := strings.Split(c.idea.View(), "\n")
+	idea = append(idea, "")
+	if names, cur, ok := a.formWriterChoice(); ok {
+		current := model
+		if cur >= 0 {
+			current = names[cur]
+		}
+		idea = append(idea, row(rowWriter, "‹ "+current+" ›"+dimStyle.Render("  ←/→ change the model that drafts")))
+	} else {
+		idea = append(idea, row(rowWriter, dimStyle.Render(a.formWriterState())))
+	}
+	why, down := a.writerUnavailable()
+	switch {
+	case c.drafting:
+		idea = append(idea, "  "+c.spinner.View()+" "+warningStyle.Render("Drafting lyrics and style with "+model+"…"))
+	case down:
+		idea = append(idea,
+			"  "+warningStyle.Render("Writer unavailable: "+why+"."),
+			"  "+dimStyle.Render("The fields below can be written by hand."))
+	default:
+		mark, style := "  ", normalStyle
+		if c.focus == rowDraft {
+			mark, style = selectedStyle.Render("▸ "), selectedStyle
+		}
+		idea = append(idea, mark+style.Render("✦ Draft lyrics and style with "+model)+dimStyle.Render("  enter or ctrl+g"))
+	}
+	ideaFocused := c.focus <= rowDraft
+	add(ideaFocused, formBox(headerStyle.Render("Idea"), idea, boxW, ideaFocused))
 	vocals, vocalsHint := "sung", "the draft writes lines to sing"
 	if c.instrumental {
 		vocals, vocalsHint = "instrumental", "the draft writes section tags, no sung lines"
@@ -215,8 +236,12 @@ func (a app) formBoxes(avail int) (boxes [][]string, focus int) {
 
 	// Lyrics get the rows the other boxes leave; 15 is the Style boxes.
 	previewRows := min(max(avail-lines-3-15, 2), 12)
+	lyrics := lyricsPreview(c.texts[0], previewRows, c.instrumental)
+	if _, down := a.writerUnavailable(); !down && strings.TrimSpace(c.idea.Value()) != "" && strings.TrimSpace(strings.Join(c.texts[:], "")) == "" {
+		lyrics = []string{dimStyle.Render("empty · ctrl+g drafts from your idea · enter to write them yourself")}
+	}
 	add(c.focus == rowLyrics, formBox(headerStyle.Render("Lyrics")+dimStyle.Render(" · section tags like [Verse] on their own lines"),
-		lyricsPreview(c.texts[0], previewRows, c.instrumental), boxW, c.focus == rowLyrics))
+		lyrics, boxW, c.focus == rowLyrics))
 
 	for _, s := range []struct {
 		r    formRow

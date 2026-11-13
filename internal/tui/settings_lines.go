@@ -2,52 +2,112 @@ package tui
 
 import (
 	"slices"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-// A line is what the cursor rests on. A pick row contributes a heading, one
-// line per option and a blank around it; every other row is one line, except
-// a choice row whose options wrap onto more. Headings, blanks and wrapped
-// options are skipped by the cursor, so ↑/↓ only land where a key does
-// something or, on a report, where there is more to read.
+// A line is what the cursor rests on. A pick row contributes a heading and
+// one line per option; every other row is one line, except a choice row whose
+// options wrap onto more. Rows are grouped into blocks with a blank line
+// between them and, for a named group, a heading. Headings, blanks, notes and
+// wrapped options are skipped by the cursor, so ↑/↓ only land where a key
+// does something or, on a report, where there is more to read.
+//
+// Lines are the whole section. What is drawn is worked out from them: a long
+// list shows a window of its options, and the focused line gets its
+// description under it (see settingsDisplay).
 type settingLine struct {
 	row int
 	// option indexes the row's options on a list, or is -1 for the row itself.
 	option int
 	header bool
 	blank  bool
+	// group heads a block of rows; note is a dim line of a rowNote.
+	group bool
+	note  bool
+	// filter is a list's filter while one is typed; empty stands in for its
+	// options when none match.
+	filter bool
+	empty  bool
 	// wrap > 0 is a choice row's wrap-th continuation line.
 	wrap int
 }
 
-func (l settingLine) focusable() bool { return !l.header && !l.blank && l.wrap == 0 }
+func (l settingLine) focusable() bool {
+	return !l.header && !l.blank && !l.group && !l.note && !l.filter && l.wrap == 0
+}
 
-// expands reports whether a row draws its options under a heading.
-func (r settingRow) expands() bool { return r.kind == rowPick && len(r.options) > 0 }
+// shortList is the longest list drawn whole; a longer one gets a window and
+// can be filtered.
+const shortList = 8
 
-func linesFor(rows []settingRow, valueWidth int) []settingLine {
+// expands reports whether a row draws its options under a heading. A list of
+// one is not a choice, so it is drawn as a plain row.
+func (r settingRow) expands() bool { return r.kind == rowPick && len(r.options) > 1 }
+
+func (r settingRow) long() bool { return r.expands() && len(r.options) > shortList }
+
+// settingsFilter is a typed filter on one long list.
+type settingsFilter struct {
+	on   bool
+	row  string
+	text string
+}
+
+func (f settingsFilter) matches(row settingRow, option string) bool {
+	if !f.on || f.row != row.anchorName() || f.text == "" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(option), strings.ToLower(f.text))
+}
+
+func linesFor(rows []settingRow, valueWidth []int, f settingsFilter) []settingLine {
 	var lines []settingLine
 	blank := func(i int) {
 		if n := len(lines); n > 0 && !lines[n-1].blank {
 			lines = append(lines, settingLine{row: i, option: -1, blank: true})
 		}
 	}
+	const afterList = "\x00list"
+	group := ""
 	for i, row := range rows {
-		if !row.expands() {
-			lines = append(lines, settingLine{row: i, option: -1})
-			for w := 1; w < len(row.valueLines(valueWidth)); w++ {
-				lines = append(lines, settingLine{row: i, option: -1, wrap: w})
+		switch {
+		case row.expands():
+			blank(i)
+			lines = append(lines, settingLine{row: i, option: -1, header: true})
+			filtered := f.on && f.row == row.anchorName()
+			if filtered {
+				lines = append(lines, settingLine{row: i, option: -1, filter: true})
 			}
+			n := 0
+			for j, o := range row.options {
+				if f.matches(row, o) {
+					lines = append(lines, settingLine{row: i, option: j})
+					n++
+				}
+			}
+			if filtered && n == 0 {
+				lines = append(lines, settingLine{row: i, option: -1, empty: true})
+			}
+			group = afterList
+			continue
+		case row.gap || row.group != "" && row.group != group:
+			blank(i)
+		}
+		if row.group != "" && row.group != group {
+			lines = append(lines, settingLine{row: i, option: -1, group: true})
+			group = row.group
+		}
+		if row.kind == rowNote {
+			lines = append(lines, settingLine{row: i, option: -1, note: true})
 			continue
 		}
-		blank(i)
-		lines = append(lines, settingLine{row: i, option: -1, header: true})
-		for j := range row.options {
-			lines = append(lines, settingLine{row: i, option: j})
+		lines = append(lines, settingLine{row: i, option: -1})
+		for w := 1; w < len(row.valueLines(valueWidth[i])); w++ {
+			lines = append(lines, settingLine{row: i, option: -1, wrap: w})
 		}
-		blank(i)
 	}
 	for n := len(lines); n > 0 && lines[n-1].blank; n = len(lines) {
 		lines = lines[:n-1]
@@ -55,24 +115,55 @@ func linesFor(rows []settingRow, valueWidth int) []settingLine {
 	return lines
 }
 
-// nameColumn is the width of the name column one-line rows share.
-func nameColumn(rows []settingRow) int {
-	width := 0
-	for _, row := range rows {
-		if !row.expands() && row.kind != rowReport {
-			width = max(width, lipgloss.Width(row.name))
+// nameColumns is the width of each row's name column. The one-line rows of
+// a block share one, so their values line up without a long name in one
+// block pushing the values of another away.
+func nameColumns(rows []settingRow) []int {
+	block := make([]int, len(rows))
+	n, group := 0, ""
+	for i, row := range rows {
+		switch {
+		case row.expands():
+			n, group = n+1, "\x00list"
+		case row.gap || row.group != "" && row.group != group:
+			n, group = n+1, row.group
 		}
+		block[i] = n
 	}
-	return min(max(width, 12), 26) + 2
+	widths := map[int]int{}
+	for i, row := range rows {
+		if row.expands() || row.kind == rowReport || row.kind == rowNote {
+			continue
+		}
+		w := lipgloss.Width(row.name)
+		if row.indent {
+			w += 2
+		}
+		widths[block[i]] = max(widths[block[i]], w)
+	}
+	out := make([]int, len(rows))
+	for i := range rows {
+		out[i] = min(max(widths[block[i]], 12), 36) + 2
+	}
+	return out
 }
 
-func (a app) settingsValueWidth(rows []settingRow) int {
-	return a.settingsContentWidth() - 4 - nameColumn(rows)
+// rowIndent is where every row, option and note starts: the margin, the
+// cursor and the mark.
+const rowIndent = 6
+
+func (a app) settingsValueWidths(rows []settingRow) []int {
+	names := nameColumns(rows)
+	out := make([]int, len(rows))
+	for i, n := range names {
+		out[i] = a.settingsContentWidth() - rowIndent - n
+	}
+	return out
 }
 
 func (a app) settingsLayout() ([]settingRow, []settingLine) {
 	rows := a.sectionRows()
-	return rows, linesFor(rows, a.settingsValueWidth(rows))
+	return rows, linesFor(rows, a.settingsValueWidths(rows), a.settings.filter)
 }
 
 // focusedSetting is the row under the cursor and, on a list, which option.
@@ -198,15 +289,25 @@ func (a *app) placeSettingsCursor(rows []settingRow, lines []settingLine, i int)
 	s := &a.settings
 	s.cursor = nearestFocusable(lines, i)
 	s.marks[s.section] = anchorAt(rows, lines, s.cursor)
-	a.ensureSettingsCursorVisible(lines)
+	if c := s.cursor; c < len(lines) && lines[c].option >= 0 {
+		if w, ok := a.listWindows(rows, lines)[lines[c].row]; ok {
+			s.window = listTop{name: rows[lines[c].row].anchorName(), start: w.start, set: true}
+		}
+	}
+	a.ensureSettingsCursorVisible(rows, lines)
 }
 
 // moveSettingsCursor moves |delta| focusable lines and stops at either end.
+// While a filter is typed it stays among the filtered options.
 func (a *app) moveSettingsCursor(delta int) {
 	rows, lines := a.settingsLayout()
 	step := 1
 	if delta < 0 {
 		step, delta = -1, -delta
+	}
+	stay := func(int) bool { return true }
+	if f := a.settings.filter; f.on {
+		stay = func(i int) bool { return rows[lines[i].row].anchorName() == f.row }
 	}
 	at := a.settings.cursor
 	for ; delta > 0; delta-- {
@@ -214,37 +315,12 @@ func (a *app) moveSettingsCursor(delta int) {
 		for next >= 0 && next < len(lines) && !lines[next].focusable() {
 			next += step
 		}
-		if next < 0 || next >= len(lines) {
+		if next < 0 || next >= len(lines) || !stay(next) {
 			break
 		}
 		at = next
 	}
 	a.placeSettingsCursor(rows, lines, at)
-}
-
-// ensureSettingsCursorVisible scrolls so the cursor is on screen, keeping a
-// list's heading above its first option.
-func (a *app) ensureSettingsCursorVisible(lines []settingLine) {
-	s := &a.settings
-	visible := a.settingsListRows()
-	top, bottom := s.cursor, s.cursor
-	if top > 0 && top < len(lines) && lines[top-1].header {
-		top--
-	}
-	for bottom >= 0 && bottom+1 < len(lines) && lines[bottom+1].wrap > 0 {
-		bottom++
-	}
-	if bottom-top+1 > visible {
-		// Too few rows for the heading or wrapped lines: the cursor's line wins.
-		top, bottom = s.cursor, s.cursor
-	}
-	if bottom >= s.offset+visible {
-		s.offset = bottom - visible + 1
-	}
-	if top < s.offset {
-		s.offset = top
-	}
-	s.offset = max(min(s.offset, len(lines)-visible), 0)
 }
 
 // gotoSection leaves the cursor where it was in the section it leaves and
@@ -257,6 +333,7 @@ func (a *app) gotoSection(sec settingsSection) tea.Cmd {
 	s := &a.settings
 	s.section = sec
 	s.offset = 0
+	s.filter = settingsFilter{}
 	s.message, s.failed = "", false
 	cmd := a.enterSection(sec)
 	rows, lines := a.settingsLayout()
@@ -280,6 +357,9 @@ func (a *app) switchSection(delta int) tea.Cmd {
 func (a *app) moveSettingsCursorToEnd(last bool) {
 	rows, lines := a.settingsLayout()
 	actionable := func(l settingLine) bool {
+		if f := a.settings.filter; f.on && rows[l.row].anchorName() != f.row {
+			return false
+		}
 		k := rows[l.row].kind
 		return l.focusable() && (l.option >= 0 || k != rowInfo && k != rowReport)
 	}
@@ -293,9 +373,12 @@ func (a *app) moveSettingsCursorToEnd(last bool) {
 		}
 	}
 	if at < 0 {
-		at = 0
-		if last {
-			at = len(lines) - 1
+		at = a.settings.cursor
+		if !a.settings.filter.on {
+			at = 0
+			if last {
+				at = len(lines) - 1
+			}
 		}
 	}
 	a.placeSettingsCursor(rows, lines, at)
@@ -310,21 +393,31 @@ func (a *app) activateSetting(row settingRow, line settingLine) tea.Cmd {
 		}
 		return row.set(a, line.option)
 	}
+	if row.run != nil {
+		return row.run(a)
+	}
 	switch row.kind {
+	case rowPick:
+		if len(row.options) == 1 && row.set != nil {
+			return row.set(a, 0)
+		}
 	case rowChoice:
 		return a.stepChoice(row, 1)
-	case rowText, rowAction:
-		if row.run != nil {
-			return row.run(a)
-		}
+	case rowToggle:
+		return a.stepChoice(row, 1-2*row.current)
 	}
 	return nil
 }
 
-// toggleSetting is space: a choice steps; anything else ignores it.
+// toggleSetting is space: a choice steps, a toggle flips; anything else
+// ignores it.
 func (a *app) toggleSetting(row settingRow, line settingLine) tea.Cmd {
-	if line.option < 0 && row.kind == rowChoice {
+	switch {
+	case line.option >= 0:
+	case row.kind == rowChoice:
 		return a.stepChoice(row, 1)
+	case row.kind == rowToggle:
+		return a.stepChoice(row, 1-2*row.current)
 	}
 	return nil
 }

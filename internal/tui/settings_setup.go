@@ -1,12 +1,12 @@
 package tui
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/lancekrogers/songsmith/internal/health"
 	"github.com/lancekrogers/songsmith/internal/setup"
@@ -14,81 +14,304 @@ import (
 
 var spinnerFrames = []string{"◐", "◓", "◑", "◒"}
 
+const (
+	requirementsGroup = "Requirements"
+	readyGroup        = "Ready to render"
+)
+
+// setupRows are one line per requirement in plain words with its state, and
+// the install and check actions. A requirement that is not met shows the
+// check's full text under it; one that is met shows only its state.
 func (a app) setupRows() []settingRow {
-	width := a.settingsContentWidth() - 4
+	width := a.settingsContentWidth() - rowIndent - 2
 	var rows []settingRow
-	if a.health.done {
-		if b, blocked := blockerSummary(a.health.checks); blocked {
-			rows = append(rows, styledReportRows("Blocked", "▲ "+b, width, &errorStyle)...)
-		} else {
-			rows = append(rows, styledReportRows("Blocked", "✓ Nothing blocks rendering", width, &statusStyle)...)
-		}
-	}
-	if in, out := health.Missing(a.health.checks); a.health.done && len(in)+len(out) > 0 {
-		text := "Missing: " + strings.Join(append(slices.Clone(in), out...), ", ")
-		if len(in) > 0 {
-			text += " · songsmith can install " + joinAnd(in)
-		}
-		if len(out) > 0 {
-			text += " · get " + joinAnd(out) + " yourself"
-		}
-		rows = append(rows, reportRows("Missing", text, width)...)
-	}
 	if !a.health.done {
-		rows = append(rows, settingRow{name: "Checks", kind: rowInfo, value: "checking ComfyUI, the music model files, Ollama and ffprobe…"})
+		rows = append(rows, settingRow{name: "Checks", kind: rowInfo, group: requirementsGroup,
+			value: "checking ComfyUI, the music model files, Ollama and ffprobe…"})
+	} else {
+		if names := a.blockingNames(); len(names) > 0 {
+			rows = append(rows, styledReportRows("Blocked", "▲ Rendering is blocked by "+joinAnd(names), width, &errorStyle)...)
+		}
+		reqs := a.requirementRows(width)
+		if len(rows) == 0 {
+			for i := range reqs {
+				if reqs[i].group == requirementsGroup {
+					reqs[i].group = readyGroup
+				}
+			}
+		}
+		rows = append(rows, reqs...)
 	}
-	for _, c := range a.setupChecks() {
-		rows = append(rows, a.requirementRows(c, width)...)
+	actions := a.installAllRows(width)
+	actions = append(actions, a.rerunRow())
+	actions[0].gap = true
+	return append(rows, actions...)
+}
+
+// requirementName is a check's name on the Setup section.
+var requirementName = map[string]string{
+	health.IDComfyUI:          "ComfyUI",
+	health.IDServer:           "ComfyUI server",
+	health.IDNodes:            "ComfyUI nodes",
+	health.IDServerModelFiles: "ComfyUI model list",
+	health.IDWriter:           "Writer model",
+	health.IDInstructions:     "Writing instructions",
+	health.IDFFprobe:          "ffprobe",
+}
+
+// requirementHelp says what each requirement is for, in a few words and in
+// full.
+var requirementHelp = map[string][2]string{
+	health.IDComfyUI:          {"The ComfyUI install that renders songs", "Its folder is set in Settings → Server"},
+	health.IDServer:           {"The server songs render on", "Start or stop it in Settings → Server"},
+	health.IDNodes:            {"The MiniMax Music 3 nodes in ComfyUI", ""},
+	health.IDServerModelFiles: {"The model files the running server can see", ""},
+	health.IDWriter:           {"The Ollama model that drafts lyrics", "Choose it in Settings → Writer"},
+	health.IDInstructions:     {"The writing instructions drafts use", "Edit them in Settings → Writer"},
+	health.IDFFprobe:          {"Records each song's length; it comes with ffmpeg", ""},
+}
+
+// modelChecks are the three music model file checks, in check order.
+var modelChecks = []string{health.IDDiffusionModel, health.IDTextEncoder, health.IDVAE}
+
+// optionalChecks are shown only when they are not OK.
+var optionalChecks = []string{health.IDNodes, health.IDServerModelFiles, health.IDInstructions}
+
+func (a app) blockingNames() []string {
+	var names []string
+	for _, c := range a.health.checks {
+		if c.Result != health.Fail || !c.Blocking {
+			continue
+		}
+		name := c.Name
+		if slices.Contains(modelChecks, c.ID) {
+			name = "the music model files"
+		} else if n, ok := requirementName[c.ID]; ok {
+			name = n
+		}
+		if !slices.Contains(names, name) {
+			names = append(names, name)
+		}
 	}
-	rows = append(rows, a.installAllRows(width)...)
-	rows = append(rows, a.rerunRow())
-	if a.health.done {
-		rows = append(rows, reportRows("Report", "Check report, as songsmith doctor prints it:", width)...)
-		for _, c := range a.setupChecks() {
-			rows = append(rows, checkReportRows(c, width)...)
+	return names
+}
+
+func (a app) requirementRows(width int) []settingRow {
+	var rows []settingRow
+	models := false
+	for _, c := range a.health.checks {
+		switch {
+		case slices.Contains(modelChecks, c.ID):
+			if !models {
+				models = true
+				rows = append(rows, a.musicFileRows(width)...)
+			}
+		case slices.Contains(optionalChecks, c.ID) && c.Result == health.OK:
+		default:
+			rows = append(rows, a.checkRows(c, width, false)...)
 		}
 	}
 	return rows
 }
 
-// setupChecks is the latest run's checks, with the node check marked skipped
-// when the server was not running to answer it.
-func (a app) setupChecks() []health.Check {
-	checks := a.health.checks
-	if !a.health.done {
-		return nil
-	}
-	if _, ok := health.Find(checks, health.IDNodes); ok {
-		return checks
-	}
-	if _, ok := health.Find(checks, health.IDServer); !ok {
-		return checks
-	}
-	out := make([]health.Check, 0, len(checks)+1)
-	for _, c := range checks {
-		out = append(out, c)
-		if c.ID == health.IDServer {
-			out = append(out, health.Check{ID: health.IDNodes, Name: "ComfyUI nodes", Result: skipped,
-				Detail: "checked while the ComfyUI server runs; start it in Settings → Music engine"})
-		}
-	}
-	return out
-}
-
-// skipped is a check that was not run this time.
-const skipped health.Result = -1
-
-func checkState(r health.Result) string {
+func checkMark(r health.Result) string {
 	switch r {
 	case health.OK:
-		return statusStyle.Render("OK     ")
+		return statusStyle.Render("✓")
 	case health.Warn:
-		return warningStyle.Render("WARN   ")
-	case health.Fail:
-		return errorStyle.Render("FAIL   ")
-	default:
-		return dimStyle.Render("skipped")
+		return warningStyle.Render("!")
 	}
+	return errorStyle.Render("✕")
+}
+
+// checkState is a check's state in a few words, and a dim detail after it.
+func (a app) checkState(c health.Check, act setup.Action, planned bool) (string, string) {
+	cfg := a.cfg()
+	ok := c.Result == health.OK
+	switch c.ID {
+	case health.IDComfyUI:
+		switch {
+		case ok:
+			return "installed", shortPath(cfg.ComfyUI.Dir)
+		case planned && act.Status == setup.StatusPartial:
+			return "not finished", ""
+		case c.Fix == "":
+			return "cannot be used", ""
+		}
+		return "not installed", ""
+	case health.IDServer:
+		switch {
+		case ok:
+			return "running", strings.TrimPrefix(c.Detail, "running ")
+		case c.Result == health.Warn:
+			return "stopped", "starts on the first render"
+		}
+		return "running on the CPU", ""
+	case health.IDNodes:
+		return "missing nodes", ""
+	case health.IDServerModelFiles:
+		return "needs a restart", ""
+	case health.IDWriter:
+		switch {
+		case ok:
+			return cfg.Ollama.Model, "through Ollama"
+		case c.Fix != "":
+			return cfg.Ollama.Model + " not pulled", ""
+		}
+		return "Ollama not reachable", ""
+	case health.IDInstructions:
+		return "not usable", ""
+	case health.IDFFprobe:
+		if ok {
+			return "found", ""
+		}
+		return "not found", ""
+	}
+	if ok {
+		return "ready", ""
+	}
+	return "not ready", ""
+}
+
+// checkRows is one requirement: its state and who fixes it. When songsmith
+// can fix it, enter runs the install; while that runs, the row shows its
+// progress and a Cancel row follows it. Under a requirement that is not met
+// go the check's full text, a reason the install cannot run here and the
+// error of a failed run; a sub-row with an install offer leaves the check's
+// text to its description.
+func (a app) checkRows(c health.Check, width int, sub bool) []settingRow {
+	act, hasAct := a.planAction(actionFor[c.ID])
+	planned := hasAct
+	name := cmp.Or(requirementName[c.ID], c.Name)
+	h := requirementHelp[c.ID]
+	desc, help := h[0], cmp.Or(h[1], h[0], c.Detail)
+	if sub {
+		name, desc, help = a.slotRole(c.ID), "One of the music model files", "Choose which in Settings → Music model"
+	}
+	value, detail := a.checkState(c, act, planned)
+	if sub {
+		value, detail = a.fileState(c, act, planned)
+	}
+	row := settingRow{name: name, kind: rowInfo, mark: checkMark(c.Result), value: value, detail: detail,
+		group: requirementsGroup, indent: sub, desc: desc, help: help, anchor: "check " + c.ID}
+	if c.Result == health.OK || c.Fix == "" {
+		hasAct = false
+	}
+	var t installTarget
+	if hasAct {
+		t, hasAct = a.targetOf(act)
+	}
+	if j, ok := a.job(t.key()); hasAct && ok {
+		row.mark = warningStyle.Render(spinnerFrames[a.ticks%len(spinnerFrames)])
+		row.value, row.detail = jobStatus(j), jobDetail(j)
+		row.help = fmt.Sprintf("Installing %s; it keeps going while you use the rest of songsmith", t.name)
+		cancel := a.cancelRow(j)
+		cancel.indent = sub
+		return append([]settingRow{row, cancel}, a.failureRows(t, width)...)
+	}
+	notes := c.Result != health.OK
+	var below []settingRow
+	switch {
+	case c.Result == health.OK:
+	case hasAct && installable(act):
+		row.kind, row.verb, row.applies = rowAction, "install", appliesNow
+		row.detail = installOffer(act)
+		row.help = capitalize(installOffer(act)) + " · " + cmp.Or(act.Detail, c.Detail)
+		if sub {
+			row.desc, notes = c.Detail, false
+		}
+		id := act.ID
+		row.run = func(a *app) tea.Cmd { return a.installAction(id) }
+	case hasAct && act.Pending():
+		row.detail = "songsmith cannot install this here"
+		below = styledReportRows(name+" · why", "Cannot install: "+act.Detail, width, &warningStyle)
+	case c.Fix != "" && !a.health.planned:
+		row.detail = "songsmith can install this"
+		if a.d.Installer != nil {
+			row.detail += "; checking what it needs…"
+		}
+	case c.Missing != "" && c.Fix == "" && c.ID != health.IDWriter:
+		row.detail = "get it yourself"
+	}
+	rows := []settingRow{row}
+	if notes && c.Detail != "" {
+		for _, n := range noteRows(name+" · detail", c.Detail, width, nil) {
+			n.indent = sub
+			rows = append(rows, n)
+		}
+	}
+	rows = append(rows, below...)
+	if hasAct {
+		rows = append(rows, a.failureRows(t, width)...)
+	}
+	return rows
+}
+
+// slotRole is the music model file a check is about, as Settings names it.
+func (a app) slotRole(id string) string {
+	for _, s := range setup.ModelSlots(a.cfg().ComfyUI) {
+		if actionFor[id] == s.ID {
+			return s.Role
+		}
+	}
+	return id
+}
+
+// fileState is one music model file's state.
+func (a app) fileState(c health.Check, act setup.Action, planned bool) (string, string) {
+	if c.Result == health.OK {
+		return "installed", ""
+	}
+	switch {
+	case planned && act.Status == setup.StatusPartial:
+		return fmt.Sprintf("%.0f%% downloaded", act.Percent), ""
+	case c.Fix == "":
+		return "missing", "not a file songsmith can download"
+	}
+	return "missing", ""
+}
+
+// musicFileRows sum up the three music model files on one line, and list
+// them one by one only while one is not installed.
+func (a app) musicFileRows(width int) []settingRow {
+	cfg := a.cfg()
+	var checks []health.Check
+	worst, missing := health.OK, 0
+	for _, id := range modelChecks {
+		if c, ok := health.Find(a.health.checks, id); ok {
+			checks = append(checks, c)
+			worst = max(worst, c.Result)
+			if c.Result != health.OK {
+				missing++
+			}
+		}
+	}
+	var size int64
+	for _, s := range setup.ModelSlots(cfg.ComfyUI) {
+		if f, ok := setup.Lookup(s.Dir, s.Name); ok {
+			size += f.Size
+		}
+	}
+	row := settingRow{name: "Music model files", kind: rowInfo, mark: checkMark(worst), group: requirementsGroup,
+		anchor: "check music files", desc: "The MiniMax Music 3 files ComfyUI loads",
+		help: "Choose which in Settings → Music model"}
+	switch {
+	case missing == 0:
+		row.value = fmt.Sprintf("%d files", len(checks))
+		if size > 0 {
+			row.value += " · " + setup.GB(size)
+		}
+		return []settingRow{row}
+	case missing == len(checks):
+		row.value = "missing"
+	default:
+		row.value = fmt.Sprintf("%d of %d missing", missing, len(checks))
+	}
+	rows := []settingRow{row}
+	for _, c := range checks {
+		rows = append(rows, a.checkRows(c, width, true)...)
+	}
+	return rows
 }
 
 // actionFor maps a setup check to the install action that fixes it.
@@ -134,58 +357,6 @@ func (a app) targetOf(act setup.Action) (installTarget, bool) {
 	return installTarget{}, false
 }
 
-// requirementRows is one setup check: its state and who fixes it. When
-// songsmith can fix it, enter runs the install; while that runs, the row
-// shows its progress and a Cancel row follows it. A reason the install
-// cannot run here, and the error of a failed run, are drawn in full below.
-func (a app) requirementRows(c health.Check, width int) []settingRow {
-	row := settingRow{name: c.Name, kind: rowInfo, value: checkState(c.Result), help: c.Detail}
-	act, hasAct := a.planAction(actionFor[c.ID])
-	if c.Result == health.OK || c.Result == skipped || c.Fix == "" {
-		hasAct = false
-	}
-	var t installTarget
-	if hasAct {
-		t, hasAct = a.targetOf(act)
-	}
-	var below []settingRow
-	if j, ok := a.job(t.key()); hasAct && ok {
-		row.value = warningStyle.Render(padRight(jobStatus(j), 7))
-		row.detail = jobDetail(j)
-		row.help = fmt.Sprintf("Installing %s; it keeps going while you use the rest of songsmith", t.name)
-		return append([]settingRow{row, a.cancelRow(j)}, a.failureRows(t, width)...)
-	}
-	switch {
-	case c.Result == health.OK || c.Result == skipped:
-		row.detail = c.Detail
-	case hasAct && installable(act):
-		row.kind, row.verb, row.applies = rowAction, "install", appliesNow
-		row.detail = installOffer(act)
-		row.help = capitalize(installOffer(act)) + " · " + act.Detail
-		id := act.ID
-		row.run = func(a *app) tea.Cmd { return a.installAction(id) }
-	case hasAct && act.Pending():
-		row.detail = "songsmith cannot install this here; the reason is below"
-		below = styledReportRows(c.Name+" · why", "Cannot install: "+act.Detail, width, &warningStyle)
-	case c.Fix != "" && !a.health.planned:
-		row.detail = "songsmith can install this"
-		if a.d.Installer != nil {
-			row.detail += "; checking what it needs…"
-		}
-	case c.ID == health.IDWriter && c.Fix == "":
-		row.detail = "get Ollama from ollama.com; lyrics can still be written by hand"
-	case c.Missing != "" && c.Fix == "":
-		row.detail = "songsmith cannot install this; get it yourself"
-	default:
-		row.detail = c.Detail
-	}
-	rows := append([]settingRow{row}, below...)
-	if hasAct {
-		rows = append(rows, a.failureRows(t, width)...)
-	}
-	return rows
-}
-
 // installOffer says what enter on an install row does.
 func installOffer(act setup.Action) string {
 	switch act.Kind {
@@ -216,8 +387,8 @@ func (a app) failureRows(t installTarget, width int) []settingRow {
 // never confuses two Cancel rows.
 func (a app) cancelRow(j *job) settingRow {
 	key := j.target.key()
-	row := settingRow{name: "  Cancel", anchor: "cancel " + key, kind: rowAction, verb: "cancel", applies: appliesNow,
-		value: "stop " + j.target.name}
+	row := settingRow{name: "Cancel", anchor: "cancel " + key, kind: rowAction, verb: "cancel", applies: appliesNow,
+		value: "stop " + j.target.name, indent: true}
 	if j.target.resumable() {
 		row.detail = "what is downloaded is kept"
 		row.help = "Stops downloading " + j.target.name + ". The partial file stays, and installing again resumes it"
@@ -293,7 +464,7 @@ func (a app) installAllRows(width int) []settingRow {
 		if j, ok := a.job(s.current); ok {
 			row.detail = j.target.name + " · " + jobStatus(j)
 		}
-		cancel := settingRow{name: "  Cancel everything", kind: rowAction, verb: "cancel", applies: appliesNow,
+		cancel := settingRow{name: "Cancel everything", indent: true, kind: rowAction, verb: "cancel", applies: appliesNow,
 			value: "stop now; the rest does not start",
 			help:  "Stops the running install and the ones after it. Downloads keep what they fetched",
 			run: func(a *app) tea.Cmd {
@@ -347,23 +518,4 @@ func (a app) rerunRow() settingRow {
 		return cmd
 	}
 	return row
-}
-
-// checkReportRows is one check as songsmith doctor prints it, wrapped with
-// a hanging indent.
-func checkReportRows(c health.Check, width int) []settingRow {
-	label := map[health.Result]string{health.OK: "OK  ", health.Warn: "WARN", health.Fail: "FAIL"}[c.Result]
-	if c.Result == skipped {
-		label = "SKIP"
-	}
-	text := fmt.Sprintf("%s %s: %s", label, c.Name, c.Detail)
-	wrapped := strings.Split(lipgloss.NewStyle().Width(max(width-5, 10)).Render(text), "\n")
-	rows := make([]settingRow, 0, len(wrapped))
-	for i, l := range wrapped {
-		if i > 0 {
-			l = "     " + l
-		}
-		rows = append(rows, settingRow{name: "Report", kind: rowReport, value: strings.TrimRight(l, " ")})
-	}
-	return rows
 }

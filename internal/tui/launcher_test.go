@@ -108,7 +108,7 @@ func TestLauncherOffersFinishSetupWhileABlockingCheckFails(t *testing.T) {
 	}
 
 	a = nav(t, a, "enter")
-	if a.screen != screenSettings || a.settings.section != sectionSetup || !strings.Contains(plain(a), "Model diffusion_models  FAIL") {
+	if a.screen != screenSettings || a.settings.section != sectionSetup || !strings.Contains(plain(a), "✕   Diffusion model") {
 		t.Fatalf("Finish setup opened %v:\n%s", a.screen, plain(a))
 	}
 }
@@ -166,8 +166,8 @@ func TestLauncherWithNothingInstalled(t *testing.T) {
 	a = nav(t, a, "enter")
 	report := plain(a)
 	for _, s := range []string{
-		"Missing: ComfyUI, music model files, Ollama, ffprobe",
-		"FAIL ComfyUI install", "FAIL Model vae", "WARN Ollama", "WARN ffprobe",
+		"▲ Rendering is blocked by ComfyUI and the music model files",
+		"✕ ComfyUI", "✕   VAE", "! Writer model", "! ffprobe",
 		"Ollama is not reachable, and songsmith cannot install it",
 	} {
 		if !strings.Contains(report, s) {
@@ -400,7 +400,7 @@ func TestNoticeLeadsWithTheBlockingFailure(t *testing.T) {
 	if a.screen != screenSettings || a.settings.section != sectionSetup {
 		t.Fatalf("Finish setup opened %v", a.screen)
 	}
-	if first := ansi.Strip(a.settingsContent()[0]); !strings.Contains(first, "▲ ComfyUI nodes: missing TextEncodeMiniMaxMusic") {
+	if first := ansi.Strip(a.settingsContent()[0]); !strings.Contains(first, "▲ Rendering is blocked by ComfyUI nodes") {
 		t.Fatalf("Setup does not lead with the blocker: %q\n%s", first, plain(a))
 	}
 }
@@ -408,7 +408,7 @@ func TestNoticeLeadsWithTheBlockingFailure(t *testing.T) {
 func TestSetupSaysNothingBlocks(t *testing.T) {
 	a, _ := newLauncherApp(t, readyChecks())
 	a, _ = send(t, a, switchScreenMsg(screenSetup))
-	if first := ansi.Strip(a.settingsContent()[0]); !strings.Contains(first, "✓ Nothing blocks rendering") {
+	if first := ansi.Strip(a.settingsContent()[0]); !strings.Contains(first, "Ready to render") {
 		t.Fatalf("first Setup line %q", first)
 	}
 }

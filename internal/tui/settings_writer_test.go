@@ -16,6 +16,7 @@ import (
 
 	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/health"
+	"github.com/lancekrogers/songsmith/internal/ollama"
 	"github.com/lancekrogers/songsmith/internal/tui/vim"
 	"github.com/lancekrogers/songsmith/internal/writer"
 )
@@ -75,7 +76,7 @@ func TestWriterListsOllamaModelsAndSavesOnlyTheModel(t *testing.T) {
 	base := fileLines(t, a.d.Config.Path())
 	a = openSettingsOn(t, a, sectionWriter)
 	view := plain(a)
-	for _, s := range []string{"Model\n", "alpha:1b", "▸ ✓ " + testModel, "zeta:3b", "Applies to the next draft"} {
+	for _, s := range []string{"Model · " + testModel + " · 3 installed", "alpha:1b", "▸ ✓ " + testModel, "zeta:3b", "Applies to the next draft"} {
 		if !strings.Contains(view, s) {
 			t.Fatalf("Writer missing %q:\n%s", s, view)
 		}
@@ -98,7 +99,7 @@ func TestWriterListsAConfiguredModelThatIsNotPulledDim(t *testing.T) {
 	a.settings.models.list = fakeModels("alpha:1b", "zeta:3b")
 	a = openSettingsOn(t, a, sectionWriter)
 	saves := recordSaves(&a)
-	row := a.writerModelRow()
+	row := a.writerModelRows()[0]
 	if !slices.Equal(row.options, []string{"alpha:1b", "zeta:3b", testModel + " · not pulled"}) || row.current != 2 || !row.muted[2] {
 		t.Fatalf("row %+v", row)
 	}
@@ -141,7 +142,7 @@ func TestWriterShowsLoadingAndDropsStaleLists(t *testing.T) {
 	}
 	_ = first
 	a = settle(t, a, second)
-	a, _ = send(t, a, modelsLoadedMsg{seq: a.settings.models.seq - 1, names: []string{"stale:1b"}})
+	a, _ = send(t, a, modelsLoadedMsg{seq: a.settings.models.seq - 1, infos: []ollama.ModelInfo{{Name: "stale:1b"}}})
 	if strings.Contains(plain(a), "stale:1b") || !strings.Contains(plain(a), "zeta:3b") {
 		t.Fatalf("stale list shown:\n%s", plain(a))
 	}
@@ -175,7 +176,7 @@ func TestWriterOtherModelSavesAPulledTagAndNeverAnUnpulledOne(t *testing.T) {
 
 func TestWriterURLIsValidatedAndReloadsTheList(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
-	a = openSettingsOn(t, a, sectionWriter)
+	a = openSettingsOn(t, a, sectionAdvanced)
 	saves := recordSaves(&a)
 	a = focus(t, a, "Ollama URL", -1)
 	a = pressSettings(t, a, "enter")
@@ -193,7 +194,7 @@ func TestWriterURLIsValidatedAndReloadsTheList(t *testing.T) {
 	if len(*saves) != 1 || (*saves)[0] != (savedKV{"ollama.url", ollama.URL}) || a.cfg().Ollama.URL != ollama.URL {
 		t.Fatalf("saves %v", *saves)
 	}
-	if !strings.Contains(plain(a), "fresh:1b") {
+	if a = pressSettings(t, a, "2"); !strings.Contains(plain(a), "fresh:1b") {
 		t.Fatalf("list not reloaded from the new URL:\n%s", plain(a))
 	}
 }
@@ -340,5 +341,63 @@ func TestChoosingAWriterModelRefreshesTheChecks(t *testing.T) {
 	view := plain(a)
 	if a.screen != screenLauncher || strings.Contains(view, "not pulled") || !strings.Contains(view, "Writer zeta:3b") {
 		t.Fatalf("launcher after:\n%s", view)
+	}
+}
+
+// A model /api/tags says nothing about is asked about with /api/show; one
+// show cannot answer stays in the list.
+func TestModelListAsksShowAndKeepsModelsItCannotAsk(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			_, _ = w.Write([]byte(`{"models":[{"name":"writer:1b"},{"name":"vectors:1b"},{"name":"mystery:1b"},{"name":"tagged:1b","capabilities":["completion"]}]}`))
+		case "/api/show":
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			switch body["model"] {
+			case "writer:1b":
+				_, _ = w.Write([]byte(`{"capabilities":["completion"]}`))
+			case "vectors:1b":
+				_, _ = w.Write([]byte(`{"capabilities":["embedding"]}`))
+			case "tagged:1b":
+				t.Error("show asked about a model tags described")
+			default:
+				http.Error(w, "boom", http.StatusInternalServerError)
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	infos, err := listOllamaModels(t.Context(), srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chat []string
+	for _, m := range infos {
+		if m.CanChat() {
+			chat = append(chat, m.Name)
+		}
+	}
+	if !slices.Equal(chat, []string{"writer:1b", "mystery:1b", "tagged:1b"}) {
+		t.Fatalf("chat models %q", chat)
+	}
+}
+
+// With no model in Ollama, the configured one is a list of one that enter
+// still pulls.
+func TestAWriterListOfOneStillActs(t *testing.T) {
+	a, _ := newSettingsApp(t, readyChecks())
+	a.settings.models.list = fakeModels([]string{}...)
+	a = openSettingsOn(t, a, sectionWriter)
+	row := a.writerModelRows()[0]
+	if row.expands() || len(row.options) != 1 || !strings.Contains(plain(a), testModel+" · not pulled") {
+		t.Fatalf("row %+v:\n%s", row, plain(a))
+	}
+	a = focus(t, a, "Model", -1)
+	if !strings.Contains(footerLine(a), "enter choose") || !strings.Contains(plain(a), "enter pulls it through Ollama") {
+		t.Fatalf("footer %q:\n%s", footerLine(a), plain(a))
+	}
+	a = pressSettings(t, a, "enter")
+	if !strings.Contains(a.settings.message, testModel+" cannot be pulled from here") {
+		t.Fatalf("enter did nothing: %q", a.settings.message)
 	}
 }

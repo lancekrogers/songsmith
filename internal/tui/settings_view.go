@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"math"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -167,12 +169,13 @@ func (a app) messageStyle() lipgloss.Style {
 	return statusStyle
 }
 
-// statusArea is the latest message or, without one, what the focused line
-// does and when a change applies, wrapped to statusLines lines.
+// statusArea is the latest message or, without one, when a change to the
+// focused line applies, with whatever of its help the line under it could
+// not show, wrapped to statusLines lines.
 func (a app) statusArea(width int) []string {
 	text, style := a.settings.message, a.messageStyle()
 	if text == "" {
-		text, style = a.focusedHelp(), dimStyle
+		text, style = a.statusHelp(), dimStyle
 	}
 	wrapped := strings.Split(lipgloss.NewStyle().Width(max(width-4, 10)).Render(text), "\n")
 	out := make([]string, statusLines)
@@ -194,18 +197,42 @@ func (a app) focusedHelp() string {
 	if !ok {
 		return ""
 	}
-	help := row.help
-	if line.option >= 0 && line.option < len(row.details) && row.details[line.option] != "" {
-		help = row.details[line.option]
+	return joinHelp(row.applies, optionHelp(row, line.option))
+}
+
+func optionHelp(row settingRow, option int) string {
+	if option < 0 && row.kind == rowPick && len(row.options) == 1 {
+		option = 0
 	}
+	if option >= 0 && option < len(row.details) && row.details[option] != "" {
+		return row.details[option]
+	}
+	return row.help
+}
+
+func joinHelp(applies, help string) string {
 	var parts []string
-	if row.applies != "" {
-		parts = append(parts, capitalize(row.applies))
+	if applies != "" {
+		parts = append(parts, capitalize(applies))
 	}
 	if help != "" {
 		parts = append(parts, help)
 	}
 	return strings.Join(parts, " · ")
+}
+
+// statusHelp is focusedHelp less what the line under the row already says.
+func (a app) statusHelp() string {
+	row, line, ok := a.focusedSetting()
+	if !ok {
+		return ""
+	}
+	help := optionHelp(row, line.option)
+	rows, lines := a.settingsLayout()
+	if desc := a.focusedDescription(rows, lines); desc == help && a.descFits(desc, row.indent) {
+		help = ""
+	}
+	return joinHelp(row.applies, help)
 }
 
 func capitalize(s string) string {
@@ -220,15 +247,25 @@ func (a app) settingsKeys() []string {
 	if a.settings.edit.active {
 		return []string{"enter save", "esc cancel"}
 	}
+	if a.settings.filter.on {
+		return []string{"type to filter", "↑/↓ move", "enter choose", "esc clear"}
+	}
 	keys := []string{"↑/↓ move", "←/→ section"}
 	if row, line, ok := a.focusedSetting(); ok {
 		switch {
-		case line.option >= 0:
+		case line.option >= 0 || row.kind == rowPick && len(row.options) == 1 && row.set != nil:
 			keys = append(keys, "enter choose")
+			if row.long() {
+				keys = append(keys, "/ filter")
+			}
+		case row.kind == rowChoice && row.run != nil:
+			keys = append(keys, "space/+/- step", "enter type")
 		case row.kind == rowChoice:
 			keys = append(keys, "enter/space/+/- step")
+		case row.kind == rowToggle:
+			keys = append(keys, "enter/space toggle")
 		case row.kind == rowSlider:
-			keys = append(keys, "+/- adjust")
+			keys = append(keys, "+/- adjust", "enter type")
 		case row.kind == rowText:
 			keys = append(keys, "enter edit")
 		case row.kind == rowAction && row.run != nil:
@@ -275,7 +312,7 @@ func padRight(s string, width int) string {
 	return s + strings.Repeat(" ", max(width-lipgloss.Width(s), 0))
 }
 
-// settingsContent is the visible window of the section, under the editor
+// settingsContent is the visible part of the section, under the editor
 // while one is open.
 func (a app) settingsContent() []string {
 	var out []string
@@ -283,37 +320,92 @@ func (a app) settingsContent() []string {
 		out = append(out, "  "+selectedStyle.Render(a.settings.edit.label+": ")+a.settings.edit.input.View(), "")
 	}
 	rows, lines := a.settingsLayout()
-	nameWidth := nameColumn(rows)
-	valueWidth := a.settingsValueWidth(rows)
+	disp, _ := a.settingsDisplay(rows, lines)
+	nameWidth := nameColumns(rows)
+	valueWidth := a.settingsValueWidths(rows)
 	visible := a.settingsListRows()
-	start := min(max(a.settings.offset, 0), max(len(lines)-visible, 0))
-	end := min(start+visible, len(lines))
+	start := min(max(a.settings.offset, 0), max(len(disp)-visible, 0))
+	end := min(start+visible, len(disp))
 	cw := a.settingsContentWidth()
-	for i := start; i < end; i++ {
-		l := lines[i]
-		focused := i == a.settings.cursor && !a.settings.edit.active
+	pad := strings.Repeat(" ", rowIndent)
+	for _, d := range disp[start:end] {
 		var s string
-		switch {
-		case l.blank:
-		case l.header:
-			s = headerLine(rows[l.row])
-		case l.option >= 0:
-			s = optionLine(rows[l.row], l.option, focused)
-		case l.wrap > 0:
-			s = wrapLine(rows[l.row], l.wrap, nameWidth, valueWidth)
+		switch d.kind {
+		case displayMore:
+			s = pad + dimStyle.Render(d.text)
+		case displayDesc:
+			p := pad
+			if d.indent {
+				p += "  "
+			}
+			s = p + dimStyle.Render(ansi.Truncate(d.text, max(cw-len(p), 1), "…"))
 		default:
-			s = rowLine(rows[l.row], focused, nameWidth, valueWidth)
+			s = a.settingLineView(rows, lines, d.line, nameWidth, valueWidth)
 		}
 		out = append(out, ansi.Truncate(s, cw, "…"))
 	}
 	return out
 }
 
-// headerLine heads a list with its name, its value and its detail.
-func headerLine(row settingRow) string {
+func (a app) settingLineView(rows []settingRow, lines []settingLine, i int, nameWidths, valueWidths []int) string {
+	l := lines[i]
+	row := rows[l.row]
+	nameWidth, valueWidth := nameWidths[l.row], valueWidths[l.row]
+	focused := i == a.settings.cursor && !a.settings.edit.active
+	pad := strings.Repeat(" ", rowIndent)
+	switch {
+	case l.blank:
+		return ""
+	case l.header:
+		return headerLine(row, len(row.options))
+	case l.group:
+		return "  " + groupStyle.Render(row.group)
+	case l.filter:
+		f := a.settings.filter
+		n := 0
+		for _, o := range row.options {
+			if f.matches(row, o) {
+				n++
+			}
+		}
+		return pad + selectedStyle.Render("/ "+f.text) + normalStyle.Render("▏") +
+			dimStyle.Render(fmt.Sprintf("  %d of %d", n, len(row.options)))
+	case l.empty:
+		cursor := "  "
+		if focused {
+			cursor = selectedStyle.Render("▸ ")
+		}
+		return "  " + cursor + "  " + dimStyle.Render("nothing matches "+quoted(a.settings.filter.text))
+	case l.note:
+		style := dimStyle
+		if row.style != nil {
+			style = *row.style
+		}
+		if row.indent {
+			pad += "  "
+		}
+		return pad + style.Render(row.value)
+	case l.option >= 0:
+		return optionLine(row, l.option, focused)
+	case l.wrap > 0:
+		return wrapLine(row, l.wrap, nameWidth, valueWidth)
+	}
+	return rowLine(row, focused, nameWidth, valueWidth)
+}
+
+// headerLine heads a list with its name, its current value, how many
+// options it has and its detail.
+func headerLine(row settingRow, n int) string {
 	line := "  " + groupStyle.Render(row.name)
-	if row.value != "" {
-		line += dimStyle.Render(" · " + row.value)
+	value := row.value
+	if value == "" && row.current >= 0 && row.current < n {
+		value = row.options[row.current]
+	}
+	if value != "" {
+		line += dimStyle.Render(" · " + value)
+	}
+	if row.count != "" {
+		line += dimStyle.Render(" · " + row.count)
 	}
 	if row.detail != "" {
 		line += "  " + dimStyle.Render(row.detail)
@@ -321,49 +413,61 @@ func headerLine(row settingRow) string {
 	return line
 }
 
-// optionLine is one option of a list: ✓ on the current one, dim when muted.
+// optionLine is one option of a list: ✓ on the current one, dim when muted,
+// with its dim extra after it.
 func optionLine(row settingRow, idx int, focused bool) string {
 	cursor, style := "  ", normalStyle
 	if idx < len(row.muted) && row.muted[idx] {
 		style = dimStyle
 	}
 	if focused {
-		cursor, style = "▸ ", selectedStyle
+		cursor, style = selectedStyle.Render("▸ "), selectedStyle
 	}
 	mark := "  "
 	if idx == row.current {
 		mark = statusStyle.Render("✓ ")
 	}
-	return "  " + cursor + mark + style.Render(row.options[idx])
+	line := "  " + cursor + mark + style.Render(row.options[idx])
+	if idx < len(row.extras) && row.extras[idx] != "" {
+		line += "  " + dimStyle.Render(row.extras[idx])
+	}
+	return line
 }
 
-// rowLine is a one-line row: its name, then its value drawn so the verb is
-// clear before a key is pressed.
+// rowLine is a one-line row: its mark, its name, then its value drawn so the
+// verb is clear before a key is pressed.
 func rowLine(row settingRow, focused bool, nameWidth, valueWidth int) string {
 	cursor, nameStyle := "  ", normalStyle
 	if row.kind == rowInfo {
 		nameStyle = dimStyle
 	}
 	if focused {
-		cursor, nameStyle = "▸ ", selectedStyle
+		cursor, nameStyle = selectedStyle.Render("▸ "), selectedStyle
+	}
+	mark := "  "
+	if row.mark != "" {
+		mark = row.mark + " "
 	}
 	if row.kind == rowReport {
 		style := dimStyle
 		if row.style != nil {
 			style = *row.style
 		}
-		return "  " + cursor + style.Render(row.value)
+		return "  " + cursor + mark + style.Render(row.value)
 	}
-	name := row.name
-	if lipgloss.Width(name) > nameWidth-1 {
-		name = ansi.Truncate(name, nameWidth-2, "…")
+	name, nw := row.name, nameWidth
+	if row.indent {
+		name, nw = "  "+name, nameWidth
 	}
-	pad := max(nameWidth-lipgloss.Width(name), 1)
+	if lipgloss.Width(name) > nw-1 {
+		name = ansi.Truncate(name, nw-2, "…")
+	}
+	gap := max(nw-lipgloss.Width(name), 1)
 	values := row.valueLines(valueWidth)
 	if row.kind != rowChoice {
 		values = []string{rowValue(row)}
 	}
-	line := "  " + cursor + nameStyle.Render(name) + strings.Repeat(" ", pad) + values[0]
+	line := "  " + cursor + mark + nameStyle.Render(name) + strings.Repeat(" ", gap) + values[0]
 	if row.detail != "" && len(values) == 1 {
 		line += "  " + dimStyle.Render(row.detail)
 	}
@@ -375,7 +479,7 @@ func wrapLine(row settingRow, wrap, nameWidth, valueWidth int) string {
 	if wrap >= len(values) {
 		return ""
 	}
-	line := strings.Repeat(" ", 4+nameWidth) + values[wrap]
+	line := strings.Repeat(" ", rowIndent+nameWidth) + values[wrap]
 	if row.detail != "" && wrap == len(values)-1 {
 		line += "  " + dimStyle.Render(row.detail)
 	}
@@ -385,13 +489,60 @@ func wrapLine(row settingRow, wrap, nameWidth, valueWidth int) string {
 func rowValue(row settingRow) string {
 	switch row.kind {
 	case rowPick:
+		if len(row.options) == 1 {
+			if len(row.muted) > 0 && row.muted[0] {
+				return dimStyle.Render(row.options[0])
+			}
+			return normalStyle.Render(row.options[0])
+		}
 		return dimStyle.Render(row.value)
 	case rowSlider:
-		return normalStyle.Render(row.value) + dimStyle.Render("  - / +")
+		return sliderValue(row)
+	case rowToggle:
+		if row.current == 1 {
+			return statusStyle.Render("ON")
+		}
+		return dimStyle.Render("OFF")
 	case rowInfo:
-		return dimStyle.Render(row.value)
+		return dimStyle.Render(shortPath(row.value))
+	case rowText:
+		if looksLikePath(row.value) {
+			return dimStyle.Render(shortPath(row.value))
+		}
 	}
 	return normalStyle.Render(row.value)
+}
+
+// sliderBar is the width of a slider's bar.
+const sliderBar = 13
+
+// sliderValue is a slider's value, a bar showing where it sits in its
+// range, and the range.
+func sliderValue(row settingRow) string {
+	pos := 0
+	if row.hi > row.lo {
+		f := min(max((row.at-row.lo)/(row.hi-row.lo), 0), 1)
+		pos = int(math.Round(f * float64(sliderBar-1)))
+	}
+	bar := normalStyle.Render(strings.Repeat("━", pos)) + headerStyle.Render("●") +
+		dimStyle.Render(strings.Repeat("━", sliderBar-1-pos))
+	return normalStyle.Render(padRight(row.value, 5)) + bar + "  " + dimStyle.Render(row.scale)
+}
+
+func looksLikePath(v string) bool {
+	return strings.HasPrefix(v, "/") || strings.HasPrefix(v, "~") || strings.Contains(v, "://")
+}
+
+// shortPath writes a path under the home folder with ~.
+func shortPath(v string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || home == "/" {
+		return v
+	}
+	if rest, ok := strings.CutPrefix(v, home+string(os.PathSeparator)); ok {
+		return "~/" + rest
+	}
+	return v
 }
 
 // valueLines is a choice row's options with [current] marked, wrapped to

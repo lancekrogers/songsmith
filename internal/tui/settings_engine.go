@@ -47,40 +47,6 @@ func (a app) comfyServer() ComfyServer {
 	return NewComfyServer(server.New(cfg.ComfyUI, cfg.StateDir))
 }
 
-// A musicEngine renders songs. The Music engine section lists every engine
-// and shows the rows of the one in use, so another engine is a new entry
-// with its own rows.
-type musicEngine struct {
-	id, label, help string
-	rows            func(a app) []settingRow
-}
-
-var musicEngines = []musicEngine{
-	{id: "comfyui", label: "ComfyUI · MiniMax Music 3 on a local ComfyUI server",
-		help: "songsmith sends each song to a ComfyUI server it starts and stops for you", rows: app.comfyRows},
-}
-
-// currentEngine is the engine in use; ComfyUI is the only one so far.
-func (a app) currentEngine() musicEngine { return musicEngines[0] }
-
-func (a app) engineRows() []settingRow {
-	cur := a.currentEngine()
-	row := settingRow{name: "Engine", kind: rowPick, current: -1, applies: appliesNextRender,
-		help: "What renders your songs"}
-	for i, e := range musicEngines {
-		row.options = append(row.options, e.label)
-		row.details = append(row.details, e.help)
-		if e.id == cur.id {
-			row.current = i
-		}
-	}
-	row.set = func(a *app, i int) tea.Cmd {
-		a.settingsNote(musicEngines[i].label + " is the engine in use")
-		return nil
-	}
-	return append([]settingRow{row}, cur.rows(a)...)
-}
-
 type serverState struct {
 	seq    int
 	known  bool
@@ -179,11 +145,17 @@ func (a *app) refreshComfyFound() {
 	a.settings.comfyFound = err == nil
 }
 
-func (a app) comfyRows() []settingRow {
+// serverRows are the ComfyUI server songs render on: its state with start
+// and stop, the install when it is missing, its folder and its log.
+func (a app) serverRows() []settingRow {
 	cfg, saved := a.cfg(), a.settings.saved
-	rows := []settingRow{a.serverRow()}
+	rows := []settingRow{{name: "Engine", kind: rowNote, value: "Engine: ComfyUI · MiniMax Music 3 on this machine"}}
+	server := a.serverRow()
+	server.gap = true
+	rows = append(rows, server)
 	rows = append(rows, a.installComfyRows()...)
 	dir := settingRow{key: "comfyui.dir", name: "Install folder", kind: rowText,
+		desc: "Where ComfyUI is, or where setup installs it",
 		help: "Where ComfyUI is, or where setup installs it. Have your own ComfyUI? Point this at its folder",
 		run: func(a *app) tea.Cmd {
 			return a.beginEdit("Install folder", a.settings.saved.ComfyUI.Dir, func(a *app, v string) (tea.Cmd, error) {
@@ -191,28 +163,16 @@ func (a app) comfyRows() []settingRow {
 			})
 		}}
 	restartValue(&dir, saved.ComfyUI.Dir, cfg.ComfyUI.Dir)
-	host := settingRow{key: "comfyui.host", name: "Host", kind: rowText,
-		help: "The address the server listens on and songsmith connects to",
-		run: func(a *app) tea.Cmd {
-			return a.beginEdit("Host", a.settings.saved.ComfyUI.Host, (*app).commitHost)
-		}}
-	restartValue(&host, saved.ComfyUI.Host, cfg.ComfyUI.Host)
-	port := settingRow{key: "comfyui.port", name: "Port", kind: rowText,
-		help: "The port the server listens on",
-		run: func(a *app) tea.Cmd {
-			return a.beginEdit("Port", strconv.Itoa(a.settings.saved.ComfyUI.Port), (*app).commitPort)
-		}}
-	restartValue(&port, strconv.Itoa(saved.ComfyUI.Port), strconv.Itoa(cfg.ComfyUI.Port))
-	a.stopFirstHelp(&port, strconv.Itoa(saved.ComfyUI.Port), strconv.Itoa(cfg.ComfyUI.Port))
 	log := settingRow{name: "Log", kind: rowInfo, value: a.comfyServer().LogPath(),
 		help: "The output of a server songsmith started"}
-	return append(rows, dir, host, port, log)
+	return append(rows, dir, log)
 }
 
 func (a app) serverRow() settingRow {
 	cfg := a.cfg()
 	sv := a.settings.server
-	row := settingRow{name: "Server", kind: rowAction, applies: appliesNow}
+	row := settingRow{name: "Server", kind: rowAction, applies: appliesNow,
+		desc: "songsmith starts it on the first render and stops only one it started"}
 	switch {
 	case sv.busy != "":
 		row.value = sv.busy + "…"
@@ -227,21 +187,21 @@ func (a app) serverRow() settingRow {
 		row.run = func(a *app) tea.Cmd { return a.serverAction("stop") }
 	case sv.status.Running && !sv.status.Managed:
 		row.kind, row.applies = rowInfo, ""
-		row.value = "running (started outside songsmith) at " + cfg.ComfyUI.BaseURL()
+		row.value, row.detail = "running", "started outside songsmith · "+cfg.ComfyUI.BaseURL()
 		row.help = "songsmith leaves a server it did not start running; stop it where it was started"
 	case sv.status.Running && a.rendering():
 		row.kind, row.applies = rowInfo, ""
-		row.value = "running at " + cfg.ComfyUI.BaseURL()
+		row.value = "running"
 		row.detail = "rendering — stop is unavailable until the song finishes or is cancelled"
 		row.help = "Rendering — stop is unavailable until the song finishes or is cancelled"
 	case sv.status.Running:
-		row.value = "running at " + cfg.ComfyUI.BaseURL()
-		row.detail = "started by songsmith"
+		row.value = "running"
+		row.detail = "started by songsmith · " + cfg.ComfyUI.BaseURL()
 		row.verb = "stop"
 		row.help = "enter stops the server"
 		row.run = func(a *app) tea.Cmd { return a.serverAction("stop") }
 	default:
-		row.value = "stopped · " + cfg.ComfyUI.BaseURL()
+		row.value, row.detail = "stopped", cfg.ComfyUI.BaseURL()
 		row.verb = "start"
 		row.help = "enter starts ComfyUI from the install folder; it also starts by itself on the first render"
 		row.run = func(a *app) tea.Cmd { return a.serverAction("start") }
@@ -282,7 +242,7 @@ func (a app) keepsRunningNote() string {
 // with a changed port or state folder, while one runs.
 func (a app) stopFirstHelp(row *settingRow, saved, running string) {
 	if saved != running && a.managedServerRunning() {
-		row.help += " · Stop the server in Settings → Music engine before restarting, or songsmith will not recognise it as its own"
+		row.help += " · Stop the server in Settings → Server before restarting, or songsmith will not recognise it as its own"
 	}
 }
 
@@ -360,7 +320,7 @@ func (a *app) commitPort(v string) (tea.Cmd, error) {
 // is missing or unfinished there, with progress, the latest line of the
 // install log and a Cancel row while it runs.
 func (a app) installComfyRows() []settingRow {
-	width := a.settingsContentWidth() - 4
+	width := a.settingsContentWidth() - rowIndent
 	t := comfyTarget(a.cfg())
 	if j, ok := a.job(t.key()); ok {
 		row := settingRow{name: "Install ComfyUI", kind: rowInfo, value: jobStatus(j), detail: jobDetail(j),

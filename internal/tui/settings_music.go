@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -69,24 +70,20 @@ func gigabytes(n int64) string { return fmt.Sprintf("%.1f GB", float64(n)/1e9) }
 
 func (a app) musicModelRows() []settingRow {
 	cfg := a.cfg()
-	width := a.settingsContentWidth() - 4
+	width := a.settingsContentWidth() - rowIndent
 	var rows []settingRow
 	rows = append(rows, a.variantRow("Text encoder", "comfyui.text_encoder", SlotTextEncoder, cfg.ComfyUI.TextEncoder))
 	rows = append(rows, a.slotJobRows(SlotTextEncoder, width)...)
 	rows = append(rows, a.variantRow("Diffusion model", "comfyui.diffusion_model", SlotDiffusion, cfg.ComfyUI.DiffusionModel))
 	rows = append(rows, a.slotJobRows(SlotDiffusion, width)...)
-	vae := settingRow{name: "VAE", kind: rowInfo, value: cfg.ComfyUI.VAE,
-		help: "The audio decoder; MiniMax Music 3 has one: " + cfg.ComfyUI.VAE}
+	vae := "VAE: " + cfg.ComfyUI.VAE
 	if i := slices.IndexFunc(a.settings.variants[SlotVAE], func(v ModelVariant) bool { return v.File == cfg.ComfyUI.VAE }); i >= 0 {
 		v := a.settings.variants[SlotVAE][i]
-		vae.value = v.Label + " · " + gigabytes(v.Size) + " · " + a.variantState(SlotVAE, v)
+		vae = "VAE · " + gigabytes(v.Size) + " · " + a.variantState(SlotVAE, v)
 	}
 	models := filepath.Join(cfg.ComfyUI.Dir, "models")
-	folder := settingRow{name: "Model folder", kind: rowInfo, value: models,
-		help: "Where ComfyUI reads the model files, under Settings → Music engine → Install folder: " + models}
-	rows = append(rows, vae)
-	rows = append(rows, a.slotJobRows(SlotVAE, width)...)
-	return append(rows, folder)
+	rows = append(rows, settingRow{name: "VAE", kind: rowNote, gap: true, value: vae + " · files in " + shortPath(models)})
+	return append(rows, a.slotJobRows(SlotVAE, width)...)
 }
 
 // variantState is installed, downloading, partly downloaded or not on disk.
@@ -131,27 +128,31 @@ func (a app) variantRow(name, key, slot, configured string) settingRow {
 	row := settingRow{key: key, name: name, kind: rowPick, current: -1, applies: appliesNextRender,
 		help: "Which file ComfyUI loads for the " + name}
 	for i, v := range vs {
-		label := v.Label + " · " + gigabytes(v.Size) + " · " + a.variantState(slot, v)
+		label := shortLabel(name, v.Label)
+		option := label + " · " + gigabytes(v.Size) + " · " + a.variantState(slot, v)
 		if v.Tag != "" {
-			label += " · " + v.Tag
+			option += " · " + v.Tag
 		}
 		detail := v.Note
 		if !v.Installed {
 			detail += " Not on disk: enter downloads it (" + gigabytes(v.Size) + ") and switches to it once it is verified."
 		}
-		detail += " " + v.File
-		row.options = append(row.options, label)
+		row.options = append(row.options, option)
 		row.muted = append(row.muted, !v.Installed)
-		row.details = append(row.details, detail)
+		row.details = append(row.details, strings.TrimSpace(detail))
+		row.optionDescs = append(row.optionDescs, v.File)
 		if v.File == configured {
 			row.current = i
+			row.value = label
 		}
 	}
 	if row.current < 0 && configured != "" {
 		row.options = append(row.options, configured+" · custom")
 		row.muted = append(row.muted, false)
 		row.details = append(row.details, "A file named in the config file that is not one of the known files; songsmith uses it as named")
+		row.optionDescs = append(row.optionDescs, configured)
 		row.current = len(row.options) - 1
+		row.value = "custom"
 	}
 	row.set = func(a *app, i int) tea.Cmd {
 		if i >= len(vs) || vs[i].File == configured {
@@ -166,6 +167,17 @@ func (a app) variantRow(name, key, slot, configured string) settingRow {
 		return nil
 	}
 	return row
+}
+
+// shortLabel drops the slot's own name from a variant's label, so under the
+// "Text encoder" heading "Text encoder bf16 (pruned)" reads "bf16 (pruned)".
+func shortLabel(slot, label string) string {
+	for _, p := range []string{slot + " ", "DiT "} {
+		if rest, ok := strings.CutPrefix(label, p); ok && rest != "" {
+			return rest
+		}
+	}
+	return label
 }
 
 // downloadVariant fetches a file that is not on disk and, once it is

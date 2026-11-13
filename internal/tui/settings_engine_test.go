@@ -11,33 +11,34 @@ import (
 	"github.com/lancekrogers/songsmith/internal/comfy/server"
 )
 
-func TestEngineListsComfyUIWithItsRows(t *testing.T) {
+func TestServerShowsTheEngineAsALineAndItsRows(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
-	a = openSettingsOn(t, a, sectionEngine)
-	saves := recordSaves(&a)
+	a = openSettingsOn(t, a, sectionServer)
 	var names []string
-	for _, r := range a.engineRows() {
+	for _, r := range a.serverRows() {
 		names = append(names, r.name)
+		if r.expands() {
+			t.Errorf("Server has a list: %q", r.name)
+		}
 	}
-	want := []string{"Engine", "Server", "Install ComfyUI", "Install folder", "Host", "Port", "Log"}
+	want := []string{"Engine", "Server", "Install ComfyUI", "Install folder", "Log"}
 	if !slices.Equal(names, want) {
 		t.Fatalf("rows %q, want %q", names, want)
 	}
 	view := plain(a)
-	for _, s := range []string{"▸ ✓ ComfyUI · MiniMax Music 3", "Server           stopped · http://127.0.0.1:18188", "Log              /tmp/songsmith-test-state/comfyui.log"} {
+	for _, s := range []string{"Engine: ComfyUI · MiniMax Music 3", "Server           stopped  http://127.0.0.1:18188", "Log              /tmp/songsmith-test-state/comfyui.log"} {
 		if !strings.Contains(view, s) {
-			t.Fatalf("Music engine missing %q:\n%s", s, view)
+			t.Fatalf("Server missing %q:\n%s", s, view)
 		}
 	}
-	a = pressSettings(t, a, "enter")
-	if len(*saves) != 0 || !strings.Contains(plain(a), "is the engine in use") {
-		t.Fatalf("choosing the engine: %v\n%s", *saves, plain(a))
+	if name, _ := focusedName(a); name != "Server" {
+		t.Fatalf("Server opened on %q", name)
 	}
 }
 
 func TestInstallComfyUIRowOnlyWhenTheFolderHasNoComfyUI(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
-	a = openSettingsOn(t, a, sectionEngine)
+	a = openSettingsOn(t, a, sectionServer)
 	if lineOf(a, "Install ComfyUI", -1) < 0 {
 		t.Fatal("no Install ComfyUI row for an empty folder")
 	}
@@ -48,7 +49,7 @@ func TestInstallComfyUIRowOnlyWhenTheFolderHasNoComfyUI(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "main.py"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	a = pressSettings(t, a, "6", "5")
+	a = pressSettings(t, a, "7", "5")
 	if lineOf(a, "Install ComfyUI", -1) >= 0 {
 		t.Fatalf("Install ComfyUI shown with ComfyUI present:\n%s", plain(a))
 	}
@@ -56,7 +57,7 @@ func TestInstallComfyUIRowOnlyWhenTheFolderHasNoComfyUI(t *testing.T) {
 
 func TestServerStartAndStopRunInTheBackground(t *testing.T) {
 	a, srv := newSettingsApp(t, readyChecks())
-	a = openSettingsOn(t, a, sectionEngine)
+	a = openSettingsOn(t, a, sectionServer)
 	a = focus(t, a, "Server", -1)
 	if got := footerLine(a); !strings.Contains(got, "enter start") {
 		t.Fatalf("footer %q", got)
@@ -71,14 +72,14 @@ func TestServerStartAndStopRunInTheBackground(t *testing.T) {
 	}
 	a = settle(t, a, cmd)
 	if srv.starts != 1 || !strings.Contains(plain(a), "Server running on mps") ||
-		!strings.Contains(plain(a), "running at http://127.0.0.1:18188  started by songsmith") {
+		!strings.Contains(plain(a), "running  started by songsmith · http://127.0.0.1:18188") {
 		t.Fatalf("after start (%d starts):\n%s", srv.starts, plain(a))
 	}
 	if got := footerLine(a); !strings.Contains(got, "enter stop") {
 		t.Fatalf("footer %q", got)
 	}
 	a = pressSettings(t, a, "enter")
-	if srv.stops != 1 || !strings.Contains(plain(a), "Server stopped") || !strings.Contains(plain(a), "stopped · http://") {
+	if srv.stops != 1 || !strings.Contains(plain(a), "Server stopped") || !strings.Contains(plain(a), "stopped  http://") {
 		t.Fatalf("after stop:\n%s", plain(a))
 	}
 }
@@ -86,9 +87,9 @@ func TestServerStartAndStopRunInTheBackground(t *testing.T) {
 func TestServerStartedOutsideSongsmithOffersNoStop(t *testing.T) {
 	a, srv := newSettingsApp(t, readyChecks())
 	srv.status = server.Status{Running: true, Device: "mps"}
-	a = openSettingsOn(t, a, sectionEngine)
+	a = openSettingsOn(t, a, sectionServer)
 	a = focus(t, a, "Server", -1)
-	if !strings.Contains(plain(a), "running (started outside songsmith)") || strings.Contains(footerLine(a), "enter stop") {
+	if !strings.Contains(plain(a), "running  started outside songsmith") || strings.Contains(footerLine(a), "enter stop") {
 		t.Fatalf("view:\n%s", plain(a))
 	}
 	a = pressSettings(t, a, "enter")
@@ -97,7 +98,7 @@ func TestServerStartedOutsideSongsmithOffersNoStop(t *testing.T) {
 	}
 	srv.status = server.Status{}
 	srv.startErr = errors.New("comfyui not found at /x")
-	a = pressSettings(t, a, "6", "5")
+	a = pressSettings(t, a, "7", "5")
 	a = focus(t, a, "Server", -1)
 	a = pressSettings(t, a, "enter")
 	if !strings.Contains(plain(a), "Could not start the server: comfyui not found at /x") {
@@ -107,9 +108,9 @@ func TestServerStartedOutsideSongsmithOffersNoStop(t *testing.T) {
 
 func TestPortIsValidatedAndAppliesAfterRestart(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
-	a = openSettingsOn(t, a, sectionEngine)
+	a = openSettingsOn(t, a, sectionAdvanced)
 	saves := recordSaves(&a)
-	a = focus(t, a, "Port", -1)
+	a = focus(t, a, "ComfyUI port", -1)
 	a = pressSettings(t, a, "enter")
 	for _, bad := range []string{"0", "70000", "port", "-5", ""} {
 		a = clearEditor(t, a)
@@ -126,14 +127,14 @@ func TestPortIsValidatedAndAppliesAfterRestart(t *testing.T) {
 		t.Fatalf("saves %v, running port %d", *saves, a.cfg().ComfyUI.Port)
 	}
 	view := plain(a)
-	if !strings.Contains(view, "Applies after restart · Port: 18190") || !strings.Contains(view, "Port             18190  applies after restart · running 18188") {
+	if !strings.Contains(view, "Applies after restart · Port: 18190") || !strings.Contains(view, "ComfyUI port  18190  applies after restart · running 18188") {
 		t.Fatalf("after saving the port:\n%s", view)
 	}
 }
 
 func TestFoldersAndHostSaveOnlyTheirKeyForTheNextStart(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
-	a = openSettingsOn(t, a, sectionEngine)
+	a = openSettingsOn(t, a, sectionServer)
 	base := fileLines(t, a.d.Config.Path())
 	saves := recordSaves(&a)
 	running := a.cfg()
@@ -155,7 +156,8 @@ func TestFoldersAndHostSaveOnlyTheirKeyForTheNextStart(t *testing.T) {
 		t.Fatalf("running %q saved %q", a.cfg().ComfyUI.Dir, a.settings.saved.ComfyUI.Dir)
 	}
 
-	a = focus(t, a, "Host", -1)
+	a = openSettingsOn(t, a, sectionAdvanced)
+	a = focus(t, a, "ComfyUI host", -1)
 	a = pressSettings(t, a, "enter")
 	a = clearEditor(t, a)
 	a = typeIntoSettings(t, a, "http://box/")
@@ -166,11 +168,11 @@ func TestFoldersAndHostSaveOnlyTheirKeyForTheNextStart(t *testing.T) {
 	a = clearEditor(t, a)
 	a = typeIntoSettings(t, a, "0.0.0.0")
 	a = pressSettings(t, a, "enter")
-	if a.cfg().ComfyUI.Host != running.ComfyUI.Host || !strings.Contains(plain(a), "Host             0.0.0.0  applies after restart · running 127.0.0.1") {
+	if a.cfg().ComfyUI.Host != running.ComfyUI.Host || !strings.Contains(plain(a), "ComfyUI host  0.0.0.0  applies after restart · running 127.0.0.1") {
 		t.Fatalf("host:\n%s", plain(a))
 	}
 
-	a = pressSettings(t, a, "6")
+	a = pressSettings(t, a, "7")
 	view := plain(a)
 	for _, s := range []string{"Library folder", "State folder", "Config file"} {
 		if !strings.Contains(view, s) {

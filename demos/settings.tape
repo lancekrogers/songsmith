@@ -1,9 +1,10 @@
-# Settings: walk the sections, change the temperature, the render steps and
-# the server port, then show that the config file changed only those keys and
-# kept its comments. Uses a throwaway config under /tmp/songsmith-demo-settings
-# (see demos/settings.yaml) where no ComfyUI or Ollama runs; nothing is
-# installed, started or rendered, and the install plan reads demos/setupfake
-# on a loopback port (SONGSMITH_DEMO_SETUP).
+# Settings: walk all seven sections on a machine that is ready to render,
+# filter the writer's model list, change the temperature and the render
+# steps, then show that the config file changed only those keys and kept its
+# comments. Uses a throwaway config under /tmp/songsmith-demo-settings (see
+# demos/settings.yaml) with stand-in ComfyUI and model files made there;
+# Ollama, ComfyUI and the install plan are demos/setupfake on loopback ports.
+# Nothing is installed, started or rendered.
 # Record with: just demo-settings
 
 Output demos/settings.gif
@@ -22,8 +23,11 @@ Set Theme {"name":"termcast","background":"#0d0d11","foreground":"#f8f8f2","curs
 
 Hide
 Type "unset NO_COLOR CLICOLOR; export CLICOLOR_FORCE=1 FORCE_COLOR=1 TERM=xterm-256color SONGSMITH_COLOR_PROFILE=ansi" Enter
-Type "rm -rf /tmp/songsmith-demo-settings && mkdir -p /tmp/songsmith-demo-settings && cp demos/settings.yaml /tmp/songsmith-demo-settings/config.yaml" Enter
-Type "export PATH=$PWD/bin:/usr/bin:/bin SONGSMITH_CONFIG=/tmp/songsmith-demo-settings/config.yaml SONGSMITH_DEMO_SETUP=http://127.0.0.1:18490" Enter
+Type "rm -rf /tmp/songsmith-demo-settings && mkdir -p /tmp/songsmith-demo-settings/bin && cp demos/settings.yaml /tmp/songsmith-demo-settings/config.yaml" Enter
+Type "d=/tmp/songsmith-demo-settings/ComfyUI && mkdir -p $d/.venv/bin $d/.venv/lib/python3.12/site-packages/torch $d/models/diffusion_models $d/models/text_encoders $d/models/vae && touch $d/main.py $d/.venv/bin/python $d/.venv/lib/python3.12/site-packages/torch/__init__.py" Enter
+Type "for f in diffusion_models/minimax_music3_dit_fp16.safetensors:4914197682 text_encoders/minimax_music3_text_encoder_pruned_bf16.safetensors:16706629398 vae/minimax_music3_dav.safetensors:216696128; do dd if=/dev/zero of=$d/models/${f%%:*} bs=1 count=0 seek=${f##*:} 2>/dev/null; done" Enter
+Type "printf '#!/bin/sh\nexit 0\n' > /tmp/songsmith-demo-settings/bin/ffprobe && chmod +x /tmp/songsmith-demo-settings/bin/ffprobe" Enter
+Type "export PATH=$PWD/bin:/tmp/songsmith-demo-settings/bin:/usr/bin:/bin SONGSMITH_CONFIG=/tmp/songsmith-demo-settings/config.yaml SONGSMITH_DEMO_SETUP=http://127.0.0.1:18490" Enter
 Type "clear" Enter
 Show
 
@@ -32,57 +36,61 @@ Sleep 400ms
 Enter
 Sleep 3s
 
-# Settings is the fourth item while Finish setup is offered.
-Down@600ms 3
+# Everything is ready, so Settings is the third item.
+Down@600ms 2
 Sleep 800ms
 Enter
-Sleep 3s
+Sleep 3.5s
 
-# Writer: Ollama is unreachable here, so the list gives way to one line.
+# Writer: about thirty models in a window, two embedding models hidden.
 Right
+Sleep 3.5s
+Down@500ms 3
+Sleep 1.5s
+
+# / filters the list; esc clears the filter.
+Type "/"
+Sleep 800ms
+Type@250ms "bal"
 Sleep 2.5s
-Down@500ms 4
+Escape
+Sleep 1.5s
+
+# The temperature slider.
+Type "G"
+Sleep 800ms
+Up@500ms 2
 Sleep 1s
 Type "+"
 Sleep 2.5s
 
 # Music model, then Render: two more steps.
 Right
-Sleep 2.5s
+Sleep 3s
 Right
 Sleep 1.5s
 Type@600ms "++"
 Sleep 2.5s
 
-# Music engine: the port opens in the one-line editor and applies after restart.
+# Server, Advanced with the server's samplers, and Library.
 Right
-Sleep 2s
-Down@500ms 5
-Sleep 800ms
-Enter
-Sleep 800ms
-Backspace@150ms 5
-Type "18190"
-Sleep 800ms
-Enter
 Sleep 3s
-
 Right
-Sleep 2.5s
+Sleep 3s
+Down@400ms 4
+Sleep 1.5s
+Right
+Sleep 3s
 Escape
 Sleep 1s
 Type "q"
 Sleep 800ms
 
-# Only the three changed values differ, and every comment is still there.
+# Only the two changed values differ, and every comment is still there.
 Type "diff demos/settings.yaml $SONGSMITH_CONFIG"
 Sleep 400ms
 Enter
-Sleep 3s
-Type "cat $SONGSMITH_CONFIG"
-Sleep 400ms
-Enter
-Sleep 5s
+Sleep 4s
 
 Hide
 Type "rm -rf /tmp/songsmith-demo-settings" Enter

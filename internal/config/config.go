@@ -36,6 +36,14 @@ type Ollama struct {
 	// InstructionsFile replaces the built-in system prompt when set. Load
 	// resolves a relative path against the config file's folder.
 	InstructionsFile string `yaml:"instructions_file"`
+	// Context is the num_ctx drafts ask for; 0 leaves it to Ollama.
+	Context int `yaml:"context"`
+	// KeepAlive is how long Ollama keeps the writer loaded after a draft,
+	// in Ollama's duration syntax ("5m", "0", "-1").
+	KeepAlive string `yaml:"keep_alive"`
+	// UnloadBeforeRender asks Ollama to unload the writer when a song
+	// starts rendering, so the music model has the memory.
+	UnloadBeforeRender bool `yaml:"unload_before_render"`
 }
 
 type Render struct {
@@ -69,9 +77,11 @@ func Default() Config {
 			VAE:            "minimax_music3_dav.safetensors",
 		},
 		Ollama: Ollama{
-			URL:         "http://127.0.0.1:11434",
-			Model:       "qwen3.8:latest",
-			Temperature: 0.8,
+			URL:                "http://127.0.0.1:11434",
+			Model:              "qwen3.8:latest",
+			Temperature:        0.8,
+			KeepAlive:          "5m",
+			UnloadBeforeRender: true,
 		},
 		Render: Render{
 			Steps:          30,

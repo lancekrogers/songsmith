@@ -57,7 +57,7 @@ func TestPasteInNormalModeInsertsTheText(t *testing.T) {
 
 func TestPasteIntoAOneLineFieldDropsLineBreaks(t *testing.T) {
 	m, _ := openNewSong(t, fakeDrafter{})
-	m = press(t, m, "down")
+	m = press(t, m, "down", "down")
 	m, _ = send(t, m, pasteKey("Sock\r\nThief\r"))
 	if got := m.compose.title.Value(); got != "Sock Thief " {
 		t.Fatalf("title %q", got)
@@ -80,7 +80,7 @@ func TestDraftAsksBeforeReplacingATitleOrStyle(t *testing.T) {
 		m = press(t, m, "an idea")
 		m, cmd := send(t, m, key("enter"))
 		m = runCmd(t, m, cmd)
-		if *d.calls != 0 || m.compose.armed != "enter" || !strings.Contains(m.compose.msg, c.want) {
+		if *d.calls != 0 || m.compose.armed != "draft" || !strings.Contains(m.compose.msg, c.want) {
 			t.Fatalf("%s: calls %d armed %q msg %q", c.name, *d.calls, m.compose.armed, m.compose.msg)
 		}
 		m, cmd = send(t, m, key("enter"))
@@ -123,7 +123,7 @@ func TestLibraryRefusesToQueueAnIncompleteSong(t *testing.T) {
 	if got.Status != library.StatusDraft {
 		t.Fatalf("an incomplete song was queued: %s", got.Status)
 	}
-	for _, want := range []string{"Can't queue Half", "caption arrangement is empty", "e to edit"} {
+	for _, want := range []string{"Can't render yet: no style. e edits it."} {
 		if !strings.Contains(m.notice, want) {
 			t.Fatalf("notice %q lacks %q", m.notice, want)
 		}
@@ -132,7 +132,7 @@ func TestLibraryRefusesToQueueAnIncompleteSong(t *testing.T) {
 
 func TestCtrlCInTheEditorActsLikeEsc(t *testing.T) {
 	m, _ := openNewSong(t, fakeDrafter{})
-	m = press(t, m, "down", "down", "down", "down", "down", "enter")
+	m = press(t, m, "down", "down", "down", "down", "down", "down", "enter")
 	if m.compose.editor == nil || m.compose.editor.ed.Mode() != vim.ModeInsert {
 		t.Fatal("editor not open in INSERT")
 	}
@@ -273,7 +273,7 @@ func TestComposeFitsTinyTerminals(t *testing.T) {
 			m, _ := openNewSong(t, fakeDrafter{})
 			m = fillValid(m)
 			if editor {
-				m = press(t, m, "down", "down", "down", "down", "down", "enter")
+				m = press(t, m, "down", "down", "down", "down", "down", "down", "enter")
 			}
 			m.compose.setMsg(toneWarn, "%s", strings.Repeat("a long message ", 12))
 			m, _ = send(t, m, tea.WindowSizeMsg{Width: w, Height: h})
@@ -323,7 +323,7 @@ func TestAutoLengthLeavesTheLengthToTheWriter(t *testing.T) {
 func TestAChosenLengthIsSentAndKept(t *testing.T) {
 	d := newRecordingDrafter(sampleDraft, nil)
 	m, _ := openNewSong(t, d)
-	m = press(t, m, "down", "down", "right", "right", "up", "up", "an idea")
+	m = press(t, m, "down", "down", "down", "right", "right", "up", "up", "up", "an idea")
 	m, cmd := send(t, m, key("enter"))
 	m = runCmd(t, m, cmd)
 	if d.opts.Seconds != 135 || m.compose.seconds != 135 {

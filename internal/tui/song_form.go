@@ -12,12 +12,15 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/lancekrogers/songsmith/internal/health"
 	"github.com/lancekrogers/songsmith/internal/library"
 	"github.com/lancekrogers/songsmith/internal/queue"
+	"github.com/lancekrogers/songsmith/internal/setup"
 	"github.com/lancekrogers/songsmith/internal/writer"
 )
 
@@ -26,6 +29,8 @@ type formRow int
 
 const (
 	rowIdea formRow = iota
+	rowWriter
+	rowDraft
 	rowTitle
 	rowLength
 	rowVocals
@@ -44,7 +49,7 @@ func (r formRow) isText() bool { return r >= rowLyrics }
 func (r formRow) textIndex() int { return int(r - rowLyrics) }
 
 func (r formRow) name() string {
-	return [...]string{"Idea", "Title", "Length", "Vocals", "Seed", "Lyrics", "Global metadata", "Vocal details", "Arrangement"}[r]
+	return [...]string{"Idea", "Writer", "Draft", "Title", "Length", "Vocals", "Seed", "Lyrics", "Global metadata", "Vocal details", "Arrangement"}[r]
 }
 
 const (
@@ -72,8 +77,10 @@ type composeModel struct {
 	copied  bool
 	initial songFields
 
-	idea, title, seed textinput.Model
-	seconds           float64
+	// idea wraps over as many lines as it needs, up to maxIdeaLines.
+	idea        textarea.Model
+	title, seed textinput.Model
+	seconds     float64
 	// autoLength leaves the length to the writer: drafts get no target and
 	// seconds takes the drafted length, or stays the default without one.
 	// draftedLength is set once seconds holds a drafted length.
@@ -83,6 +90,9 @@ type composeModel struct {
 	// texts are Lyrics, Global metadata, Vocal details and Arrangement.
 	texts [4]string
 	focus formRow
+	// skip are rows focus passes over: the writer row without a model to
+	// choose, the draft row without a writer.
+	skip [rowCount]bool
 
 	// editor is the open text editor, or nil on the form.
 	editor    *textEditor
@@ -90,11 +100,13 @@ type composeModel struct {
 
 	spinner  spinner.Model
 	drafting bool
-	draftSeq int
-	cancel   context.CancelFunc
+	// keepTitle keeps the title through a draft started from the library.
+	keepTitle bool
+	draftSeq  int
+	cancel    context.CancelFunc
 
 	// armed is a key pressed once that acts on its second press: esc
-	// discards changes, enter on Idea replaces the lyrics with a draft.
+	// discards changes, "draft" replaces filled fields with a draft.
 	armed string
 	msg   string
 	tone  chipTone
@@ -106,6 +118,7 @@ type (
 	draftDoneMsg struct {
 		seq   int
 		idea  string
+		model string
 		draft writer.Draft
 		err   error
 	}
@@ -126,18 +139,50 @@ func newCompose() composeModel {
 	}
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
+	idea := textarea.New()
+	idea.Prompt = ""
+	idea.ShowLineNumbers = false
+	idea.CharLimit = 0
+	idea.Placeholder = "a road-trip anthem about leaving a small town"
+	idea.KeyMap.InsertNewline.SetEnabled(false)
+	idea.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	idea.FocusedStyle.Placeholder = dimStyle
+	idea.BlurredStyle.Placeholder = dimStyle
+	idea.SetHeight(1)
 	return composeModel{
-		idea:    input("a road-trip anthem about leaving a small town", 0),
+		idea:    idea,
 		title:   input("Untitled", 0),
 		seed:    input("random each render", 20),
 		spinner: sp,
 	}
 }
 
+// maxIdeaLines is the most lines the idea takes before it scrolls.
+const maxIdeaLines = 6
+
+// fitIdea makes the idea box as tall as its wrapped text, up to
+// maxIdeaLines. The idea is one line, so its wrapped height is the line's.
+// Re-setting the value scrolls the box back to its top.
+func (c *composeModel) fitIdea() {
+	if v := c.idea.Value(); strings.ContainsAny(v, "\r\n") {
+		c.idea.SetValue(strings.Join(strings.Fields(v), " "))
+	}
+	info := c.idea.LineInfo()
+	n := min(max(info.Height, 1), maxIdeaLines)
+	col := info.StartColumn + info.ColumnOffset
+	c.idea.SetHeight(n)
+	c.idea.SetValue(c.idea.Value())
+	c.idea.SetCursor(col)
+	if info.Height > maxIdeaLines && c.idea.Focused() {
+		c.idea, _ = c.idea.Update(nil)
+	}
+}
+
 func (c *composeModel) resize(w, h int) {
 	c.width, c.height = w, h
 	inner := c.boxWidth() - 4
-	c.idea.Width = max(inner-1, 10)
+	c.idea.SetWidth(max(inner-1, 10))
+	c.fitIdea()
 	c.title.Width = max(inner-labelWidth-4, 10)
 	c.seed.Width = 22
 	c.layoutEditor()
@@ -154,6 +199,7 @@ func (c *composeModel) startEdit(song library.Song, newSeconds float64) tea.Cmd 
 	}
 	c.base = song
 	c.idea.SetValue(song.Idea)
+	c.fitIdea()
 	c.title.SetValue(song.Title)
 	c.seed.SetValue("")
 	if song.SeedPinned {
@@ -218,7 +264,12 @@ func (c *composeModel) applyFocus() tea.Cmd {
 }
 
 func (c *composeModel) move(delta int) tea.Cmd {
-	c.focus = formRow((int(c.focus) + delta + int(rowCount)) % int(rowCount))
+	for range rowCount {
+		c.focus = formRow((int(c.focus) + delta + int(rowCount)) % int(rowCount))
+		if !c.skip[c.focus] {
+			break
+		}
+	}
 	return c.applyFocus()
 }
 
@@ -343,6 +394,7 @@ func (c *composeModel) updateInput(msg tea.Msg) tea.Cmd {
 	switch c.focus {
 	case rowIdea:
 		c.idea, cmd = c.idea.Update(msg)
+		c.fitIdea()
 	case rowTitle:
 		c.title, cmd = c.title.Update(msg)
 	case rowSeed:
@@ -361,6 +413,10 @@ func (a app) formKey(key tea.KeyMsg) (app, tea.Cmd) {
 	if key.Paste {
 		key.Runes = []rune(normalizeNewlines(string(key.Runes)))
 	}
+	if key.Paste && c.focus == rowIdea {
+		key.Runes = []rune(strings.ReplaceAll(string(key.Runes), "\n", " "))
+	}
+	a.refreshFormSkips()
 	k := key.String()
 	if k == "ctrl+c" {
 		if c.dirty() && c.armed != "ctrl+c" {
@@ -396,10 +452,12 @@ func (a app) formKey(key tea.KeyMsg) (app, tea.Cmd) {
 		return a, c.move(-1)
 	case "down", "tab":
 		return a, c.move(1)
+	case "ctrl+g":
+		return a.startDraft(armed == "draft")
 	case "enter":
 		switch {
-		case c.focus == rowIdea:
-			return a.startDraft(armed == "enter")
+		case c.focus == rowIdea || c.focus == rowDraft:
+			return a.startDraft(armed == "draft")
 		case c.focus.isText():
 			c.openEditor(c.focus)
 			return a, nil
@@ -416,6 +474,8 @@ func (a app) formKey(key tea.KeyMsg) (app, tea.Cmd) {
 			dir = -1
 		}
 		switch c.focus {
+		case rowWriter:
+			return a.cycleWriter(dir)
 		case rowLength:
 			c.stepLength(a.defaultSeconds(), dir)
 			return a, nil
@@ -455,25 +515,40 @@ func (c *composeModel) draftReplaces() []string {
 // startDraft asks the writer for lyrics and a style from the idea.
 // confirmed is set by a second enter when drafting would replace fields.
 func (a app) startDraft(confirmed bool) (app, tea.Cmd) {
+	a.compose.keepTitle = false
+	return a.draft(confirmed)
+}
+
+// draftKeepingTitle drafts the lyrics and style of a song that has none,
+// keeping the title it was given.
+func (a app) draftKeepingTitle() (app, tea.Cmd) {
+	a.compose.keepTitle = strings.TrimSpace(a.compose.title.Value()) != ""
+	return a.draft(len(a.compose.draftReplaces()) == 0 || a.compose.keepTitle && len(a.compose.draftReplaces()) == 1)
+}
+
+func (a app) draft(confirmed bool) (app, tea.Cmd) {
 	c := &a.compose
 	if why, down := a.writerUnavailable(); down {
 		c.setMsg(toneWarn, "No draft: %s. Write the song in the fields below by hand.", why)
-		return a, c.move(1)
+		if c.focus == rowIdea {
+			return a, c.move(1)
+		}
+		return a, nil
 	}
 	idea := strings.TrimSpace(c.idea.Value())
 	if idea == "" {
 		c.setMsg(toneWarn, "Describe the song first: genre, mood, subject, anything.")
-		return a, nil
+		return a, c.focusOn(rowIdea)
 	}
 	if names := c.draftReplaces(); len(names) > 0 && !confirmed {
-		c.armed = "enter"
-		c.setMsg(toneWarn, "Drafting replaces the %s below: enter again drafts, any other key keeps them", joinAnd(names))
+		c.armed = "draft"
+		c.setMsg(toneWarn, "Drafting replaces the %s below: ctrl+g or enter again drafts, any other key keeps them", joinAnd(names))
 		return a, nil
 	}
 	ctx, cancel := context.WithCancel(a.ctx)
 	c.cancel, c.drafting = cancel, true
 	c.draftSeq++
-	seq, drafter := c.draftSeq, a.d.Drafter
+	seq, drafter, model := c.draftSeq, a.d.Drafter, a.cfg().Ollama.Model
 	opts := writer.Options{Instrumental: c.instrumental}
 	if !c.autoLength {
 		opts.Seconds = c.seconds
@@ -483,7 +558,7 @@ func (a app) startDraft(confirmed bool) (app, tea.Cmd) {
 		if ctx.Err() != nil {
 			return nil
 		}
-		return draftDoneMsg{seq: seq, idea: idea, draft: d, err: err}
+		return draftDoneMsg{seq: seq, idea: idea, model: model, draft: d, err: err}
 	})
 }
 
@@ -501,7 +576,7 @@ func (a app) draftDone(msg draftDoneMsg) (app, tea.Cmd) {
 			*dst = v
 		}
 	}
-	if d.Title != "" {
+	if d.Title != "" && !c.keepTitle {
 		c.title.SetValue(d.Title)
 	}
 	set(&c.texts[0], d.Lyrics)
@@ -513,7 +588,11 @@ func (a app) draftDone(msg draftDoneMsg) (app, tea.Cmd) {
 	}
 	cmd := c.focusOn(rowLyrics)
 	if msg.err != nil {
-		c.setMsg(toneBad, "Draft failed: %v. Write the lyrics and style yourself, or esc to go back.", msg.err)
+		what := "Draft failed"
+		if msg.model != "" && !strings.Contains(msg.err.Error(), msg.model) {
+			what = "Draft with " + msg.model + " failed"
+		}
+		c.setMsg(toneBad, "%s: %v. ctrl+g tries again; or write the lyrics and style yourself.", what, msg.err)
 		return a, cmd
 	}
 	c.setMsg(toneOK, "Drafted. Edit anything, then ctrl+s saves and queues or ctrl+d saves a draft.")
@@ -626,10 +705,18 @@ func (a app) saveCompose(render bool) (app, tea.Cmd) {
 		c.setMsg(toneWarn, "Nothing to save yet: write an idea, a title, lyrics or a style first.")
 		return a, nil
 	}
+	if render && strings.TrimSpace(c.idea.Value()) != "" && strings.TrimSpace(strings.Join(c.texts[:], "")) == "" {
+		if _, down := a.writerUnavailable(); !down {
+			c.setMsg(toneWarn, "Nothing to render yet: ctrl+g drafts lyrics and style from your idea")
+			return a, c.focusOn(rowDraft)
+		}
+		c.setMsg(toneWarn, "Nothing to render yet: write the lyrics and style below, or ctrl+d saves the idea as a draft")
+		return a, c.focusOn(rowLyrics)
+	}
 	if render {
 		var fe *writer.FieldError
 		if err := song.CheckRender(); errors.As(err, &fe) {
-			c.setMsg(toneBad, "Can't queue yet: %s.", fe.Msg)
+			c.setMsg(toneBad, "Can't queue yet: %s.", fieldProblem(fe))
 			return a, c.focusOn(fieldRows[fe.Field])
 		}
 	}
@@ -680,6 +767,16 @@ func (a app) saveCompose(render bool) (app, tea.Cmd) {
 	return a, tea.Batch(cmd, a.loadSongs())
 }
 
+// fieldProblem says what is wrong with a field in the words of the form: an
+// empty style part names its box.
+func fieldProblem(fe *writer.FieldError) string {
+	switch fe.Field {
+	case writer.FieldGlobalMetadata, writer.FieldVocalDetails, writer.FieldArrangement:
+		return "the " + fieldRows[fe.Field].name() + " box is empty"
+	}
+	return fe.Msg
+}
+
 // missingForRender names what stops rendering and where it gets fixed.
 func missingForRender(checks []health.Check, blocker health.Check) (what, fix string) {
 	var blocking []health.Check
@@ -697,4 +794,69 @@ func missingForRender(checks []health.Check, blocker health.Check) (what, fix st
 		return joinAnd(all), fix
 	}
 	return blocker.Name, fix
+}
+
+// refreshFormSkips marks the rows focus cannot land on now.
+func (a *app) refreshFormSkips() {
+	c := &a.compose
+	_, _, ok := a.formWriterChoice()
+	_, down := a.writerUnavailable()
+	c.skip[rowWriter] = !ok
+	c.skip[rowDraft] = down
+}
+
+// formWriterChoice is the models the form's Writer row cycles through, the
+// current one's index, and whether there is a choice to make.
+func (a app) formWriterChoice() (names []string, cur int, ok bool) {
+	if !a.modelsCurrent() || a.settings.models.err != nil {
+		return nil, -1, false
+	}
+	chat, _ := a.chatModels()
+	model := setup.ModelTag(a.cfg().Ollama.Model)
+	cur = -1
+	for i, m := range chat {
+		names = append(names, m.Name)
+		if setup.ModelTag(m.Name) == model {
+			cur = i
+		}
+	}
+	return names, cur, len(names) > 1 || len(names) == 1 && cur < 0
+}
+
+// formWriterState is what the Writer row says when there is no choice.
+func (a app) formWriterState() string {
+	m := a.settings.models
+	switch {
+	case !a.modelsCurrent():
+		return "loading installed models…"
+	case m.err != nil:
+		return "Ollama is not reachable at " + a.cfg().Ollama.URL
+	}
+	names, _, _ := a.formWriterChoice()
+	if len(names) == 0 {
+		return "no installed model can draft; Settings → Writer"
+	}
+	return names[0] + " · the only installed model"
+}
+
+// cycleWriter makes the next or previous installed model the writer. It is
+// saved as Settings saves it, and the song itself does not change.
+func (a app) cycleWriter(dir int) (app, tea.Cmd) {
+	c := &a.compose
+	names, cur, ok := a.formWriterChoice()
+	if !ok {
+		return a, nil
+	}
+	next := 0
+	if cur >= 0 {
+		next = (cur + dir + len(names)) % len(names)
+	} else if dir < 0 {
+		next = len(names) - 1
+	}
+	if err := a.saveConfig("ollama.model", names[next]); err != nil {
+		c.setMsg(toneBad, "Not saved: %v", err)
+		return a, nil
+	}
+	c.setMsg(toneOK, "%s · Writer model: %s", capitalize(appliesNextDraft), names[next])
+	return a, a.recheckIfChanged()
 }

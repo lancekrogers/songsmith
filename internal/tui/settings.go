@@ -18,7 +18,8 @@ const (
 	sectionWriter
 	sectionMusicModel
 	sectionRender
-	sectionEngine
+	sectionServer
+	sectionAdvanced
 	sectionLibrary
 	settingsSectionCount
 )
@@ -28,7 +29,8 @@ var sectionNames = [settingsSectionCount]string{
 	sectionWriter:     "Writer",
 	sectionMusicModel: "Music model",
 	sectionRender:     "Render",
-	sectionEngine:     "Music engine",
+	sectionServer:     "Server",
+	sectionAdvanced:   "Advanced",
 	sectionLibrary:    "Library",
 }
 
@@ -43,6 +45,10 @@ type settingsModel struct {
 	// sections have one rather than their home line.
 	marks   [settingsSectionCount]lineAnchor
 	visited [settingsSectionCount]bool
+	// window is where the focused long list's window starts; filter is
+	// the text typed after / on it.
+	window listTop
+	filter settingsFilter
 
 	// message is the latest outcome; failed draws it as an error.
 	message string
@@ -108,11 +114,11 @@ func (a *app) enterSection(sec settingsSection) tea.Cmd {
 		return a.loadModels()
 	case sectionMusicModel:
 		a.refreshVariants()
-	case sectionRender:
-		return a.loadSamplers()
-	case sectionEngine:
+	case sectionServer:
 		a.refreshComfyFound()
 		return a.loadServerStatus()
+	case sectionAdvanced:
+		return a.loadSamplers()
 	}
 	return nil
 }
@@ -132,6 +138,13 @@ func (a app) updateSettings(msg tea.Msg) (app, tea.Cmd) {
 		return a.updateSettingsEditor(key)
 	}
 	a.syncSettings()
+	if a.settings.filter.on {
+		cmd, done := a.updateSettingsFilter(key)
+		if done {
+			a.syncSettings()
+			return a, cmd
+		}
+	}
 	var cmd tea.Cmd
 	switch k := key.String(); k {
 	case "right", "l", "tab":
@@ -168,6 +181,8 @@ func (a app) updateSettings(msg tea.Msg) (app, tea.Cmd) {
 		default:
 			cmd = a.adjustSetting(row, line, -1)
 		}
+	case "/":
+		a.startSettingsFilter()
 	case "esc":
 		recheck := a.recheckIfChanged()
 		return a, tea.Batch(recheck, func() tea.Msg { return switchScreenMsg(screenLauncher) })
@@ -180,6 +195,70 @@ func (a app) updateSettings(msg tea.Msg) (app, tea.Cmd) {
 	return a, cmd
 }
 
+// startSettingsFilter opens a filter on the long list under the cursor.
+func (a *app) startSettingsFilter() {
+	row, line, ok := a.focusedSetting()
+	if !ok || line.option < 0 || !row.long() {
+		return
+	}
+	a.clearSettingsNote()
+	a.settings.filter = settingsFilter{on: true, row: row.anchorName()}
+}
+
+// updateSettingsFilter gives a typed filter the keys it owns: every
+// printable key types, so digits and letters never switch sections. ↑/↓
+// move among the matches, enter chooses one and closes the filter, esc
+// closes it. done is false for a key the filter leaves to Settings.
+func (a *app) updateSettingsFilter(key tea.KeyMsg) (cmd tea.Cmd, done bool) {
+	f := &a.settings.filter
+	switch k := key.String(); k {
+	case "esc":
+		a.settings.filter = settingsFilter{}
+		a.clearSettingsNote()
+		return nil, true
+	case "enter":
+		row, line, ok := a.focusedSetting()
+		if !ok || line.option < 0 || row.anchorName() != f.row {
+			a.settingsNote("Nothing matches " + quoted(f.text) + "; backspace to change it, esc to clear it")
+			return nil, true
+		}
+		a.settings.filter = settingsFilter{}
+		a.syncSettings()
+		return a.activateSetting(row, line), true
+	case "backspace":
+		if r := []rune(f.text); len(r) > 0 {
+			f.text = string(r[:len(r)-1])
+			a.refilter()
+		}
+		return nil, true
+	case "up", "down", "pgup", "pgdown", "home", "end", "left", "right", "tab", "shift+tab":
+		if k == "left" || k == "right" || k == "tab" || k == "shift+tab" {
+			a.settings.filter = settingsFilter{}
+		}
+		return nil, false
+	}
+	if key.Type == tea.KeyRunes || key.Type == tea.KeySpace {
+		f.text += string(key.Runes)
+		a.refilter()
+	}
+	return nil, true
+}
+
+// refilter puts the cursor on the first option the filter matches.
+func (a *app) refilter() {
+	rows, lines := a.settingsLayout()
+	a.settings.window = listTop{}
+	at := slices.IndexFunc(lines, func(l settingLine) bool {
+		return l.focusable() && rows[l.row].anchorName() == a.settings.filter.row
+	})
+	if at < 0 {
+		return
+	}
+	a.placeSettingsCursor(rows, lines, at)
+}
+
+func quoted(s string) string { return "“" + s + "”" }
+
 func (a *app) settingsNote(msg string)  { a.settings.message, a.settings.failed = msg, false }
 func (a *app) settingsError(msg string) { a.settings.message, a.settings.failed = msg, true }
 func (a *app) clearSettingsNote()       { a.settings.message, a.settings.failed = "", false }
@@ -187,19 +266,28 @@ func (a *app) clearSettingsNote()       { a.settings.message, a.settings.failed 
 // saveSetting writes key to the config file first; the running settings
 // change only when that worked. A failure is shown and nothing changes.
 func (a *app) saveSetting(key string, value any) bool {
+	if err := a.saveConfig(key, value); err != nil {
+		a.settingsError("Not saved: " + err.Error())
+		return false
+	}
+	return true
+}
+
+// saveConfig writes key to the config file, then to the running settings.
+// Settings and the song form both save through it.
+func (a *app) saveConfig(key string, value any) error {
 	save := a.settings.save
 	if save == nil {
 		save = a.d.Config.Set
 	}
 	if err := save(key, value); err != nil {
-		a.settingsError("Not saved: " + err.Error())
-		return false
+		return err
 	}
 	a.reloadSaved()
 	if slices.Contains(checkedKeys, key) {
 		a.settings.recheck = true
 	}
-	return true
+	return nil
 }
 
 // recheckIfChanged re-runs the setup checks when a saved change affects them.

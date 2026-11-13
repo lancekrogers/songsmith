@@ -115,7 +115,7 @@ func (st launcherState) items() []launcherItem {
 	}
 	items = append(items,
 		launcherItem{actionLibrary, "▤", fmt.Sprintf("Library (%d)", st.songs), "Play, edit and re-render your songs"},
-		launcherItem{actionSettings, "⚙", "Settings", "Writer, music model, render, engine and folders"},
+		launcherItem{actionSettings, "⚙", "Settings", "Writer model, render quality, server, folders…"},
 	)
 	quitHint := "Exit songsmith"
 	if st.rendering != nil {
@@ -225,8 +225,8 @@ func (m launcherModel) fullView(st launcherState, width int) string {
 		}
 	}
 	b.WriteString("\n")
-	if msg := st.message(inner); msg != "" {
-		b.WriteString(msg + "\n")
+	for _, l := range st.messageLines(inner) {
+		b.WriteString(l + "\n")
 	}
 	b.WriteString(footer(inner, " ", "↑/↓ navigate", "enter select", "q quit") + "\n\n")
 	b.WriteString(dimStyle.Render(" " + credit))
@@ -240,7 +240,7 @@ func (m launcherModel) compactView(st launcherState, width, height int) string {
 	lines = append(lines, ansi.Truncate(headerStyle.Render(" ♪ SONGSMITH"), width, "…"))
 	lines = append(lines, st.noticeLines(width)[0])
 	if msg := st.message(width); msg != "" {
-		lines = append(lines, msg)
+		lines = append(lines, st.messageLines(width)...)
 	}
 	items := st.items()
 	cur := m.cursor(items)
@@ -485,6 +485,36 @@ func joinAnd(items []string) string {
 		return strings.Join(items, "")
 	}
 	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
+}
+
+// messageLines is the latest outcome wrapped over at most messageRows lines,
+// or none.
+func (st launcherState) messageLines(width int) []string {
+	switch {
+	case st.err != "":
+		return wrapMessage(st.err, errorStyle, width)
+	case st.notice != "":
+		return wrapMessage(st.notice, normalStyle, width)
+	}
+	return nil
+}
+
+// messageRows is how many lines a message on the launcher, the library or
+// the song form may take before it is cut.
+const messageRows = 3
+
+// wrapMessage wraps text to width over at most messageRows lines, so a
+// message is read whole rather than cut at the screen edge.
+func wrapMessage(text string, style lipgloss.Style, width int) []string {
+	lines := strings.Split(lipgloss.NewStyle().Width(max(width, 10)).Render(text), "\n")
+	if len(lines) > messageRows {
+		lines = lines[:messageRows]
+		lines[messageRows-1] = ansi.Truncate(strings.TrimRight(lines[messageRows-1], " ")+" …", width, "…")
+	}
+	for i, l := range lines {
+		lines[i] = style.Render(strings.TrimRight(l, " "))
+	}
+	return lines
 }
 
 // message is the latest outcome, such as a queued song or a failed render.

@@ -12,6 +12,7 @@ import (
 
 	"github.com/lancekrogers/songsmith/internal/comfy/server"
 	"github.com/lancekrogers/songsmith/internal/library"
+	"github.com/lancekrogers/songsmith/internal/ollama"
 )
 
 // commitText opens the one-line editor on the named row, types value and
@@ -27,7 +28,7 @@ func commitText(t *testing.T, a app, row, value string) app {
 
 func TestOllamaURLRejectsAPathAndDropsATrailingSlash(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
-	a = openSettingsOn(t, a, sectionWriter)
+	a = openSettingsOn(t, a, sectionAdvanced)
 	saves := recordSaves(&a)
 	for _, bad := range []string{"http://127.0.0.1:11434/api", "http://127.0.0.1:11434/?x=1", "http://127.0.0.1:11434#top", "ftp://host"} {
 		a = commitText(t, a, "Ollama URL", bad)
@@ -49,7 +50,7 @@ func TestServerRowCannotStopWhileASongRenders(t *testing.T) {
 		t.Fatal(err)
 	}
 	a = runCmd(t, a, a.loadSongs())
-	a = openSettingsOn(t, a, sectionEngine)
+	a = openSettingsOn(t, a, sectionServer)
 	a = focus(t, a, "Server", -1)
 	if !strings.Contains(plain(a), "Rendering — stop is unavailable until the song finishes or is cancelled") || strings.Contains(footerLine(a), "enter stop") {
 		t.Fatalf("while rendering:\n%s", plain(a))
@@ -62,7 +63,7 @@ func TestServerRowCannotStopWhileASongRenders(t *testing.T) {
 
 func TestAServerActionAppliesItsStatusAndWaitsForTheCheck(t *testing.T) {
 	a, srv := newSettingsApp(t, readyChecks())
-	a = openSettingsOn(t, a, sectionEngine)
+	a = openSettingsOn(t, a, sectionServer)
 	a = focus(t, a, "Server", -1)
 	a, cmd := send(t, a, key("enter"))
 	runCmds(cmd)
@@ -71,7 +72,7 @@ func TestAServerActionAppliesItsStatusAndWaitsForTheCheck(t *testing.T) {
 		t.Fatal("no action result")
 	}
 	a, follow := send(t, a, msg)
-	if !strings.Contains(plain(a), "running at http://127.0.0.1:18188") || strings.Contains(footerLine(a), "enter") && strings.Contains(footerLine(a), "stop") {
+	if !strings.Contains(plain(a), "running  started by songsmith · http://127.0.0.1:18188") || strings.Contains(footerLine(a), "enter") && strings.Contains(footerLine(a), "stop") {
 		t.Fatalf("before the check lands:\n%s", plain(a))
 	}
 	a = pressSettings(t, a, "enter")
@@ -96,17 +97,17 @@ func TestCompactSettingsSaysWhenAChangeApplies(t *testing.T) {
 
 func TestHostTakesANameOrAddressWithoutAPort(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
-	a = openSettingsOn(t, a, sectionEngine)
+	a = openSettingsOn(t, a, sectionAdvanced)
 	saves := recordSaves(&a)
 	for _, bad := range []string{"localhost:9000", "[::1]", "a b", "-bad.example"} {
-		a = commitText(t, a, "Host", bad)
+		a = commitText(t, a, "ComfyUI host", bad)
 		if len(*saves) != 0 {
 			t.Fatalf("%q was accepted", bad)
 		}
 		a = pressSettings(t, a, "esc")
 	}
 	for _, good := range []string{"::1", "studio.local", "10.0.0.2"} {
-		a = commitText(t, a, "Host", good)
+		a = commitText(t, a, "ComfyUI host", good)
 	}
 	if len(*saves) != 3 || (*saves)[0].value != "::1" {
 		t.Fatalf("saves %v", *saves)
@@ -160,16 +161,17 @@ func TestSettingsFitsTinyTerminals(t *testing.T) {
 func TestPortAndStateFolderSayToStopTheServerFirst(t *testing.T) {
 	a, srv := newSettingsApp(t, readyChecks())
 	srv.status = server.Status{Running: true, Managed: true, Device: "mps"}
-	a = openSettingsOn(t, a, sectionEngine)
-	a = commitText(t, a, "Port", "18190")
+	a = openSettingsOn(t, a, sectionServer)
+	a = openSettingsOn(t, a, sectionAdvanced)
+	a = commitText(t, a, "ComfyUI port", "18190")
 	if !strings.Contains(a.settings.message, "the running server keeps port 18188 until you stop it here") {
 		t.Fatalf("message %q", a.settings.message)
 	}
-	a = focus(t, a, "Port", -1)
+	a = focus(t, a, "ComfyUI port", -1)
 	if !strings.Contains(a.focusedHelp(), "Stop the server") {
 		t.Fatalf("port help %q", a.focusedHelp())
 	}
-	a = pressSettings(t, a, "6")
+	a = pressSettings(t, a, "7")
 	a = commitText(t, a, "State folder", filepath.Join(t.TempDir(), "state2"))
 	a = focus(t, a, "State folder", -1)
 	if !strings.Contains(a.focusedHelp(), "Stop the server") {
@@ -180,7 +182,7 @@ func TestPortAndStateFolderSayToStopTheServerFirst(t *testing.T) {
 func TestAServerOnTheOldPortCanStillBeStopped(t *testing.T) {
 	a, srv := newSettingsApp(t, readyChecks())
 	srv.status = server.Status{OtherPort: 18100}
-	a = openSettingsOn(t, a, sectionEngine)
+	a = openSettingsOn(t, a, sectionServer)
 	a = focus(t, a, "Server", -1)
 	if !strings.Contains(plain(a), "still runs on port 18100") || !strings.Contains(footerLine(a), "enter stop") {
 		t.Fatalf("view:\n%s", plain(a))
@@ -201,7 +203,9 @@ func TestAFailedSaveKeepsTheEditorAndTheTypedValue(t *testing.T) {
 	}
 }
 
-func TestASliderValueOutsideItsRangeDoesNotJump(t *testing.T) {
+// A slider's range is for stepping: a value outside it steps on from where
+// it is, and enter types any value the render or the writer accepts.
+func TestSlidersAreNotLimitedToTheirRange(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
 	if err := a.d.Config.Set("render.steps", 80); err != nil {
 		t.Fatal(err)
@@ -209,22 +213,89 @@ func TestASliderValueOutsideItsRangeDoesNotJump(t *testing.T) {
 	a = openSettingsOn(t, a, sectionRender)
 	saves := recordSaves(&a)
 	a = focus(t, a, "Steps", -1)
-	a = pressSettings(t, a, "+")
-	if len(*saves) != 0 || !strings.Contains(a.settings.message, "above the slider's range") {
-		t.Fatalf("+ above max: %v %q", *saves, a.settings.message)
+	a = pressSettings(t, a, "+", "-", "-")
+	if got := *saves; len(got) != 3 || got[0].value != 81 || got[2].value != 79 {
+		t.Fatalf("steps outside the range: %v", got)
 	}
-	a = pressSettings(t, a, "-")
-	if len(*saves) != 1 || (*saves)[0].value != 60 {
-		t.Fatalf("- above max: %v", *saves)
+	a = commitText(t, a, "Steps", "250")
+	if a.cfg().Render.Steps != 250 || a.settings.edit.active {
+		t.Fatalf("typed steps: %d", a.cfg().Render.Steps)
 	}
-	if err := a.d.Config.Set("ollama.temperature", -0.5); err != nil {
-		t.Fatal(err)
+	for _, bad := range []string{"0", "-3", "2.5", "many"} {
+		a = commitText(t, a, "Steps", bad)
+		if !a.settings.edit.active || !strings.Contains(plain(a), "Steps must be a whole number of 1 or more") {
+			t.Fatalf("%q accepted:\n%s", bad, plain(a))
+		}
+		a = pressSettings(t, a, "esc")
 	}
-	a = pressSettings(t, a, "2")
-	a = focus(t, a, "Temperature", -1)
-	a = pressSettings(t, a, "-")
-	if len(*saves) != 1 || !strings.Contains(a.settings.message, "below the slider's range") {
-		t.Fatalf("- below min: %v %q", *saves, a.settings.message)
+	a = commitText(t, a, "CFG scale", "7.5")
+	a = commitText(t, a, "Top-k", "1000")
+	if r := a.cfg().Render; r.CFGScale != 7.5 || r.TopK != 1000 {
+		t.Fatalf("typed values: %+v", r)
+	}
+	a = commitText(t, a, "CFG scale", "0")
+	if !a.settings.edit.active || a.cfg().Render.CFGScale != 7.5 {
+		t.Fatal("a CFG scale of 0 was accepted")
+	}
+	a = pressSettings(t, a, "esc")
+	a = commitText(t, a, "Default length", "1:45")
+	if a.cfg().Render.DefaultSeconds != 105 || !strings.Contains(plain(a), "1:45 ·") {
+		t.Fatalf("typed length %d:\n%s", a.cfg().Render.DefaultSeconds, plain(a))
+	}
+	a = commitText(t, a, "Default length", "6:00")
+	if !a.settings.edit.active || a.cfg().Render.DefaultSeconds != 105 {
+		t.Fatal("a length past 5:00 was accepted")
+	}
+	a = pressSettings(t, a, "esc", "2")
+	a = commitText(t, a, "Temperature", "2.4")
+	if a.cfg().Ollama.Temperature != 2.4 {
+		t.Fatalf("typed temperature %v", a.cfg().Ollama.Temperature)
+	}
+	a = commitText(t, a, "Temperature", "-0.1")
+	if !a.settings.edit.active {
+		t.Fatal("a negative temperature was accepted")
+	}
+}
+
+func TestContextIsLeftToOllamaUnlessTyped(t *testing.T) {
+	a, _ := newSettingsApp(t, readyChecks())
+	a = openSettingsOn(t, a, sectionWriter)
+	if !strings.Contains(plain(a), "Context       Ollama's setting (not overridden)") && !strings.Contains(plain(a), "Ollama's setting (not overridden)") {
+		t.Fatalf("Writer:\n%s", plain(a))
+	}
+	for typed, want := range map[string]int{"262144": 262144, "8k": 8192, "128K": 131072, "1": 1} {
+		a = commitText(t, a, "Context", typed)
+		if a.cfg().Ollama.Context != want {
+			t.Fatalf("%q saved %d", typed, a.cfg().Ollama.Context)
+		}
+	}
+	for _, bad := range []string{"0", "-5", "big", "1.5k"} {
+		a = commitText(t, a, "Context", bad)
+		if !a.settings.edit.active {
+			t.Fatalf("%q accepted", bad)
+		}
+		a = pressSettings(t, a, "esc")
+	}
+	a = commitText(t, a, "Context", "")
+	if a.cfg().Ollama.Context != 0 || !strings.Contains(plain(a), "Ollama's setting (not overridden)") {
+		t.Fatalf("blank context: %d", a.cfg().Ollama.Context)
+	}
+}
+
+func TestUnloadBeforeRenderToggles(t *testing.T) {
+	a, _ := newSettingsApp(t, readyChecks())
+	a = openSettingsOn(t, a, sectionAdvanced)
+	a = focus(t, a, "Unload the writer before rendering", -1)
+	if !a.cfg().Ollama.UnloadBeforeRender || !strings.Contains(plain(a), "frees the writer model's memory while a song renders") {
+		t.Fatalf("Advanced:\n%s", plain(a))
+	}
+	a = pressSettings(t, a, "enter")
+	if a.cfg().Ollama.UnloadBeforeRender || !strings.Contains(plain(a), "OFF") {
+		t.Fatalf("enter did not turn it off:\n%s", plain(a))
+	}
+	a = pressSettings(t, a, " ")
+	if !a.cfg().Ollama.UnloadBeforeRender {
+		t.Fatal("space did not turn it back on")
 	}
 }
 
@@ -243,12 +314,12 @@ func TestOverlappingModelLoadsKeepTheNewest(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
 	a = openSettingsOn(t, a, sectionWriter)
 	calls := 0
-	a.settings.models.list = func(context.Context, string) ([]string, error) {
+	a.settings.models.list = func(context.Context, string) ([]ollama.ModelInfo, error) {
 		calls++
 		if calls == 1 {
-			return []string{"older:1b"}, nil
+			return []ollama.ModelInfo{{Name: "older:1b"}, {Name: "other:1b"}}, nil
 		}
-		return []string{"newer:1b"}, nil
+		return []ollama.ModelInfo{{Name: "newer:1b"}, {Name: "other:1b"}}, nil
 	}
 	first, second := a.loadModels(), a.loadModels()
 	runCmds(first)
@@ -264,7 +335,7 @@ func TestOverlappingModelLoadsKeepTheNewest(t *testing.T) {
 
 func TestOverlappingServerChecksKeepTheNewest(t *testing.T) {
 	a, srv := newSettingsApp(t, readyChecks())
-	a = openSettingsOn(t, a, sectionEngine)
+	a = openSettingsOn(t, a, sectionServer)
 	first := a.loadServerStatus()
 	runCmds(first)
 	firstMsg, _ := a.events.next()
@@ -274,7 +345,7 @@ func TestOverlappingServerChecksKeepTheNewest(t *testing.T) {
 	secondMsg, _ := a.events.next()
 	a, _ = send(t, a, secondMsg)
 	a, _ = send(t, a, firstMsg)
-	if !strings.Contains(plain(a), "running at") {
+	if !strings.Contains(plain(a), "running  started by songsmith") {
 		t.Fatalf("the older check won:\n%s", plain(a))
 	}
 }
@@ -285,11 +356,13 @@ func TestANewOllamaURLHidesTheOldList(t *testing.T) {
 	if !strings.Contains(plain(a), "zeta:3b") {
 		t.Fatalf("no list:\n%s", plain(a))
 	}
+	a = openSettingsOn(t, a, sectionAdvanced)
 	a = focus(t, a, "Ollama URL", -1)
 	a = pressSettings(t, a, "enter")
 	a = clearEditor(t, a)
 	a = typeIntoSettings(t, a, "http://127.0.0.1:2")
 	a, _ = send(t, a, key("enter"))
+	a, _ = send(t, a, key("2"))
 	if view := plain(a); strings.Contains(view, "zeta:3b") || !strings.Contains(view, "loading installed models…") {
 		t.Fatalf("old list still offered:\n%s", view)
 	}

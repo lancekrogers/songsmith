@@ -217,3 +217,25 @@ func TestValidateInstrumentalNeedsTagsNotLines(t *testing.T) {
 		t.Fatalf("untagged instrumental: %v", err)
 	}
 }
+
+func TestWriteAsksForTheContextAndKeepAliveOnlyWhenSet(t *testing.T) {
+	llm := &fakeLLM{reply: goodReply}
+	if _, err := New(llm, "m").Write(t.Context(), "idea", Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := llm.got.Options["num_ctx"]; ok || llm.got.KeepAlive != nil {
+		t.Fatalf("unset context or keep_alive was sent: %+v", llm.got)
+	}
+	if _, err := New(llm, "m").WithContext(262144).WithKeepAlive("5m").Write(t.Context(), "idea", Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if llm.got.Options["num_ctx"] != 262144 || llm.got.KeepAlive != "5m" {
+		t.Fatalf("configured: %+v", llm.got)
+	}
+	if _, err := New(llm, "m").WithKeepAlive("0").Write(t.Context(), "idea", Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if llm.got.KeepAlive != 0 {
+		t.Fatalf("keep_alive 0 sent as %#v", llm.got.KeepAlive)
+	}
+}

@@ -44,6 +44,8 @@ func newWriter(cfg config.Config, model string) (*writer.Writer, error) {
 	prompt, err := writer.Instructions(cfg.Ollama.InstructionsFile)
 	w := writer.New(ollama.NewClient(cfg.Ollama.URL), cmp.Or(model, cfg.Ollama.Model)).
 		WithTemperature(cfg.Ollama.Temperature).
+		WithContext(cfg.Ollama.Context).
+		WithKeepAlive(cfg.Ollama.KeepAlive).
 		WithInstructions(prompt)
 	return w, err
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/health"
 	"github.com/lancekrogers/songsmith/internal/library"
+	"github.com/lancekrogers/songsmith/internal/ollama"
 	"github.com/lancekrogers/songsmith/internal/queue"
 )
 
@@ -66,12 +67,21 @@ func (f *fakeServer) ObjectInfo(ctx context.Context, class string) (comfy.NodeIn
 }
 
 // fakeModels is an Ollama with names installed; nil names means unreachable.
-func fakeModels(names ...string) func(context.Context, string) ([]string, error) {
-	return func(context.Context, string) ([]string, error) {
-		if names == nil {
+func fakeModels(names ...string) func(context.Context, string) ([]ollama.ModelInfo, error) {
+	infos := make([]ollama.ModelInfo, len(names))
+	for i, n := range names {
+		infos[i] = ollama.ModelInfo{Name: n}
+	}
+	return fakeModelInfos(names == nil, infos...)
+}
+
+// fakeModelInfos is an Ollama with infos installed, or an unreachable one.
+func fakeModelInfos(unreachable bool, infos ...ollama.ModelInfo) func(context.Context, string) ([]ollama.ModelInfo, error) {
+	return func(context.Context, string) ([]ollama.ModelInfo, error) {
+		if unreachable {
 			return nil, errors.New("connection refused")
 		}
-		return names, nil
+		return infos, nil
 	}
 }
 

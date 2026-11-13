@@ -12,6 +12,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/health"
@@ -196,7 +197,7 @@ const vaeKey = "model:vae/minimax_music3_dav.safetensors"
 
 func TestSetupRowStartsItsInstallAndKeepsReportingAcrossScreens(t *testing.T) {
 	a, fake := newInstallApp(t, false)
-	a = focus(t, a, "Model vae", -1)
+	a = focus(t, a, "VAE", -1)
 	if !strings.Contains(plain(a), "enter downloads 0.22 GB") || !strings.Contains(plain(a), "enter install") {
 		t.Fatalf("install row:\n%s", plain(a))
 	}
@@ -240,7 +241,7 @@ func TestSetupRowStartsItsInstallAndKeepsReportingAcrossScreens(t *testing.T) {
 func TestCancelStopsTheJobKeepsItsPartAndIgnoresLateProgress(t *testing.T) {
 	a, fake := newInstallApp(t, false)
 	part := setup.PartPath(a.cfg().ComfyUI.Dir, manifestFile(setup.DirVAE, a.cfg().ComfyUI.VAE))
-	a = focus(t, a, "Model vae", -1)
+	a = focus(t, a, "VAE", -1)
 	a = hit(t, a, "enter")
 	run := fake.next(t)
 	sparseFile(t, part, 1000)
@@ -248,7 +249,7 @@ func TestCancelStopsTheJobKeepsItsPartAndIgnoresLateProgress(t *testing.T) {
 	a = pump(t, a, func(a app) bool { j, _ := a.job(vaeKey); return j.progress.Percent == 10 })
 	seq := a.jobs.running[vaeKey].seq
 
-	a = focus(t, a, "  Cancel", -1)
+	a = focus(t, a, "Cancel", -1)
 	a = hit(t, a, "enter")
 	if run.ctx.Err() == nil {
 		t.Fatal("cancel did not stop the install")
@@ -257,7 +258,7 @@ func TestCancelStopsTheJobKeepsItsPartAndIgnoresLateProgress(t *testing.T) {
 	if j, _ := a.job(vaeKey); !j.stopping || j.progress.Percent != 10 || !strings.Contains(plain(a), "stopping…") {
 		t.Fatalf("late progress shown or not stopping:\n%s", plain(a))
 	}
-	a = focus(t, a, "Model diffusion_models", -1)
+	a = focus(t, a, "Diffusion model", -1)
 	a = pump(t, a, noJob(vaeKey))
 	if _, err := os.Stat(part); err != nil {
 		t.Fatalf("the partial download is gone: %v", err)
@@ -271,7 +272,7 @@ func TestCancelStopsTheJobKeepsItsPartAndIgnoresLateProgress(t *testing.T) {
 		t.Fatal("a finished job's messages changed the state")
 	}
 
-	a = focus(t, a, "Model vae", -1)
+	a = focus(t, a, "VAE", -1)
 	a = hit(t, a, "enter")
 	again := fake.next(t)
 	a, _ = send(t, a, jobProgressMsg{key: vaeKey, seq: seq, progress: setup.Progress{Percent: 77, Total: 100}})
@@ -284,7 +285,7 @@ func TestCancelStopsTheJobKeepsItsPartAndIgnoresLateProgress(t *testing.T) {
 
 func TestQuitCancelsRunningJobs(t *testing.T) {
 	a, fake := newInstallApp(t, false)
-	a = focus(t, a, "Model vae", -1)
+	a = focus(t, a, "VAE", -1)
 	a = hit(t, a, "enter")
 	run := fake.next(t)
 	a, _ = send(t, a, switchScreenMsg(screenLauncher))
@@ -341,7 +342,7 @@ func TestInstallEverythingRunsThePlanInOrderAndStopsAtAFailure(t *testing.T) {
 	if a.jobs.seqn.active() {
 		t.Fatal("the sequence carried on after a failure")
 	}
-	if view := strings.Join(strings.Fields(plain(a)), " "); !strings.Contains(view, "Last try failed: huggingface.co answered HTTP 503 for diffusion_models/minimax_music3_dit_fp16.safetensors, a long │ reason that must not be cut short") {
+	if view := strings.Join(strings.Fields(ansi.Strip(strings.Join(sectionText(a), " "))), " "); !strings.Contains(view, "Last try failed: huggingface.co answered HTTP 503 for diffusion_models/minimax_music3_dit_fp16.safetensors, a long reason that must not be cut short") {
 		t.Fatalf("full error not shown:\n%s", plain(a))
 	}
 }
@@ -351,7 +352,7 @@ func TestCancelEverythingStopsTheRest(t *testing.T) {
 	a = focus(t, a, "Install everything missing", -1)
 	a = hit(t, a, "enter")
 	run := fake.next(t)
-	a = focus(t, a, "  Cancel everything", -1)
+	a = focus(t, a, "Cancel everything", -1)
 	a = hit(t, a, "enter")
 	if run.ctx.Err() == nil {
 		t.Fatal("not cancelled")
@@ -367,7 +368,7 @@ func TestARowSetupCannotInstallShowsWhyAndIgnoresEnter(t *testing.T) {
 	p.Actions[0].Status, p.Actions[0].Detail = setup.StatusUnavailable, reason
 	fake.setPlan(p)
 	a = pump(t, finishHealth(t, a), func(app) bool { return true })
-	a = focus(t, a, "ComfyUI install", -1)
+	a = focus(t, a, "ComfyUI", -1)
 	if row, _, _ := a.focusedSetting(); row.kind != rowInfo || row.run != nil {
 		t.Fatalf("unavailable row is actionable: %+v", row)
 	}
@@ -375,7 +376,7 @@ func TestARowSetupCannotInstallShowsWhyAndIgnoresEnter(t *testing.T) {
 	if !strings.Contains(strings.ReplaceAll(plain(a), "\n", " "), "then run setup again.") || !strings.Contains(plain(a), "Cannot install: git is not installed") {
 		t.Fatalf("reason not shown in full:\n%s", plain(a))
 	}
-	a = focus(t, a, "Model vae", -1)
+	a = focus(t, a, "VAE", -1)
 	a = hit(t, a, "enter")
 	if !strings.Contains(a.settings.message, "cannot be installed here") {
 		t.Fatalf("message %q", a.settings.message)
@@ -385,7 +386,7 @@ func TestARowSetupCannotInstallShowsWhyAndIgnoresEnter(t *testing.T) {
 
 func TestAModelRowInstallsComfyUIFirstWhenItIsMissing(t *testing.T) {
 	a, fake := newInstallApp(t, true)
-	a = focus(t, a, "Model vae", -1)
+	a = focus(t, a, "VAE", -1)
 	a = hit(t, a, "enter")
 	if run := fake.next(t); run.key != "comfyui" {
 		t.Fatalf("started %s", run.key)
@@ -415,7 +416,7 @@ func TestWriterPullSavesOnlyWhenItSucceeds(t *testing.T) {
 			return a
 		}, false, "file does not exist"},
 		{"cancel", func(a app, r *fakeRun) app {
-			a = focus(t, a, "  Cancel", -1)
+			a = focus(t, a, "Cancel", -1)
 			return hit(t, a, "enter")
 		}, false, ""},
 	} {
@@ -469,7 +470,7 @@ func TestChoosingAVariantNotOnDiskDownloadsItAndSavesOnlyOnceVerified(t *testing
 		}
 		run.progress(setup.Progress{Phase: setup.PhaseDownload, Bytes: 1, Total: 4, Percent: 25})
 		a = pump(t, a, func(a app) bool { j, _ := a.job(run.key); return j.progress.Percent == 25 })
-		if !strings.Contains(plain(a), "DiT fp32 · 9.8 GB · downloading 25%") || !strings.Contains(plain(a), "stop DiT fp32") {
+		if !strings.Contains(plain(a), "fp32 · 9.8 GB · downloading 25%") || !strings.Contains(plain(a), "stop DiT fp32") {
 			t.Fatalf("while downloading:\n%s", plain(a))
 		}
 		if ok {
@@ -482,7 +483,7 @@ func TestChoosingAVariantNotOnDiskDownloadsItAndSavesOnlyOnceVerified(t *testing
 		if saved != ok || (a.cfg().ComfyUI.DiffusionModel == fp32.Name) != ok {
 			t.Fatalf("download ok=%v: saves %v", ok, *saves)
 		}
-		if ok && !strings.Contains(plain(a), "✓ DiT fp32 · 9.8 GB · installed") {
+		if ok && !strings.Contains(plain(a), "✓ fp32 · 9.8 GB · installed") {
 			t.Fatalf("after:\n%s", plain(a))
 		}
 	}
@@ -490,7 +491,7 @@ func TestChoosingAVariantNotOnDiskDownloadsItAndSavesOnlyOnceVerified(t *testing
 
 func TestEngineOffersToInstallComfyUIWithItsLog(t *testing.T) {
 	a, fake := newInstallApp(t, true)
-	a = openSettingsOn(t, a, sectionEngine)
+	a = openSettingsOn(t, a, sectionServer)
 	a = focus(t, a, "Install ComfyUI", -1)
 	a = hit(t, a, "enter")
 	run := fake.next(t)
@@ -508,7 +509,7 @@ func TestEngineOffersToInstallComfyUIWithItsLog(t *testing.T) {
 
 func TestTheDownloadNoteKeepsEveryScreenInTheTerminal(t *testing.T) {
 	a, fake := newInstallApp(t, false)
-	a = focus(t, a, "Model vae", -1)
+	a = focus(t, a, "VAE", -1)
 	a = hit(t, a, "enter")
 	run := fake.next(t)
 	for _, h := range []int{10, 24, 40} {
@@ -533,10 +534,10 @@ func TestTheDownloadNoteKeepsEveryScreenInTheTerminal(t *testing.T) {
 
 func TestAModelRowWaitsForAComfyUIInstallThatIsRunning(t *testing.T) {
 	a, fake := newInstallApp(t, true)
-	a = focus(t, a, "ComfyUI install", -1)
+	a = focus(t, a, "ComfyUI", -1)
 	a = hit(t, a, "enter")
 	run := fake.next(t)
-	a = focus(t, a, "Model vae", -1)
+	a = focus(t, a, "VAE", -1)
 	a = hit(t, a, "enter")
 	fake.noneStarted(t)
 	if !strings.Contains(a.settings.message, "ComfyUI is still installing") {

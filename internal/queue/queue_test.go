@@ -3,8 +3,10 @@ package queue
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -476,5 +478,32 @@ func TestEnqueueKeepsTheSeedOfADetachedRenderItResumes(t *testing.T) {
 	q.Render(t.Context(), got)
 	if b.calls[0].ResumeID != "prompt-1" || b.calls[0].Seed != 77 || len(b.abandoned) != 0 {
 		t.Fatalf("resume %q seed %d abandoned %v", b.calls[0].ResumeID, b.calls[0].Seed, b.abandoned)
+	}
+}
+
+func TestBeforeRenderRunsOnceBeforeTheBackendAndCannotStopIt(t *testing.T) {
+	old := beforeRenderTimeout
+	beforeRenderTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { beforeRenderTimeout = old })
+	b := &fakeBackend{}
+	q, store := setup(t, b)
+	var order []string
+	q.BeforeRender(func(ctx context.Context) {
+		b.mu.Lock()
+		order = append(order, fmt.Sprintf("hook after %d renders", len(b.calls)))
+		b.mu.Unlock()
+		<-ctx.Done()
+	})
+	got := q.Render(t.Context(), create(t, store, "Song", library.StatusQueued))
+	if got.Status != library.StatusDone || len(b.calls) != 1 {
+		t.Fatalf("a hook that timed out stopped the render: %+v", got)
+	}
+	q.Render(t.Context(), create(t, store, "Two", library.StatusQueued))
+	if !slices.Equal(order, []string{"hook after 0 renders", "hook after 1 renders"}) {
+		t.Fatalf("hook runs %q", order)
+	}
+	q.Render(t.Context(), got)
+	if len(order) != 2 {
+		t.Fatal("the hook ran for a song that was not claimed")
 	}
 }
