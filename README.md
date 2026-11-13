@@ -82,7 +82,7 @@ songsmith config              # print the effective configuration
 | `n` | New song: type an idea and `enter` drafts it with Ollama, or fill in the fields yourself |
 | `e` | Edit the selected song (editing a finished song makes a copy) |
 | `enter` / `space` | Play or stop the selected finished song |
-| `r` | Queue the selected song (a finished song renders a new take with a new seed; earlier takes stay on disk) |
+| `r` | Queue the selected song. On a finished song it queues a new version, "Title (v2)", with a new seed unless the seed is pinned; the finished song keeps its audio and seed |
 | `v` | Revise or extend the selected song with the writer (a finished song gets a copy with the same seed, pinned) |
 | `s` | Copy the selected song's seed to the clipboard |
 | `x` | Cancel a queued or rendering song |
@@ -146,8 +146,9 @@ state_dir: ~/.local/state/songsmith
 ```
 
 Each song lives in its own folder under `library_dir` with `song.json` (lyrics, style,
-seed, status, timings) and its audio (`song.flac`, then `song-2.flac` and so on for
-later takes). Only one songsmith process renders at a time; another open TUI waits and
+seed, status, timings) and its audio, `song.flac`. Rendering a finished song again makes
+a new song, "Title (v2)", that records which song it came from, so every version keeps
+its own audio, seed and timings. Only one songsmith process renders at a time; another open TUI waits and
 takes over when the first one quits.
 
 ## Development

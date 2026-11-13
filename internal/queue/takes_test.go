@@ -21,8 +21,10 @@ func TestRenderRecordsATakeAndKeepsMasters(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.WriteFile(store.TakePath(song, "song.master-1.flac"), []byte("m"), 0o644)
+	// Queued in place with its audio, as a build before new versions left it;
+	// Enqueue now makes a new version instead.
 	first.Status = library.StatusQueued
-	if _, err := q.Enqueue(first); err != nil {
+	if err := store.Save(first); err != nil {
 		t.Fatal(err)
 	}
 	second := q.Render(t.Context(), first)

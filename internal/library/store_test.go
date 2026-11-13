@@ -132,6 +132,36 @@ func TestNextTake(t *testing.T) {
 	if got := s.NextTake(song); got != "song-3.flac" {
 		t.Fatalf("third take = %s", got)
 	}
+
+	// Audio on disk that song.json does not record is never written over.
+	other, _ := s.Create(Song{Title: "Fetched"})
+	os.WriteFile(filepath.Join(s.Dir(), other.ID, "song.flac"), []byte("a"), 0o644)
+	if got := s.NextTake(other); got != "song-2.flac" {
+		t.Fatalf("take beside unrecorded audio = %s", got)
+	}
+}
+
+func TestNewVersion(t *testing.T) {
+	s := NewStore(t.TempDir())
+	src, _ := s.Create(Song{Title: "Coast Road", Lyrics: "[Verse]\nla", Seconds: 90, Seed: 7, Status: StatusDone, Audio: "song.flac", Duration: 88})
+	v, err := s.NewVersion(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.ID == src.ID || v.Title != "Coast Road (v2)" || v.DerivedFrom != src.ID || v.Status != StatusDraft ||
+		v.Audio != "" || v.Duration != 0 || v.Seed != 0 || v.Lyrics != src.Lyrics || v.Seconds != 90 {
+		t.Fatalf("version: %+v", v)
+	}
+	if stored, _ := s.Load(v.ID); stored.Title != v.Title {
+		t.Fatalf("version not saved: %+v", stored)
+	}
+	if v3, _ := s.NewVersion(v); v3.Title != "Coast Road (v3)" {
+		t.Fatalf("version of a version = %q", v3.Title)
+	}
+	src.Seed, src.SeedPinned = 9, true
+	if pinned, _ := s.NewVersion(src); pinned.Title != "Coast Road (v4)" || !pinned.SeedPinned || pinned.Seed != 9 {
+		t.Fatalf("pinned version: %+v", pinned)
+	}
 }
 
 func TestSongsSavedBeforeSeedPinningLoadUnpinned(t *testing.T) {

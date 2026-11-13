@@ -166,9 +166,11 @@ func (q *Queue) keepTakes(song *library.Song) {
 	}
 }
 
-// Enqueue marks a song queued and wakes the worker. A song that cannot
-// render is refused with its library.Song.CheckRender error. An unpinned
-// seed is drawn afresh unless the song resumes a detached render.
+// Enqueue marks a song queued and wakes the worker, returning the song it
+// queued. A finished song, or one with audio, is left as it is: Enqueue
+// queues a new version of it from library.Store.NewVersion instead. A song
+// that cannot render is refused with its library.Song.CheckRender error. An
+// unpinned seed is drawn afresh unless the song resumes a detached render.
 func (q *Queue) Enqueue(song library.Song) (library.Song, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -178,7 +180,15 @@ func (q *Queue) Enqueue(song library.Song) (library.Song, error) {
 	if err := song.CheckRender(); err != nil {
 		return song, err
 	}
-	if !song.SeedPinned && !q.resumes(song) {
+	resumes := q.resumes(song)
+	if !resumes && (song.Status == library.StatusDone || q.store.HasAudio(song)) {
+		v, err := q.store.NewVersion(song)
+		if err != nil {
+			return song, fmt.Errorf("new version of %s: %w", song.Title, err)
+		}
+		song, resumes = v, false
+	}
+	if !song.SeedPinned && !resumes {
 		song.Seed = newSeed()
 	}
 	q.dropStaleJob(&song, false)

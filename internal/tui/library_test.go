@@ -22,7 +22,7 @@ func TestLibraryFooterListsOnlyKeysForTheSelectedSong(t *testing.T) {
 		{library.StatusFailed, "r render   e edit   v revise / extend   n new song   esc back"},
 		{library.StatusQueued, "x cancel   e edit   v revise / extend   n new song   esc back"},
 		{library.StatusRendering, "x cancel   e edit   v revise / extend   n new song   esc back"},
-		{library.StatusDone, "enter play   r new take   e edit   v revise / extend   n new song   esc back"},
+		{library.StatusDone, "enter play   r new version   e edit   v revise / extend   n new song   esc back"},
 	}
 	for _, c := range cases {
 		t.Run(string(c.status), func(t *testing.T) {
