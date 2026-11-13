@@ -115,18 +115,47 @@ func (s *Store) HasAudio(song Song) bool {
 	return err == nil
 }
 
-// NextTake returns an unused audio file name for a new render, so a
-// re-render never overwrites the take that is already there.
+// NextTake returns an audio file name not yet on disk in the song's folder,
+// so a render never overwrites audio that is already there, recorded in
+// song.json or not.
 func (s *Store) NextTake(song Song) string {
-	if !s.HasAudio(song) {
-		return "song.flac"
-	}
+	name := "song.flac"
 	for n := 2; ; n++ {
-		name := fmt.Sprintf("song-%d.flac", n)
 		if _, err := os.Stat(filepath.Join(s.songDir(song.ID), name)); errors.Is(err, fs.ErrNotExist) {
 			return name
 		}
+		name = fmt.Sprintf("song-%d.flac", n)
 	}
+}
+
+var versionSuffix = regexp.MustCompile(`\s*\(v\d+\)$`)
+
+// NewVersion saves a new draft song with src's words, style and length,
+// derived from src, titled "<title> (vN)" with the first N no song in the
+// library uses. It keeps src's seed only when that seed is pinned.
+func (s *Store) NewVersion(src Song) (Song, error) {
+	songs, err := s.List()
+	if err != nil && len(songs) == 0 {
+		return Song{}, err
+	}
+	taken := make(map[string]bool, len(songs))
+	for _, song := range songs {
+		taken[song.Title] = true
+	}
+	base := versionSuffix.ReplaceAllString(src.Title, "")
+	title := ""
+	for n := 2; title == "" || taken[title]; n++ {
+		title = fmt.Sprintf("%s (v%d)", base, n)
+	}
+	v := Song{
+		Idea: src.Idea, Title: title, Lyrics: src.Lyrics, Caption: src.Caption,
+		Seconds: src.Seconds, Instrumental: src.Instrumental, DerivedFrom: src.ID,
+		Status: StatusDraft,
+	}
+	if src.SeedPinned {
+		v.Seed, v.SeedPinned = src.Seed, true
+	}
+	return s.Create(v)
 }
 
 var slugUnsafe = regexp.MustCompile(`[^a-z0-9]+`)

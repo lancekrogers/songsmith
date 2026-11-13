@@ -231,23 +231,65 @@ func TestShutdownKeepsJobForResume(t *testing.T) {
 	}
 }
 
-func TestRerenderKeepsPreviousTake(t *testing.T) {
+func TestQueueingAFinishedSongMakesANewVersion(t *testing.T) {
+	q, store := setup(t, &fakeBackend{})
+	orig := q.Render(t.Context(), create(t, store, "Song", library.StatusQueued))
+
+	v2, err := q.Enqueue(orig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v2.ID == orig.ID || v2.Title != "Song (v2)" || v2.DerivedFrom != orig.ID || v2.Status != library.StatusQueued || v2.Audio != "" {
+		t.Fatalf("new version: %+v", v2)
+	}
+	if v2.Seed == 0 || v2.Seed == orig.Seed {
+		t.Fatalf("an unpinned new version should draw its own seed: %d (original %d)", v2.Seed, orig.Seed)
+	}
+	if got, _ := store.Load(orig.ID); got.Status != library.StatusDone || got.Audio != "song.flac" || got.Seed != orig.Seed || got.Duration != orig.Duration {
+		t.Fatalf("the original changed: %+v", got)
+	}
+
+	v2 = q.Render(t.Context(), v2)
+	if v2.Status != library.StatusDone || v2.Audio != "song.flac" || !store.HasAudio(v2) || !store.HasAudio(orig) {
+		t.Fatalf("rendered version: %+v", v2)
+	}
+	if v3, _ := q.Enqueue(orig); v3.Title != "Song (v3)" || v3.DerivedFrom != orig.ID {
+		t.Fatalf("second version of the original: %+v", v3)
+	}
+	if v4, _ := q.Enqueue(v2); v4.Title != "Song (v4)" || v4.DerivedFrom != v2.ID {
+		t.Fatalf("version of a version: %+v", v4)
+	}
+}
+
+func TestANewVersionKeepsAPinnedSeed(t *testing.T) {
+	q, store := setup(t, &fakeBackend{})
+	song := create(t, store, "Song", library.StatusQueued)
+	song.Seed, song.SeedPinned = 42, true
+	store.Save(song)
+	orig := q.Render(t.Context(), song)
+	v, _ := q.Enqueue(orig)
+	if v.ID == orig.ID || !v.SeedPinned || v.Seed != 42 {
+		t.Fatalf("new version: %+v", v)
+	}
+}
+
+func TestARenderOfASongWithAudioKeepsThePreviousTake(t *testing.T) {
 	b := &fakeBackend{}
 	q, store := setup(t, b)
 	song := q.Render(t.Context(), create(t, store, "Song", library.StatusQueued))
-	if song.Audio != "song.flac" {
-		t.Fatalf("first take = %q", song.Audio)
-	}
 
+	// A song queued with audio, as a build that re-rendered in place left it.
 	b.err = errors.New("MPS out of memory")
-	song, _ = q.Enqueue(song)
+	song.Status = library.StatusQueued
+	store.Save(song)
 	got := q.Render(t.Context(), song)
 	if got.Status != library.StatusDone || got.Audio != "song.flac" || !strings.Contains(got.Error, "kept the previous take") {
 		t.Fatalf("failed re-render: %+v", got)
 	}
 
 	b.err = nil
-	got, _ = q.Enqueue(got)
+	got.Status = library.StatusQueued
+	store.Save(got)
 	got = q.Render(t.Context(), got)
 	if got.Audio != "song-2.flac" || !store.HasAudio(got) {
 		t.Fatalf("second take = %+v", got)
@@ -257,15 +299,18 @@ func TestRerenderKeepsPreviousTake(t *testing.T) {
 	}
 }
 
-func TestCancelQueuedRerenderStaysDone(t *testing.T) {
+func TestCancelQueuedNewVersionLeavesTheOriginalDone(t *testing.T) {
 	q, store := setup(t, &fakeBackend{})
-	song := q.Render(t.Context(), create(t, store, "Song", library.StatusQueued))
-	song, _ = q.Enqueue(song)
-	if err := q.Cancel(song.ID); err != nil {
+	orig := q.Render(t.Context(), create(t, store, "Song", library.StatusQueued))
+	v, _ := q.Enqueue(orig)
+	if err := q.Cancel(v.ID); err != nil {
 		t.Fatal(err)
 	}
-	if s, _ := store.Load(song.ID); s.Status != library.StatusDone {
-		t.Fatalf("status = %s", s.Status)
+	if s, _ := store.Load(v.ID); s.Status != library.StatusDraft {
+		t.Fatalf("cancelled version status = %s", s.Status)
+	}
+	if s, _ := store.Load(orig.ID); s.Status != library.StatusDone {
+		t.Fatalf("original status = %s", s.Status)
 	}
 }
 

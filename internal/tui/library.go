@@ -140,12 +140,17 @@ func (a app) updateLibrary(msg tea.Msg) (app, tea.Cmd) {
 			a.notice = cantRender(song, err)
 			break
 		}
-		if _, err := a.d.Queue.Enqueue(song); err != nil {
+		queued, err := a.d.Queue.Enqueue(song)
+		switch {
+		case err != nil:
 			a.err = "queue " + song.Title + ": " + err.Error()
-		} else {
+		case queued.ID == song.ID:
 			a.notice = "Queued " + song.Title + "."
-			if song.Status == library.StatusDone && song.SeedPinned {
-				a.notice = fmt.Sprintf("Queued a new take of %s with seed %d; it will be identical unless the lyrics, style or seed change.", song.Title, song.Seed)
+		default:
+			a.library.selectID = queued.ID
+			a.notice = fmt.Sprintf("Queued %s; %s stays as it is.", queued.Title, song.Title)
+			if queued.SeedPinned {
+				a.notice = fmt.Sprintf("Queued %s with seed %d; it will be identical to %s unless the lyrics, style or seed change.", queued.Title, queued.Seed, song.Title)
 			}
 		}
 		return a, a.loadSongs()
@@ -322,7 +327,7 @@ func (a app) libraryKeysFor(scroll bool) []string {
 		}
 		switch song.Status {
 		case library.StatusDone:
-			keys = append(keys, "r new take")
+			keys = append(keys, "r new version")
 			if a.canMaster(song) {
 				keys = append(keys, "m master")
 			}

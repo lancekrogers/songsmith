@@ -368,7 +368,7 @@ func TestTheSeedShowsOnlyWhenPinned(t *testing.T) {
 	}
 }
 
-func TestANewTakeWithAPinnedSeedSaysItRepeats(t *testing.T) {
+func TestRerenderingAFinishedSongQueuesANewVersion(t *testing.T) {
 	m, store := newTestModel(t, fakeDrafter{})
 	s := library.Song{Title: "Same", Lyrics: sampleDraft.Lyrics, Caption: sampleDraft.Caption, Seconds: 60, Seed: 5, SeedPinned: true,
 		Status: library.StatusDone, Audio: "song.flac"}
@@ -378,9 +378,15 @@ func TestANewTakeWithAPinnedSeedSaysItRepeats(t *testing.T) {
 	}
 	m = runCmd(t, m, m.loadSongs())
 	m, cmd := send(t, m, key("r"))
-	runCmd(t, m, cmd)
-	got, _ := store.Load(s.ID)
-	if got.Status != library.StatusQueued || got.Seed != 5 || !strings.Contains(m.notice, "identical unless the lyrics, style or seed change") {
-		t.Fatalf("song %+v notice %q", got, m.notice)
+	m = runCmd(t, m, cmd)
+	if got, _ := store.Load(s.ID); got.Status != library.StatusDone || got.Audio != "song.flac" {
+		t.Fatalf("the finished song changed: %+v", got)
+	}
+	v, ok := m.selected()
+	if !ok || v.ID == s.ID || v.Title != "Same (v2)" || v.DerivedFrom != s.ID || v.Status != library.StatusQueued || v.Seed != 5 {
+		t.Fatalf("selected %+v", v)
+	}
+	if !strings.Contains(m.notice, "Queued Same (v2) with seed 5") || !strings.Contains(m.notice, "identical to Same") {
+		t.Fatalf("notice %q", m.notice)
 	}
 }
