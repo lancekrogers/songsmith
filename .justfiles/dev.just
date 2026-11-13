@@ -39,3 +39,14 @@ demo-editor: build
         SONGSMITH_COLOR_PROFILE=ansi \
         vhs demos/editor.tape
     ls -lh demos/editor.gif
+
+# Record demos/settings.gif: walk Settings and change three values (throwaway config in /tmp, no Ollama or ComfyUI needed)
+demo-settings: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    env -u NO_COLOR -u CLICOLOR \
+        CLICOLOR_FORCE=1 FORCE_COLOR=1 \
+        TERM=xterm-256color COLORTERM=truecolor \
+        SONGSMITH_COLOR_PROFILE=ansi \
+        vhs demos/settings.tape
+    ls -lh demos/settings.gif

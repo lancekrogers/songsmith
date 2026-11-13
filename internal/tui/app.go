@@ -35,6 +35,12 @@ type Deps struct {
 	Checks func(context.Context, config.Config) []health.Check
 	// WorkerNote explains why this process is not rendering, or "" when it is.
 	WorkerNote func() string
+	// Server is the ComfyUI server Settings starts and stops; nil means a
+	// manager for the running config.
+	Server ComfyServer
+	// Variants lists the known files for a music model slot with their
+	// on-disk state; nil means the built-in list.
+	Variants func(cfg config.Config, slot string) []ModelVariant
 }
 
 type screen int
@@ -81,7 +87,7 @@ type app struct {
 	launcher launcherModel
 	library  libraryModel
 	compose  composeModel
-	report   reportModel
+	settings settingsModel
 
 	// notice and err are the latest outcome, shown on the launcher and library.
 	notice, err string
@@ -167,6 +173,9 @@ func (a app) defaultSeconds() float64 {
 func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := a.update(msg)
 	next.launcher = next.launcher.sync(next.launcherState())
+	if next.screen == screenSettings {
+		next.syncSettings()
+	}
 	return next, cmd
 }
 
@@ -239,6 +248,8 @@ func (a app) update(msg tea.Msg) (app, tea.Cmd) {
 		return a.show(screenLibrary)
 	case quitMsg:
 		return a.quit()
+	case settingsAsync:
+		return a.receiveSettings(msg)
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			return a.quit()
@@ -252,22 +263,23 @@ func (a app) update(msg tea.Msg) (app, tea.Cmd) {
 		return a.updateLibrary(msg)
 	case screenCompose:
 		return a.updateCompose(msg)
-	case screenSettings, screenSetup:
-		return a.updateReport(msg)
+	case screenSettings:
+		return a.updateSettings(msg)
 	}
 	return a, nil
 }
 
 // show switches to s, preparing the screen it enters.
 func (a app) show(s screen) (app, tea.Cmd) {
-	a.screen = s
 	switch s {
-	case screenLibrary:
-		a.layoutDetail()
 	case screenSettings:
-		a.report = reportModel{title: "Settings"}
+		return a.openSettings(sectionSetup, true)
 	case screenSetup:
-		a.report = reportModel{title: "Finish setup", setup: true}
+		return a.openSettings(sectionSetup, false)
+	}
+	a.screen = s
+	if s == screenLibrary {
+		a.layoutDetail()
 	}
 	return a, nil
 }
@@ -298,8 +310,8 @@ func (a app) View() string {
 		return a.libraryView()
 	case screenCompose:
 		return a.composeView()
-	case screenSettings, screenSetup:
-		return a.reportView()
+	case screenSettings:
+		return a.settingsView()
 	default:
 		return a.launcher.view(a.launcherState(), a.width, a.height)
 	}

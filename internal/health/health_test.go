@@ -25,7 +25,7 @@ func TestInstallCheck(t *testing.T) {
 	missing := errors.New("missing")
 	ch := installCheck(c, "/x/.venv/bin/python", missing, nil)
 	if ch.Result != Fail || !ch.Blocking || ch.Fix != FixComfyUI || ch.Missing != "ComfyUI" ||
-		!inOrder(ch.Detail, "not installed in /x", "songsmith can install it", "Finish setup", "Settings → ComfyUI → Install folder") {
+		!inOrder(ch.Detail, "not installed in /x", "songsmith can install it", "Finish setup", "Settings → Music engine → Install folder") {
 		t.Fatalf("no main.py: %+v", ch)
 	}
 	if ch := installCheck(c, "/x/.venv/bin/python", nil, missing); ch.Result != Fail || !inOrder(ch.Detail, "no Python environment at /x/.venv/bin/python", "Finish setup", "shell: `uv venv") {

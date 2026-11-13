@@ -34,6 +34,7 @@ func (a *app) runTUI(ctx context.Context) error {
 		Config:     live,
 		Checks:     health.Run,
 		WorkerNote: func() string { return note.Load().(string) },
+		Server:     tui.NewComfyServer(r.server),
 	}
 
 	ctx, cancel := context.WithCancel(ctx)

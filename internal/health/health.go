@@ -143,7 +143,7 @@ func installCheck(c config.ComfyUI, python string, mainErr, pyErr error) Check {
 	case mainErr != nil:
 		ch.Result = Fail
 		ch.Detail = fmt.Sprintf("ComfyUI is not installed in %s. songsmith can install it there: Finish setup. "+
-			"To use a ComfyUI you already have, set Settings → ComfyUI → Install folder (config key comfyui.dir)", c.Dir)
+			"To use a ComfyUI you already have, set Settings → Music engine → Install folder (config key comfyui.dir)", c.Dir)
 	case pyErr != nil:
 		ch.Result = Fail
 		ch.Detail = fmt.Sprintf("no Python environment at %s. songsmith can create it: Finish setup (shell: `uv venv --python 3.12 %s`)",

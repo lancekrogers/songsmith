@@ -108,7 +108,7 @@ func TestLauncherOffersFinishSetupWhileABlockingCheckFails(t *testing.T) {
 	}
 
 	a = nav(t, a, "enter")
-	if a.screen != screenSetup || !strings.Contains(plain(a), "FAIL Model diffusion_models") {
+	if a.screen != screenSettings || a.settings.section != sectionSetup || !strings.Contains(plain(a), "Model diffusion_models  FAIL") {
 		t.Fatalf("Finish setup opened %v:\n%s", a.screen, plain(a))
 	}
 }
@@ -305,31 +305,6 @@ func TestNowRenderingOpensTheLibraryOnThatSong(t *testing.T) {
 	}
 }
 
-func TestReportScreenRerunsChecks(t *testing.T) {
-	a, _ := newLauncherApp(t, readyChecks())
-	a, _ = send(t, a, key("up"), key("down"), key("down"))
-	if selectedLabel(a) != "Settings" {
-		t.Fatalf("selected %q", selectedLabel(a))
-	}
-	a = nav(t, a, "enter")
-	if a.screen != screenSettings || !strings.Contains(plain(a), "r re-run checks   esc back") {
-		t.Fatalf("screen %v:\n%s", a.screen, plain(a))
-	}
-	a, cmd := send(t, a, key("r"))
-	if !a.health.running || cmd == nil || strings.Contains(plain(a), "r re-run") {
-		t.Fatalf("r did not start a run:\n%s", plain(a))
-	}
-	cmd()
-	a, _ = send(t, a, a.events.wait(t.Context())())
-	if a.health.running || !strings.Contains(plain(a), "OK   ComfyUI install") {
-		t.Fatalf("after re-run:\n%s", plain(a))
-	}
-	a = nav(t, a, "esc")
-	if a.screen != screenLauncher {
-		t.Fatalf("esc went to %v", a.screen)
-	}
-}
-
 func TestLauncherCompactLayout(t *testing.T) {
 	a, _ := newLauncherApp(t, missingModelChecks())
 	a, _ = send(t, a, tea.WindowSizeMsg{Width: 60, Height: 10})
@@ -378,25 +353,6 @@ func TestLauncherFitsCommonSizes(t *testing.T) {
 	}
 }
 
-func TestReportScrollsWhenTallerThanTheTerminal(t *testing.T) {
-	a, _ := newLauncherApp(t, nothingInstalled())
-	a, _ = send(t, a, tea.WindowSizeMsg{Width: 80, Height: 14})
-	a = nav(t, a, "enter")
-	view := plain(a)
-	if n := len(strings.Split(view, "\n")); n > 14 {
-		t.Fatalf("%d lines in a 14-line terminal:\n%s", n, view)
-	}
-	if !strings.Contains(view, "↑/↓ scroll   r re-run checks   esc back") || strings.Contains(view, "WARN ffprobe") {
-		t.Fatalf("top of report:\n%s", view)
-	}
-	for range 30 {
-		a, _ = send(t, a, key("down"))
-	}
-	if view := plain(a); !strings.Contains(view, "WARN ffprobe") || !strings.Contains(view, "♪ Finish setup") {
-		t.Fatalf("bottom of report:\n%s", view)
-	}
-}
-
 func TestSecondOpenComposeKeepsTheOpenForm(t *testing.T) {
 	a, _ := newLauncherApp(t, readyChecks())
 	a = nav(t, a, "enter")
@@ -441,8 +397,19 @@ func TestNoticeLeadsWithTheBlockingFailure(t *testing.T) {
 	}
 	a, _ = send(t, a, tea.WindowSizeMsg{Width: 80, Height: 40})
 	a = nav(t, a, "enter")
-	if report := plain(a); !strings.Contains(report, "ComfyUI nodes: missing TextEncodeMiniMaxMusic") {
-		t.Fatalf("Finish setup header hides the blocker:\n%s", report)
+	if a.screen != screenSettings || a.settings.section != sectionSetup {
+		t.Fatalf("Finish setup opened %v", a.screen)
+	}
+	if first := ansi.Strip(a.settingsContent()[0]); !strings.Contains(first, "▲ ComfyUI nodes: missing TextEncodeMiniMaxMusic") {
+		t.Fatalf("Setup does not lead with the blocker: %q\n%s", first, plain(a))
+	}
+}
+
+func TestSetupSaysNothingBlocks(t *testing.T) {
+	a, _ := newLauncherApp(t, readyChecks())
+	a, _ = send(t, a, switchScreenMsg(screenSetup))
+	if first := ansi.Strip(a.settingsContent()[0]); !strings.Contains(first, "✓ Nothing blocks rendering") {
+		t.Fatalf("first Setup line %q", first)
 	}
 }
 

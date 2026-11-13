@@ -98,7 +98,7 @@ func (st launcherState) items() []launcherItem {
 	}
 	items = append(items,
 		launcherItem{actionLibrary, "▤", fmt.Sprintf("Library (%d)", st.songs), "Play, edit and re-render your songs"},
-		launcherItem{actionSettings, "⚙", "Settings", "Setup checks and the config file"},
+		launcherItem{actionSettings, "⚙", "Settings", "Writer, music model, render, engine and folders"},
 	)
 	quitHint := "Exit songsmith"
 	if st.rendering != nil {
