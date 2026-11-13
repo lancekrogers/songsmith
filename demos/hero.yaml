@@ -1,0 +1,12 @@
+# Throwaway settings for demos/tui.tape. Every path is under
+# /tmp/songsmith-demo-hero; ComfyUI and Ollama are demos/setupfake's
+# stand-ins on loopback ports, so the recording never touches a real
+# install, renders nothing and plays nothing.
+library_dir: /tmp/songsmith-demo-hero/library
+state_dir: /tmp/songsmith-demo-hero/state
+comfyui:
+  dir: /tmp/songsmith-demo-hero/ComfyUI
+  port: 18492
+ollama:
+  url: http://127.0.0.1:18491
+  model: songwriter:7b
