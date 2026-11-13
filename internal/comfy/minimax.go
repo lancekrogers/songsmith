@@ -78,9 +78,7 @@ func MiniMaxGraph(p MiniMaxParams) Graph {
 			"latent_image": Link(NodeLatent, 0),
 			"denoise":      1.0,
 		}},
-		NodeDecode: {ClassType: "VAEDecodeAudio", Inputs: map[string]any{
-			"samples": Link(NodeSampler, 0), "vae": Link(NodeVAE, 0),
-		}},
+		NodeDecode: decodeNode(NodeSampler),
 		NodeSave: {ClassType: "SaveAudio", Inputs: map[string]any{
 			"audio": Link(NodeDecode, 0), "filename_prefix": p.FilenamePrefix,
 		}},
@@ -117,9 +115,7 @@ func MiniMaxDecodeGraph(vae, latent, filenamePrefix string) Graph {
 		NodeLoadLatent: {ClassType: "LoadLatent", Inputs: map[string]any{
 			"latent": latent,
 		}},
-		NodeDecode: {ClassType: "VAEDecodeAudio", Inputs: map[string]any{
-			"samples": Link(NodeLoadLatent, 0), "vae": Link(NodeVAE, 0),
-		}},
+		NodeDecode: decodeNode(NodeLoadLatent),
 		NodeSave: {ClassType: "SaveAudio", Inputs: map[string]any{
 			"audio": Link(NodeDecode, 0), "filename_prefix": filenamePrefix,
 		}},
@@ -153,6 +149,16 @@ var RequiredNodes = map[string][]string{
 	"ConditioningZeroOut":           {"conditioning"},
 	"EmptyMiniMaxMusic3LatentAudio": {"seconds", "batch_size"},
 	"KSampler":                      {"model", "seed", "steps", "cfg", "sampler_name", "scheduler", "positive", "negative", "latent_image", "denoise"},
-	"VAEDecodeAudio":                {"samples", "vae"},
+	"VAEDecodeAudioTiled":           {"samples", "vae", "tile_size", "overlap"},
 	"SaveAudio":                     {"audio", "filename_prefix"},
+}
+
+// decodeNode decodes in overlapping tiles. A single full-length decode on
+// Apple's MPS backend corrupts the whole song once the latent passes about
+// 16,150 frames (3:07): a DC offset, fixed tones and no treble. Tiles of this
+// size came out within -66 dB of a CPU decode of the same latent.
+func decodeNode(samples string) Node {
+	return Node{ClassType: "VAEDecodeAudioTiled", Inputs: map[string]any{
+		"samples": Link(samples, 0), "vae": Link(NodeVAE, 0), "tile_size": 512, "overlap": 64,
+	}}
 }
