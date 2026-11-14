@@ -428,3 +428,22 @@ func TestMemoryPrefersADedicatedGPU(t *testing.T) {
 		t.Fatalf("mps memory = %d", s.Memory())
 	}
 }
+
+func TestEveryRenderGraphDecodesInTiles(t *testing.T) {
+	graphs := map[string]Graph{
+		"single prompt": MiniMaxGraph(MiniMaxParams{}),
+		"decode stage":  MiniMaxDecodeGraph("vae.safetensors", "songsmith/latents/x_00001_.latent [output]", "songsmith/x"),
+	}
+	for name, g := range graphs {
+		n := g[NodeDecode]
+		if n.ClassType != "VAEDecodeAudioTiled" {
+			t.Errorf("%s decodes with %s; a full-length decode corrupts songs over about 3:07 on MPS", name, n.ClassType)
+		}
+		if n.Inputs["tile_size"] != 512 || n.Inputs["overlap"] != 64 {
+			t.Errorf("%s tile settings = %v / %v, want 512 / 64", name, n.Inputs["tile_size"], n.Inputs["overlap"])
+		}
+	}
+	if _, ok := MiniMaxSampleGraph(MiniMaxParams{}, "songsmith/latents/x")[NodeDecode]; ok {
+		t.Error("the sampling stage must not decode")
+	}
+}
