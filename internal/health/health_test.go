@@ -334,3 +334,35 @@ func TestInstructionsCheck(t *testing.T) {
 		t.Errorf("good file: %+v", ch)
 	}
 }
+
+func TestLowMemoryCheck(t *testing.T) {
+	const gib = int64(1) << 30
+	small := server.Status{Running: true, Device: "mps", GPUOnly: true, Memory: 32 * gib}
+	cases := []struct {
+		mode config.LowMemoryMode
+		st   server.Status
+		warn bool
+	}{
+		{config.LowMemoryOff, small, true},
+		{config.LowMemoryAuto, small, false},
+		{config.LowMemoryOn, small, false},
+		{config.LowMemoryOff, server.Status{Running: true, Device: "mps", Memory: 128 * gib}, false},
+		{config.LowMemoryOff, server.Status{Running: true, Device: "mps"}, false},
+		{config.LowMemoryOff, server.Status{}, false},
+	}
+	for _, tc := range cases {
+		ch, ok := lowMemoryCheck(tc.mode, tc.st)
+		if ok != tc.warn {
+			t.Errorf("%s %+v: warned %v", tc.mode, tc.st, ok)
+			continue
+		}
+		if ok && (ch.Result != Warn || ch.Blocking || !strings.Contains(ch.Detail, "32 GB") ||
+			!strings.Contains(ch.Detail, "Settings → Render → Low-memory rendering") || !strings.Contains(ch.Detail, "PYTORCH_MPS_HIGH_WATERMARK_RATIO")) {
+			t.Errorf("%+v", ch)
+		}
+	}
+	cuda, _ := lowMemoryCheck(config.LowMemoryOff, server.Status{Running: true, Device: "cuda", Memory: 24 * gib})
+	if strings.Contains(cuda.Detail, "MPS") {
+		t.Errorf("cuda warning mentions MPS: %s", cuda.Detail)
+	}
+}

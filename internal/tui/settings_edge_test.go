@@ -302,7 +302,7 @@ func TestUnloadBeforeRenderToggles(t *testing.T) {
 func TestHomeAndEndGoToTheFirstAndLastActionableLine(t *testing.T) {
 	a, _ := newSettingsApp(t, readyChecks())
 	a = openSettingsOn(t, a, sectionRender)
-	for _, c := range []struct{ key, want string }{{"end", "Default length"}, {"home", "Steps"}, {"G", "Default length"}, {"g", "Steps"}} {
+	for _, c := range []struct{ key, want string }{{"end", "Low-memory rendering"}, {"home", "Steps"}, {"G", "Low-memory rendering"}, {"g", "Steps"}} {
 		a = pressSettings(t, a, c.key)
 		if name, _ := focusedName(a); name != c.want {
 			t.Fatalf("%s: on %q, want %q", c.key, name, c.want)

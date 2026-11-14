@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -337,5 +338,37 @@ func TestLiveConcurrentSetsKeepEveryChange(t *testing.T) {
 	got := live.Get()
 	if got.Ollama.Model != "first" || got.Render.Sampler != "second" {
 		t.Fatalf("running settings lost a change: model %q sampler %q", got.Ollama.Model, got.Render.Sampler)
+	}
+}
+
+func TestLowMemoryTakesOnlyItsModes(t *testing.T) {
+	p := writeConfig(t, commented)
+	if got := Default().Render.LowMemory; got != LowMemoryAuto {
+		t.Fatalf("default = %q", got)
+	}
+	for _, mode := range []any{"on", LowMemoryOff, "auto"} {
+		if err := Set(p, "render.low_memory", mode); err != nil {
+			t.Fatalf("%v: %v", mode, err)
+		}
+		cfg, err := Load(p)
+		if err != nil || string(cfg.Render.LowMemory) != fmt.Sprint(mode) {
+			t.Fatalf("%v: loaded %q, %v", mode, cfg.Render.LowMemory, err)
+		}
+	}
+	before := read(t, p)
+	for _, bad := range []any{"maybe", "ON", true, 1, ""} {
+		if err := Set(p, "render.low_memory", bad); err == nil {
+			t.Errorf("accepted %#v", bad)
+		}
+	}
+	if read(t, p) != before {
+		t.Fatal("a refused value changed the file")
+	}
+	if _, err := Load(writeConfig(t, "render:\n  low_memory: sometimes\n")); err == nil || !strings.Contains(err.Error(), "auto, on or off") {
+		t.Fatalf("load of a bad mode: %v", err)
+	}
+	cfg, err := Load(writeConfig(t, "render:\n  low_memory: on\n"))
+	if err != nil || cfg.Render.LowMemory != LowMemoryOn {
+		t.Fatalf("unquoted on: %q, %v", cfg.Render.LowMemory, err)
 	}
 }

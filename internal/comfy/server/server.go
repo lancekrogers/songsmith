@@ -47,6 +47,8 @@ type Status struct {
 	PID     int
 	GPUOnly bool
 	Device  string
+	// Memory is what the server renders in, in bytes; 0 when it does not say.
+	Memory int64
 	// OtherPort is the port of a server songsmith started that still runs
 	// on a port other than the configured one; Stop stops it.
 	OtherPort int
@@ -64,6 +66,7 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 	}
 	st.Running = true
 	st.GPUOnly = slices.Contains(stats.System.Argv, RequiredFlag)
+	st.Memory = stats.Memory()
 	if len(stats.Devices) > 0 {
 		st.Device = stats.Devices[0].Type
 	}

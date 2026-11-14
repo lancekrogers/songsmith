@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/lancekrogers/songsmith/internal/comfy"
@@ -33,15 +34,21 @@ type ComfyMiniMax struct {
 	// render reads them once when it starts.
 	settings func() config.Config
 	now      func() time.Time
+	// settle is how long a low-memory render waits after asking the server
+	// to free memory before it queues the next prompt.
+	settle time.Duration
 }
 
 func NewComfyMiniMax(client *comfy.Client, starter Starter, settings func() config.Config) *ComfyMiniMax {
-	return &ComfyMiniMax{client: client, starter: starter, settings: settings, now: time.Now}
+	return &ComfyMiniMax{client: client, starter: starter, settings: settings, now: time.Now, settle: time.Second}
 }
 
 func (b *ComfyMiniMax) Name() string { return "minimax-music3 (comfyui)" }
 
 func (b *ComfyMiniMax) Abandon(ctx context.Context, jobID string) error {
+	if job, ok := parseJob(jobID); ok {
+		return b.abandonStaged(ctx, job)
+	}
 	return errors.Join(b.client.Interrupt(ctx, jobID), b.client.DeleteQueued(ctx, jobID))
 }
 
@@ -67,7 +74,7 @@ func (b *ComfyMiniMax) Generate(ctx context.Context, req Request, progress func(
 		}
 	}
 	cfg := b.settings()
-	g := comfy.MiniMaxGraph(comfy.MiniMaxParams{
+	p := comfy.MiniMaxParams{
 		Caption:        req.Caption,
 		Lyrics:         req.Lyrics,
 		Seed:           req.Seed,
@@ -81,50 +88,110 @@ func (b *ComfyMiniMax) Generate(ctx context.Context, req Request, progress func(
 		TextEncoder:    cfg.ComfyUI.TextEncoder,
 		VAE:            cfg.ComfyUI.VAE,
 		FilenamePrefix: "songsmith/" + req.ID,
-	})
+	}
+	clk := &stageClock{now: b.now, timings: map[Stage]time.Duration{}}
 
-	timings := map[Stage]time.Duration{}
-	var cur Stage
-	var since time.Time
-	enter := func(s Stage) {
-		if s == cur {
-			return
+	// The mode is decided once, when the render starts. A resumed render
+	// keeps the mode it started with, unless the server has forgotten it.
+	if job, ok := parseJob(req.ResumeID); ok {
+		return b.staged(ctx, req, p, job, progress, clk)
+	}
+	if req.ResumeID != "" && cfg.Render.LowMemory != config.LowMemoryOff && !b.knows(ctx, req.ResumeID) {
+		req.ResumeID = ""
+	}
+	why := ""
+	if req.ResumeID == "" {
+		var on bool
+		if on, why = b.lowMemory(ctx, cfg.Render.LowMemory); on {
+			return b.staged(ctx, req, p, stagedJob{stage: 1}, progress, clk)
 		}
-		now := b.now()
-		if cur != "" {
-			timings[cur] += now.Sub(since)
-		}
-		cur, since = s, now
 	}
 
-	h, err := b.client.Run(ctx, g, comfy.RunOptions{ResumeID: req.ResumeID, OnQueued: req.OnStarted, OnEvent: func(e comfy.Event) {
-		stage, ok := nodeStage[e.Node]
-		if !ok {
-			return
-		}
-		switch e.Type {
-		case comfy.EventExecuting:
-			enter(stage)
-			progress(Progress{Stage: stage})
-		case comfy.EventProgress:
-			enter(stage)
-			progress(Progress{Stage: stage, Value: e.Value, Max: e.Max})
-		}
+	h, err := b.client.Run(ctx, comfy.MiniMaxGraph(p), comfy.RunOptions{ResumeID: req.ResumeID, OnQueued: req.OnStarted, OnEvent: func(e comfy.Event) {
+		clk.event(e, nodeStage, progress)
 	}})
-	enter(StageSaving)
+	clk.enter(StageSaving)
 	if err != nil {
-		return Result{Timings: timings}, err
+		if comfy.OutOfMemory(err, comfy.NodeDecode) {
+			err = &DecodeOOMError{Err: err, LowMemory: why}
+		}
+		return Result{Timings: clk.timings}, err
 	}
 
 	files := h.AudioFiles()
 	if len(files) == 0 {
-		return Result{Timings: timings}, errors.New("comfyui finished without an audio output")
+		return Result{Timings: clk.timings}, errors.New("comfyui finished without an audio output")
 	}
 	if err := b.download(ctx, files[0], req.OutPath); err != nil {
-		return Result{Timings: timings}, err
+		return Result{Timings: clk.timings}, err
 	}
-	enter("")
-	return Result{AudioPath: req.OutPath, Timings: timings}, nil
+	clk.enter("")
+	return Result{AudioPath: req.OutPath, Timings: clk.timings}, nil
+}
+
+// DecodeOOMError is a one-prompt render that ran out of memory decoding. The
+// sampled song is lost with the prompt, so it is not re-run: a long render
+// would most likely fail the same way.
+type DecodeOOMError struct {
+	Err error
+	// LowMemory is how low-memory rendering was resolved for the render.
+	LowMemory string
+}
+
+func (e *DecodeOOMError) Error() string {
+	msg := strings.TrimRight(e.Err.Error(), ". \n") + ". The song was rendered but ran out of memory while decoding; turn on low-memory rendering " +
+		"(Settings → Render → Low-memory rendering, or render.low_memory: on in the config) and render it again"
+	if e.LowMemory != "" {
+		msg += " (low-memory rendering was " + e.LowMemory + ")"
+	}
+	return msg
+}
+
+func (e *DecodeOOMError) Unwrap() error { return e.Err }
+
+// knows reports whether the server still has promptID, queued or finished.
+// When it cannot tell, it assumes it does.
+func (b *ComfyMiniMax) knows(ctx context.Context, promptID string) bool {
+	if _, ok, err := b.client.History(ctx, promptID); err != nil || ok {
+		return true
+	}
+	known, err := b.client.QueueContains(ctx, promptID)
+	return err != nil || known
+}
+
+// stageClock adds up the time spent in each stage of a render.
+type stageClock struct {
+	now     func() time.Time
+	timings map[Stage]time.Duration
+	cur     Stage
+	since   time.Time
+}
+
+func (c *stageClock) enter(s Stage) {
+	if s == c.cur {
+		return
+	}
+	now := c.now()
+	if c.cur != "" {
+		c.timings[c.cur] += now.Sub(c.since)
+	}
+	c.cur, c.since = s, now
+}
+
+// event moves the clock to the stage of e's node and reports progress.
+func (c *stageClock) event(e comfy.Event, stages map[string]Stage, progress func(Progress)) {
+	stage, ok := stages[e.Node]
+	if !ok {
+		return
+	}
+	switch e.Type {
+	case comfy.EventExecuting:
+		c.enter(stage)
+		progress(Progress{Stage: stage})
+	case comfy.EventProgress:
+		c.enter(stage)
+		progress(Progress{Stage: stage, Value: e.Value, Max: e.Max})
+	}
 }
 
 func (b *ComfyMiniMax) download(ctx context.Context, f comfy.OutputFile, dst string) error {
