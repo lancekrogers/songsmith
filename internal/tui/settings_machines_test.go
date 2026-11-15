@@ -612,3 +612,38 @@ func TestThisComputerAnsweringWithAnErrorIsNotCalledStopped(t *testing.T) {
 		t.Fatalf("what the server answered is not said:\n%s", strings.Join(views, "\n"))
 	}
 }
+
+func TestALongNameAndAddressInTheStatusNoteWrapWhole(t *testing.T) {
+	name := "Basement Workstation Under The Stairs At The Back Of The House Next To The Furnace Room"
+	addr := "http://basement-workstation-under-the-stairs-at-the-back-of-the-house.tailnet-name.ts.net:8188"
+	for _, c := range []struct {
+		failed        bool
+		width, height int
+	}{{false, 80, 30}, {true, 80, 30}, {false, 80, 10}, {true, 60, 24}} {
+		a, _ := newMachinesRig(t, c.width, c.height)
+		a = openSettingsOn(t, a, sectionMachines)
+		msg := "Applies to the next song sent · Added " + name + " at " + addr
+		if c.failed {
+			msg = "Not saved: " + name + " at " + addr + " is also the address of another machine"
+			a.settingsError(msg)
+		} else {
+			a.settingsNote(msg)
+		}
+		view := plain(a)
+		lines := strings.Split(view, "\n")
+		if len(lines) > c.height {
+			t.Errorf("%+v: the view is %d lines:\n%s", c, len(lines), view)
+		}
+		var text strings.Builder
+		for _, l := range lines {
+			if w := ansi.StringWidth(l); w > c.width {
+				t.Errorf("%+v: a line is %d wide: %q", c, w, l)
+			}
+			text.WriteString(strings.TrimSpace(l))
+		}
+		squash := func(s string) string { return strings.Join(strings.Fields(s), "") }
+		if !strings.Contains(squash(text.String()), squash(msg)) {
+			t.Errorf("%+v: the note is not shown whole:\n%s", c, view)
+		}
+	}
+}

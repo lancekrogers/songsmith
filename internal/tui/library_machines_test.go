@@ -354,3 +354,27 @@ func queuedWithNoMachineOn(t *testing.T, width, height int) {
 	}
 	fitsScreen(t, a, width, height, where+" launcher")
 }
+
+func TestCancellingASongOnASilentMachineDoesNotHoldUpTheKeys(t *testing.T) {
+	a, r := newMachinesRig(t, 120, 40)
+	s := renderable("Night Drive")
+	s.Status, s.JobID, s.RenderingOn = library.StatusQueued, "studio-1", studio
+	s, err := r.store.Create(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.servers[studio].SetSilent(true)
+	a = runCmd(t, a, a.loadSongs())
+	a, _ = send(t, a, switchScreenMsg(screenLibrary))
+	a = selectSong(t, a, s.ID)
+	for _, k := range []string{"x", "down", "up"} {
+		start := time.Now()
+		a, _ = send(t, a, key(k))
+		if d := time.Since(start); d > time.Second {
+			t.Fatalf("%s took %s while the machine did not answer", k, d)
+		}
+	}
+	if got, _ := r.store.Load(s.ID); got.JobID != "" || got.Status != library.StatusDraft {
+		t.Fatalf("after cancelling: %+v", got)
+	}
+}

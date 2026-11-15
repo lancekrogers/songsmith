@@ -288,7 +288,9 @@ func (m launcherModel) fullView(st launcherState, width int) string {
 		label := ansi.Truncate(it.glyph+"  "+it.label, menuW-2, "…")
 		if i == cur {
 			b.WriteString(sel.Render(label) + "\n")
-			b.WriteString(hint.Render(ansi.Truncate(it.hint, menuW-4, "…")) + "\n")
+			for _, l := range wrapText(it.hint, menuW-4) {
+				b.WriteString(hint.Render(l) + "\n")
+			}
 		} else {
 			b.WriteString(idle.Render(label) + "\n")
 		}
@@ -450,8 +452,8 @@ func (st launcherState) serverChip() (string, chipTone) {
 }
 
 // queueChip is the Queue chip's value in at most width columns where it
-// can. With one render, the machine name shrinks, then the title and the
-// progress go, before any count is cut.
+// can. With one render, the machine name goes, then the title and the
+// progress, before any count is cut; the Now rendering line says the rest.
 func (st launcherState) queueChip(width int) (string, chipTone) {
 	waiting := ""
 	if st.waiting > 0 {
@@ -471,15 +473,14 @@ func (st launcherState) queueChip(width int) (string, chipTone) {
 		}
 		pct := progressLabel(st.progress)
 		heads := []string{
-			fmt.Sprintf("rendering %q %s", ansi.Truncate(st.rendering.Title, 24, "…"), pct),
+			fmt.Sprintf("rendering %q %s", st.rendering.Title, pct),
 			"1 rendering " + pct,
 			"1 rendering",
 		}
 		if st.where != "" {
 			for _, head := range heads {
-				room := width - ansi.StringWidth(head+" on "+tail)
-				if room >= min(8, ansi.StringWidth(st.where)) {
-					return head + " on " + ansi.Truncate(st.where, room, "…") + tail, toneWarn
+				if v := head + " on " + st.where + tail; ansi.StringWidth(v) <= width {
+					return v, toneWarn
 				}
 			}
 		}

@@ -237,3 +237,36 @@ func TestACopyCarriesNoRenderState(t *testing.T) {
 		t.Errorf("the copy lost the machine it is set to render on: %q", copied.Machine)
 	}
 }
+
+func TestAMachineNameWiderThanTheFormBoxWrapsWhole(t *testing.T) {
+	long := "Basement-Workstation-With-A-Name-Far-Wider-Than-Any-Terminal-Could-Show-In-One-Line-Of-The-Form"
+	spaced := "The Old Studio Computer Under The Stairs At My Mother In Laws House In The Next Town Over"
+	a, r := newMachinesRig(t, 80, 40)
+	ms := append(r.live.Get().Machines,
+		config.Machine{Name: long, URL: "http://127.0.0.1:2", Enabled: true},
+		config.Machine{Name: spaced, URL: "http://127.0.0.1:3", Enabled: true})
+	if err := r.live.Set("machines", ms); err != nil {
+		t.Fatal(err)
+	}
+	a, _ = send(t, a, openComposeMsg{})
+	var boxed strings.Builder
+	for _, l := range strings.Split(plain(a), "\n") {
+		if _, rest, ok := strings.Cut(l, "│"); ok {
+			boxed.WriteString(strings.TrimSuffix(strings.TrimRight(rest, " "), "│"))
+		}
+	}
+	squash := func(s string) string { return strings.Join(strings.Fields(s), "") }
+	for _, name := range []string{long, spaced} {
+		if !strings.Contains(squash(boxed.String()), squash(name)) {
+			t.Errorf("%q is not shown whole:\n%s", name, plain(a))
+		}
+	}
+	for _, l := range strings.Split(plain(a), "\n") {
+		if w := ansi.StringWidth(l); w > 80 {
+			t.Errorf("a line is %d wide: %q", w, l)
+		}
+		if strings.Contains(strings.ReplaceAll(l, "loading installed models…", ""), "…") {
+			t.Errorf("a line was cut: %q", l)
+		}
+	}
+}

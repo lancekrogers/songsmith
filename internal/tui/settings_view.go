@@ -77,6 +77,13 @@ func (a app) settingsChrome() settingsChrome {
 	if a.settingsCompact() {
 		c.bottom = 1
 	}
+	if n := len(a.messageLines(a.settingsWidth())); a.settings.message != "" {
+		if a.settingsCompact() {
+			c.bottom = n
+		} else {
+			c.bottom = max(c.bottom, n+1+a.restartLines())
+		}
+	}
 	if c.lines() >= h {
 		c.rule = false
 	}
@@ -171,7 +178,9 @@ func (a app) settingsView() string {
 	var bottom []string
 	switch {
 	case compact && a.settings.message != "":
-		bottom = []string{a.messageStyle().Render("  " + a.settings.message)}
+		for _, l := range a.messageLines(width) {
+			bottom = append(bottom, a.messageStyle().Render("  "+l))
+		}
 	case compact && a.focusedHelp() != "":
 		// Without room for the status area, say when a change applies here.
 		bottom = []string{dimStyle.Render("  " + a.focusedHelp())}
@@ -210,6 +219,10 @@ func (a app) statusArea(width int) []string {
 	}
 	n := statusLines - len(out)
 	wrapped := strings.Split(lipgloss.NewStyle().Width(max(width-4, 10)).Render(text), "\n")
+	if a.settings.message != "" {
+		wrapped = a.messageLines(width)
+		n = max(n, len(wrapped))
+	}
 	for i := range n {
 		if i >= len(wrapped) {
 			out = append(out, "")
@@ -222,6 +235,19 @@ func (a app) statusArea(width int) []string {
 		out = append(out, "  "+style.Render(line))
 	}
 	return out
+}
+
+// messageLines is the latest message wrapped whole to width.
+func (a app) messageLines(width int) []string {
+	return wrapText(a.settings.message, max(width-4, 10))
+}
+
+// restartLines is the lines the pending-restart note takes above the status.
+func (a app) restartLines() int {
+	if a.settings.restartDir != "" {
+		return 1
+	}
+	return 0
 }
 
 // focusedHelp says when a change applies, then what the line is for.

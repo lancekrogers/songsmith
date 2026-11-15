@@ -91,8 +91,8 @@ func TestTheQueueChipKeepsItsCountsWithOneRenderOnALongNamedMachine(t *testing.T
 		width, height int
 		want          []string
 	}{
-		{80, 30, []string{"Queue 1 rendering", "on Basement", "… · 1 waiting for its machine · 1 queued"}},
-		{120, 40, []string{`Queue rendering "Neon Water" starting on Basement Workstation`, "… · 1 waiting for its machine · 1 queued"}},
+		{80, 30, []string{"Queue 1 rendering starting · 1 waiting for its machine · 1 queued"}},
+		{120, 40, []string{"Queue 1 rendering starting on " + long + " · 1 waiting for its machine · 1 queued"}},
 		{160, 40, []string{`Queue rendering "Neon Water" starting on ` + long + " · 1 waiting for its machine · 1 queued"}},
 	} {
 		a, _ = send(t, a, windowSize(c.width, c.height))
@@ -102,5 +102,52 @@ func TestTheQueueChipKeepsItsCountsWithOneRenderOnALongNamedMachine(t *testing.T
 			}
 		}
 		fitsScreen(t, a, c.width, c.height, fmt.Sprintf("%dx%d", c.width, c.height))
+		for _, l := range strings.Split(plain(a), "\n") {
+			if strings.Contains(l, "Queue") && strings.Contains(l, "…") {
+				t.Errorf("%dx%d: the queue chip was cut: %q", c.width, c.height, l)
+			}
+		}
+	}
+}
+
+func TestLauncherHintsWrapAtEightyColumns(t *testing.T) {
+	long := func(title string) renderNow {
+		s := renderable(title)
+		s.Status = library.StatusRendering
+		return renderNow{song: s}
+	}
+	two := launcherState{checked: true, songs: 2, writerModel: "songwriter:7b", renders: []renderNow{
+		long("The Long Road Back To The Place Where It All Started"),
+		long("A Second Song With A Title That Also Runs On And On"),
+	}}
+	two.rendering = &two.renders[0].song
+	one := launcherState{checked: true, songs: 1, writerModel: "songwriter:7b",
+		renders: []renderNow{long("The Long Road Back To The Place Where It All Started")},
+		where:   "Basement Workstation Under The Stairs At The Back Of The House"}
+	one.rendering = &one.renders[0].song
+
+	for _, c := range []struct {
+		name   string
+		st     launcherState
+		action launcherAction
+		hint   string
+	}{
+		{"two renders", two, actionNowRendering, "The Long Road Back To The Place Where It All Started starting · A Second Song With A Title That Also Runs On And On starting · open them in the library"},
+		{"one render", one, actionNowRendering, "The Long Road Back To The Place Where It All Started · starting on Basement Workstation Under The Stairs At The Back Of The House · open it in the library"},
+		{"quit", two, actionQuit, "Exit songsmith; each machine finishes its song and songsmith collects them next time"},
+	} {
+		m := launcherModel{selected: c.action}
+		view := ansi.Strip(m.fullView(c.st, 80))
+		var text strings.Builder
+		for _, l := range strings.Split(view, "\n") {
+			if w := ansi.StringWidth(l); w > 80 {
+				t.Errorf("%s: a line is %d wide: %q", c.name, w, l)
+			}
+			text.WriteString(l + " ")
+		}
+		squash := func(s string) string { return strings.Join(strings.Fields(s), "") }
+		if !strings.Contains(squash(text.String()), squash(c.hint)) {
+			t.Errorf("%s: the hint is not shown whole:\n%s", c.name, view)
+		}
 	}
 }

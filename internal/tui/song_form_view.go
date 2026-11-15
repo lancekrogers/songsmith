@@ -413,34 +413,46 @@ func (c composeModel) seedHint() string {
 // wrapped to width so every machine stays on screen. A pin to a machine
 // that gets no new songs says so.
 func (a app) machineOptions(names []string, cur int, focused bool, width int) []string {
-	var parts []string
+	var lines []string
+	line, used := "", 0
+	flush := func() {
+		lines = append(lines, line)
+		line, used = "", 0
+	}
 	for i, n := range names {
 		if note := a.machineNote(n); i > 0 && note != "" {
 			n += " (" + note + ")"
 		}
+		lead, leadStyle, nameStyle := "  ", dimStyle, dimStyle
 		switch {
 		case i == cur && focused:
-			parts = append(parts, selectedStyle.Render("✓ "+n))
+			lead, leadStyle, nameStyle = "✓ ", selectedStyle, selectedStyle
 		case i == cur:
-			parts = append(parts, statusStyle.Render("✓ ")+normalStyle.Render(n))
-		default:
-			parts = append(parts, dimStyle.Render("  "+n))
+			lead, leadStyle, nameStyle = "✓ ", statusStyle, normalStyle
 		}
-	}
-	var lines []string
-	line, used := "", 0
-	for _, p := range parts {
-		w := ansi.StringWidth(p)
-		if used > 0 && used+2+w > width {
-			lines = append(lines, line)
-			line, used = "", 0
+		pieces := []string{n}
+		if 2+ansi.StringWidth(n) > width {
+			pieces = wrapText(n, max(width-2, 10))
 		}
-		if used > 0 {
-			line += "  "
-			used += 2
+		for j, p := range pieces {
+			chip := leadStyle.Render(lead) + nameStyle.Render(p)
+			if j > 0 {
+				chip = dimStyle.Render("  ") + nameStyle.Render(p)
+			}
+			w := ansi.StringWidth(chip)
+			if used > 0 && used+2+w > width {
+				flush()
+			}
+			if used > 0 {
+				line += "  "
+				used += 2
+			}
+			line += chip
+			used += w
+			if j < len(pieces)-1 {
+				flush()
+			}
 		}
-		line += p
-		used += w
 	}
 	return append(lines, line)
 }
