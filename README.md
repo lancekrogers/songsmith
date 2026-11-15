@@ -17,6 +17,7 @@
 </p>
 
 <p align="center">
+  <a href="#listen">Listen</a> ·
   <a href="#install">Install</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#the-terminal-ui">Terminal UI</a> ·
@@ -34,6 +35,40 @@
 > [!NOTE]
 > **Early and experimental.** Tested on a Mac Studio (M4 Max). The Linux and NVIDIA
 > path is written but untested. Renders are slow: see [What to expect](#what-to-expect).
+
+## Listen
+
+Songs made with songsmith, on [SoundCloud](https://soundcloud.com/lance-rogers-12):
+
+<table>
+<tr>
+<td align="center" valign="top" width="20%">
+<a href="https://soundcloud.com/lance-rogers-12/best-ai-user-in-the-world"><img src="https://i1.sndcdn.com/artworks-3NsVO5itm8JDiWFX-n83z6A-t200x200.jpg" width="150" alt="Best AI user in the world cover art"></a><br>
+<a href="https://soundcloud.com/lance-rogers-12/best-ai-user-in-the-world"><b>Best AI user in the world</b></a><br>
+<sub>Dubstep</sub>
+</td>
+<td align="center" valign="top" width="20%">
+<a href="https://soundcloud.com/lance-rogers-12/irreplaceable"><img src="https://i1.sndcdn.com/artworks-zw02mJieclkygjxI-ohFbWA-t200x200.jpg" width="150" alt="Irreplaceable cover art"></a><br>
+<a href="https://soundcloud.com/lance-rogers-12/irreplaceable"><b>Irreplaceable</b></a><br>
+<sub>Electro-pop dubstep</sub>
+</td>
+<td align="center" valign="top" width="20%">
+<a href="https://soundcloud.com/lance-rogers-12/ground-stop"><img src="https://i1.sndcdn.com/artworks-JdwEyrdx5ckdw9T1-TisfSQ-t200x200.jpg" width="150" alt="Ground Stop cover art"></a><br>
+<a href="https://soundcloud.com/lance-rogers-12/ground-stop"><b>Ground Stop</b></a><br>
+<sub>Pop punk</sub>
+</td>
+<td align="center" valign="top" width="20%">
+<a href="https://soundcloud.com/lance-rogers-12/leather-jacket-401k"><img src="https://i1.sndcdn.com/artworks-ZUWxYlaSA1Plud9A-gaENgw-t200x200.jpg" width="150" alt="Leather Jacket 401k cover art"></a><br>
+<a href="https://soundcloud.com/lance-rogers-12/leather-jacket-401k"><b>Leather Jacket 401k</b></a><br>
+<sub>Comedy country</sub>
+</td>
+<td align="center" valign="top" width="20%">
+<a href="https://soundcloud.com/lance-rogers-12/honey-trap"><img src="https://i1.sndcdn.com/artworks-yBeZftzk1xQgMrmw-igy31Q-t200x200.jpg" width="150" alt="Honey Trap cover art"></a><br>
+<a href="https://soundcloud.com/lance-rogers-12/honey-trap"><b>Honey Trap</b></a><br>
+<sub>Noir synth-pop</sub>
+</td>
+</tr>
+</table>
 
 ## Why songsmith
 
