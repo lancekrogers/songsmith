@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -28,61 +30,75 @@ type libraryModel struct {
 	selectID string
 	// takes are the takes of each finished song.
 	takes map[string][]library.Take
+
+	// folders are the library's folders; open are those showing what is
+	// in them; rows are the lines of the list, which cursor indexes.
+	folders []string
+	open    map[string]bool
+	rows    []libRow
+	// selectFolder is the folder to select once a reload contains it.
+	selectFolder string
+	// confirm, picker and naming are a delete waiting for y, a folder
+	// being chosen and a folder name being typed.
+	confirm *libConfirm
+	picker  *folderPicker
+	naming  *folderNaming
 }
 
 func newLibrary() libraryModel {
-	return libraryModel{progress: map[string]backend.Progress{}, detail: viewport.New(0, 0)}
+	return libraryModel{progress: map[string]backend.Progress{}, detail: viewport.New(0, 0), open: map[string]bool{}}
 }
 
+// selected is the song on the selected row; a folder row has none.
 func (a app) selected() (library.Song, bool) {
-	l := a.library
-	if l.cursor < 0 || l.cursor >= len(l.songs) {
+	r, ok := a.selectedRow()
+	if !ok || r.isFolder() || r.song >= len(a.library.songs) {
 		return library.Song{}, false
 	}
-	return l.songs[l.cursor], true
+	return a.library.songs[r.song], true
 }
 
 func (a *app) applySongs(msg songsMsg) {
-	keep := a.library.selectID
-	if s, ok := a.selected(); ok && keep == "" {
-		keep = s.ID
-	}
+	keepSong, keepFolder := a.selectedKey()
 	a.library.songs = msg.songs
+	a.library.folders = msg.folders
 	if msg.takes != nil {
 		a.library.takes = msg.takes
 	}
 	if msg.err != nil {
 		a.err = msg.err.Error()
 	}
-	a.library.cursor = min(a.library.cursor, max(0, len(a.library.songs)-1))
-	for i, s := range a.library.songs {
-		if s.ID == keep {
-			a.library.cursor = i
-			if keep == a.library.selectID {
-				a.library.selectID = ""
-			}
-		}
-	}
+	a.rebuildRows(keepSong, keepFolder)
 	a.layoutDetail()
 }
 
 // selectPending moves the cursor to selectID if the list already has it.
 func (a *app) selectPending() {
-	for i, s := range a.library.songs {
-		if s.ID == a.library.selectID {
-			a.library.cursor, a.library.selectID = i, ""
-		}
-	}
+	a.rebuildRows(a.selectedKey())
 }
 
 func (a app) updateLibrary(msg tea.Msg) (app, tea.Cmd) {
+	if a.library.naming != nil {
+		return a.updateNaming(msg)
+	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		var cmd tea.Cmd
 		a.library.detail, cmd = a.library.detail.Update(msg)
 		return a, cmd
 	}
+	switch {
+	case a.library.confirm != nil:
+		return a.answerDelete(key)
+	case a.library.picker != nil:
+		return a.updatePicker(key)
+	}
 	a.notice = ""
+	if folder, ok := a.selectedFolder(); ok {
+		if next, cmd, done := a.updateFolderRow(key, folder); done {
+			return next, cmd
+		}
+	}
 	song, ok := a.selected()
 	switch key.String() {
 	case "esc":
@@ -94,11 +110,23 @@ func (a app) updateLibrary(msg tea.Msg) (app, tea.Cmd) {
 			a.layoutDetail()
 		}
 	case "down", "j":
-		if a.library.cursor < len(a.library.songs)-1 {
+		if a.library.cursor < len(a.library.rows)-1 {
 			a.library.cursor++
 			a.layoutDetail()
 		}
+	case "left", "h":
+		if ok && song.Folder != "" {
+			a.rebuildRows("", song.Folder)
+			a.layoutDetail()
+		}
+	case "f":
+		return a.openPicker(), nil
+	case "d":
+		return a.askDelete(), nil
 	case "n":
+		if ok && song.Folder != "" {
+			return a, func() tea.Msg { return openComposeMsg{song: &library.Song{Folder: song.Folder}} }
+		}
 		return a, func() tea.Msg { return openComposeMsg{} }
 	case "e":
 		if ok {
@@ -313,9 +341,32 @@ func (a app) libraryKeys() []string {
 
 // libraryKeysFor is libraryKeys with the scroll key given.
 func (a app) libraryKeysFor(scroll bool) []string {
+	l := a.library
+	switch {
+	case l.confirm != nil:
+		return []string{"y delete", "any other key keeps it"}
+	case l.picker != nil:
+		return []string{"↑/↓ choose", "enter move here", "esc cancel"}
+	case l.naming != nil && l.naming.rename:
+		return []string{"enter rename", "esc cancel"}
+	case l.naming != nil:
+		return []string{"enter make the folder and move", "esc cancel"}
+	}
 	var keys []string
-	if len(a.library.songs) > 1 {
+	if len(l.rows) > 1 {
 		keys = append(keys, "↑/↓ select")
+	}
+	if folder, ok := a.selectedFolder(); ok {
+		if l.open[folder] {
+			keys = append(keys, "enter close")
+		} else {
+			keys = append(keys, "enter open")
+		}
+		keys = append(keys, "n new song here", "f move", "e rename", "d delete")
+		if parentFolder(folder) != "" {
+			keys = append(keys, "← up")
+		}
+		return append(keys, "esc back")
 	}
 	if song, ok := a.selected(); ok {
 		playing := a.d.Player.Current() == a.d.Store.AudioPath(song)
@@ -349,6 +400,10 @@ func (a app) libraryKeysFor(scroll bool) []string {
 		if hasSeed(song) {
 			keys = append(keys, "s copy seed")
 		}
+		keys = append(keys, "f move", "d delete")
+		if song.Folder != "" {
+			keys = append(keys, "← up")
+		}
 	}
 	keys = append(keys, "n new song")
 	if scroll {
@@ -380,6 +435,15 @@ func (a *app) layoutDetail() {
 const emptyLibrary = "No songs yet. Press n to write one: describe an idea, and the writer drafts lyrics and a style for you to edit and render."
 
 func (a *app) detailText(width int) string {
+	switch {
+	case a.library.picker != nil:
+		return a.pickerText(width)
+	case a.library.naming != nil:
+		return a.namingText(width)
+	}
+	if folder, ok := a.selectedFolder(); ok {
+		return a.folderText(folder, width)
+	}
 	wrap := lipgloss.NewStyle().Width(width)
 	song, ok := a.selected()
 	if !ok {
@@ -530,16 +594,37 @@ func (a app) libraryView() string {
 
 	listW := a.listWidth()
 	var rows []string
-	// Row: "› " + badge(11) + " " + title + " " + length(5) + " " + age(4), inside 2 columns of padding.
-	titleW := max(8, listW-2-2-11-1-1-5-1-4)
-	for i, s := range a.library.songs {
-		title := ansi.Truncate(s.Title, titleW, "…")
-		title += strings.Repeat(" ", max(0, titleW-ansi.StringWidth(title)))
-		length := "    "
-		if s.Duration > 0 {
-			length = fmtDuration(s.Duration)
+	// Row: "› " + indent + badge(11) + " " + title + " " + length(5) + " " + age(4), inside 2 columns of padding.
+	fullW := max(8, listW-2-2-11-1-1-5-1-4)
+	for i, r := range a.library.rows {
+		indent := strings.Repeat("  ", min(r.depth, 6))
+		titleW := max(4, fullW-len(indent))
+		var line string
+		if r.isFolder() {
+			icon := "▸ "
+			if a.library.open[r.folder] {
+				icon = "▾ "
+			}
+			songs := a.songsUnder(r.folder)
+			n := count(len(songs), "song")
+			nStyle := dimStyle
+			if slices.ContainsFunc(songs, songBusy) {
+				nStyle = warningStyle
+			}
+			nameW := titleW + 11 + 1 + 5 + 1 + 4 - 2 - 1 - len(n)
+			name := ansi.Truncate(path.Base(r.folder)+"/", max(4, nameW), "…")
+			name += strings.Repeat(" ", max(0, nameW-ansi.StringWidth(name)))
+			line = indent + labelStyle.Render(icon+name) + " " + nStyle.Render(n)
+		} else {
+			s := a.library.songs[r.song]
+			title := ansi.Truncate(s.Title, titleW, "…")
+			title += strings.Repeat(" ", max(0, titleW-ansi.StringWidth(title)))
+			length := "    "
+			if s.Duration > 0 {
+				length = fmtDuration(s.Duration)
+			}
+			line = indent + fmt.Sprintf("%s %s %5s %4s", statusBadge(s.Status), title, length, age(s.Created))
 		}
-		line := fmt.Sprintf("%s %s %5s %4s", statusBadge(s.Status), title, length, age(s.Created))
 		if i == a.library.cursor {
 			line = selectedStyle.Render("› ") + line
 		} else {

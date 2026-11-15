@@ -102,6 +102,8 @@ type (
 
 	songsMsg struct {
 		songs []library.Song
+		// folders are the library's folders, empty ones included.
+		folders []string
 		// takes are each song's takes, read with the list.
 		takes map[string][]library.Take
 		err   error
@@ -193,13 +195,17 @@ func (a app) loadSongs() tea.Cmd {
 	store := a.d.Store
 	return func() tea.Msg {
 		songs, err := store.List()
+		folders, ferr := store.Folders()
+		if err == nil {
+			err = ferr
+		}
 		takes := make(map[string][]library.Take, len(songs))
 		for _, s := range songs {
 			if s.Status == library.StatusDone || len(s.Takes) > 0 {
 				takes[s.ID] = store.Takes(s)
 			}
 		}
-		return songsMsg{songs: songs, takes: takes, err: err}
+		return songsMsg{songs: songs, folders: folders, takes: takes, err: err}
 	}
 }
 

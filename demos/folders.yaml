@@ -1,0 +1,10 @@
+# Throwaway settings for demos/folders.tape. Every path is under
+# /tmp/songsmith-demo-folders and nothing listens on these ports, so the
+# recording never touches a real library or install.
+library_dir: /tmp/songsmith-demo-folders/library
+state_dir: /tmp/songsmith-demo-folders/state
+comfyui:
+  dir: /tmp/songsmith-demo-folders/ComfyUI
+  port: 18188
+ollama:
+  url: http://127.0.0.1:18434
