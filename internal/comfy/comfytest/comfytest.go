@@ -222,20 +222,26 @@ func (s *Server) objectInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
+	ch := make(chan string, 64)
+	id := r.URL.Query().Get("clientId")
+	s.mu.Lock()
+	s.clients[id] = ch
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.clients, id)
+		s.mu.Unlock()
+	}()
 	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return
 	}
 	defer conn.CloseNow()
-	ch := make(chan string, 64)
-	id := r.URL.Query().Get("clientId")
 	s.mu.Lock()
-	s.clients[id] = ch
 	s.conns[conn] = true
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
-		delete(s.clients, id)
 		delete(s.conns, conn)
 		s.mu.Unlock()
 	}()

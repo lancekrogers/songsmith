@@ -295,7 +295,7 @@ func (a app) update(msg tea.Msg) (app, tea.Cmd) {
 		return a, waitPlayDone(a.d.Player)
 	case tickMsg:
 		a.ticks++
-		if a.d.Queue.Current() != "" {
+		if len(a.d.Queue.Rendering()) > 0 {
 			a.layoutDetail()
 		}
 		// Other processes can change the library; refresh now and then.

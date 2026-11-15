@@ -19,6 +19,8 @@ var (
 	ErrDetach = comfy.ErrDetach
 	// ErrJobLost means the backend no longer knows a resumed job.
 	ErrJobLost = comfy.ErrPromptLost
+	// ErrUnreachable means the server did not answer at all.
+	ErrUnreachable = comfy.ErrUnreachable
 )
 
 // Starter makes sure a ComfyUI server is reachable before a render.

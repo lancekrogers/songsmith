@@ -51,9 +51,16 @@ type Song struct {
 	Backend    string  `json:"backend,omitempty"`
 	// JobID is the backend's ID for an unfinished render, kept so a render
 	// interrupted by a crash can be resumed instead of submitted twice.
-	JobID    string    `json:"job_id,omitempty"`
-	Started  time.Time `json:"started,omitzero"`
-	Finished time.Time `json:"finished,omitzero"`
+	JobID string `json:"job_id,omitempty"`
+	// Machine pins the song to the machine of that name; empty means any.
+	Machine string `json:"machine,omitempty"`
+	// RenderingOn is the added machine that holds JobID; empty means this
+	// computer.
+	RenderingOn string `json:"rendering_on,omitempty"`
+	// LostSince is when the machine holding JobID stopped answering.
+	LostSince time.Time `json:"lost_since,omitzero"`
+	Started   time.Time `json:"started,omitzero"`
+	Finished  time.Time `json:"finished,omitzero"`
 	// Timings holds seconds spent in each render stage.
 	Timings map[string]float64 `json:"timings,omitempty"`
 	// Instrumental songs are drafted without sung lines.
@@ -162,7 +169,7 @@ func (s *Store) NewVersion(src Song) (Song, error) {
 	v := Song{
 		Idea: src.Idea, Title: title, Lyrics: src.Lyrics, Caption: src.Caption,
 		Seconds: src.Seconds, Instrumental: src.Instrumental, DerivedFrom: src.ID,
-		Status: StatusDraft,
+		Machine: src.Machine, Status: StatusDraft,
 	}
 	v.Folder, _ = s.FolderOf(src.ID)
 	if src.SeedPinned {

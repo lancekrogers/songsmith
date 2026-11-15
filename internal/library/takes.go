@@ -38,6 +38,8 @@ type Take struct {
 	Loudness float64 `json:"loudness,omitzero"`
 	// Master is the chain a master was made with.
 	Master *master.Settings `json:"master,omitempty"`
+	// Machine is the added machine a render ran on; empty means this computer.
+	Machine string `json:"machine,omitempty"`
 }
 
 // Label names the take for a list: its kind, and for a master its presets.

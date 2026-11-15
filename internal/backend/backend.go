@@ -16,6 +16,9 @@ const (
 	StageRendering Stage = "rendering audio"
 	StageDecoding  Stage = "decoding"
 	StageSaving    Stage = "saving"
+	// StageWaiting is a render whose machine stopped answering; the song
+	// waits for it to come back.
+	StageWaiting Stage = "waiting for the machine to come back"
 )
 
 // Progress reports where a render is. Value and Max are zero when the stage
