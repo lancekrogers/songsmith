@@ -104,8 +104,7 @@ Rendering is slow. Measured on a Mac Studio (M4 Max, 128 GB):
 | 61 s | about 10 min |
 
 Time grows faster than the song length, so a 3-minute song can take 30 minutes or
-more. Renders longer than about 3:00 have come out with static on the test machine;
-the song form warns when the length or the lyrics point past that.
+more.
 
 ## Requirements
 
