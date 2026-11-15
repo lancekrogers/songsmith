@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -53,8 +54,35 @@ type Server struct {
 // New starts a server whose prompt IDs start with name, so IDs from two
 // servers never collide. It is closed when the test ends.
 func New(t testing.TB, name string) *Server {
-	s := &Server{prefix: name, memory: 64 * GiB, state: map[string]string{}, graphs: map[string]comfy.Graph{},
+	s := newServer(name)
+	s.srv = httptest.NewServer(s.handler())
+	s.URL = s.srv.URL
+	t.Cleanup(s.Close)
+	return s
+}
+
+// Listen starts a server on addr, for stand-ins outside tests such as the
+// demo recordings. Close stops it.
+func Listen(addr, name string) (*Server, error) {
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	s := newServer(name)
+	s.srv = httptest.NewUnstartedServer(s.handler())
+	s.srv.Listener.Close()
+	s.srv.Listener = l
+	s.srv.Start()
+	s.URL = s.srv.URL
+	return s, nil
+}
+
+func newServer(name string) *Server {
+	return &Server{prefix: name, memory: 64 * GiB, state: map[string]string{}, graphs: map[string]comfy.Graph{},
 		clients: map[string]chan string{}, conns: map[*websocket.Conn]bool{}, queued: make(chan string, 64)}
+}
+
+func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /system_stats", s.stats)
 	mux.HandleFunc("GET /object_info/{class}", s.objectInfo)
@@ -65,8 +93,8 @@ func New(t testing.TB, name string) *Server {
 	mux.HandleFunc("POST /queue", s.deleteQueued)
 	mux.HandleFunc("POST /interrupt", s.interrupt)
 	mux.HandleFunc("POST /free", func(http.ResponseWriter, *http.Request) {})
-	mux.HandleFunc("GET /view", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "audio from "+name) })
-	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /view", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "audio from "+s.prefix) })
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if quiet := s.quiet(); quiet != nil {
 			select {
 			case <-quiet:
@@ -80,10 +108,7 @@ func New(t testing.TB, name string) *Server {
 			return
 		}
 		mux.ServeHTTP(w, r)
-	}))
-	s.URL = s.srv.URL
-	t.Cleanup(s.Close)
-	return s
+	})
 }
 
 // Close stops the server for good; its address then refuses connections.
@@ -197,18 +222,29 @@ func (s *Server) Running(id string) bool {
 	return s.state[id] == "running"
 }
 
-// Finish ends a held prompt with an audio output.
-func (s *Server) Finish(id string) {
+// Progress tells every client that prompt id has done value of max sampler steps.
+func (s *Server) Progress(id string, value, max int) {
+	s.broadcast(fmt.Sprintf(`{"type":"progress","data":{"prompt_id":%q,"node":%q,"value":%d,"max":%d}}`, id, comfy.NodeSampler, value, max))
+}
+
+func (s *Server) broadcast(msg string) {
 	s.mu.Lock()
-	s.state[id] = "done"
 	chans := slices.Collect(maps.Values(s.clients))
 	s.mu.Unlock()
 	for _, ch := range chans {
 		select {
-		case ch <- fmt.Sprintf(`{"type":"execution_success","data":{"prompt_id":%q}}`, id):
+		case ch <- msg:
 		default:
 		}
 	}
+}
+
+// Finish ends a held prompt with an audio output.
+func (s *Server) Finish(id string) {
+	s.mu.Lock()
+	s.state[id] = "done"
+	s.mu.Unlock()
+	s.broadcast(fmt.Sprintf(`{"type":"execution_success","data":{"prompt_id":%q}}`, id))
 }
 
 func drop(w http.ResponseWriter) {

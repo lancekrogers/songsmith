@@ -165,6 +165,8 @@ func (a app) formFooter() []string {
 		keys = append(keys, "←/→ change length")
 	case c.focus == rowVocals:
 		keys = append(keys, "←/→ sung or instrumental")
+	case c.focus == rowMachine:
+		keys = append(keys, "←/→ choose where it renders")
 	case c.focus.isText():
 		keys = append(keys, "enter edit")
 		if externalEditorSet() {
@@ -202,12 +204,17 @@ func (a app) formBoxes(avail int) (boxes [][]string, focus int) {
 		lines += len(box)
 	}
 
+	machines, machine, showMachine := a.formMachines()
+	lw := labelWidth
+	if showMachine {
+		lw = len(rowMachine.name())
+	}
 	row := func(r formRow, value string) string {
 		mark, label := "  ", dimStyle
 		if c.focus == r {
 			mark, label = selectedStyle.Render("▸ "), selectedStyle
 		}
-		return mark + label.Render(fmt.Sprintf("%-*s", labelWidth, r.name())) + " " + value
+		return mark + label.Render(fmt.Sprintf("%-*s", lw, r.name())) + " " + value
 	}
 	model := a.cfg().Ollama.Model
 	idea := strings.Split(c.idea.View(), "\n")
@@ -256,7 +263,14 @@ func (a app) formBoxes(avail int) (boxes [][]string, focus int) {
 		row(rowVocals, "‹ "+vocals+" ›"+dimStyle.Render("  "+vocalsHint)),
 		row(rowSeed, c.seed.View()+dimStyle.Render(c.seedHint())),
 	}
-	songFocused := c.focus >= rowTitle && c.focus <= rowSeed
+	if showMachine {
+		opts := a.machineOptions(machines, machine, c.focus == rowMachine, inner-3-lw)
+		song = append(song, row(rowMachine, opts[0]))
+		for _, l := range opts[1:] {
+			song = append(song, strings.Repeat(" ", 3+lw)+l)
+		}
+	}
+	songFocused := c.focus >= rowTitle && c.focus <= rowMachine
 	add(songFocused, formBox(headerStyle.Render("Song"), song, boxW, songFocused))
 
 	// Lyrics get the rows the other boxes leave; 15 is the Style boxes.
@@ -393,4 +407,40 @@ func (c composeModel) seedHint() string {
 		return "  pinned · every render uses it"
 	}
 	return ""
+}
+
+// machineOptions draws the Render on choices in a row, ✓ on the chosen one,
+// wrapped to width so every machine stays on screen. A pin to a machine
+// that gets no new songs says so.
+func (a app) machineOptions(names []string, cur int, focused bool, width int) []string {
+	var parts []string
+	for i, n := range names {
+		if note := a.machineNote(n); i > 0 && note != "" {
+			n += " (" + note + ")"
+		}
+		switch {
+		case i == cur && focused:
+			parts = append(parts, selectedStyle.Render("✓ "+n))
+		case i == cur:
+			parts = append(parts, statusStyle.Render("✓ ")+normalStyle.Render(n))
+		default:
+			parts = append(parts, dimStyle.Render("  "+n))
+		}
+	}
+	var lines []string
+	line, used := "", 0
+	for _, p := range parts {
+		w := ansi.StringWidth(p)
+		if used > 0 && used+2+w > width {
+			lines = append(lines, line)
+			line, used = "", 0
+		}
+		if used > 0 {
+			line += "  "
+			used += 2
+		}
+		line += p
+		used += w
+	}
+	return append(lines, line)
 }

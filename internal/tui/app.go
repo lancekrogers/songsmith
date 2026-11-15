@@ -10,7 +10,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/lancekrogers/songsmith/internal/backend"
 	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/health"
 	"github.com/lancekrogers/songsmith/internal/library"
@@ -447,14 +446,4 @@ func (a app) screenView() string {
 	default:
 		return a.launcher.view(a.launcherState(), a.width, a.height)
 	}
-}
-
-// renderingSong is the song being rendered here or in another process.
-func (a app) renderingSong() (library.Song, backend.Progress, bool) {
-	for _, s := range a.library.songs {
-		if s.Status == library.StatusRendering {
-			return s, a.library.progress[s.ID], true
-		}
-	}
-	return library.Song{}, backend.Progress{}, false
 }

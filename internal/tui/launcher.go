@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/lancekrogers/songsmith/internal/backend"
+	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/health"
 	"github.com/lancekrogers/songsmith/internal/library"
 	"github.com/lancekrogers/songsmith/internal/setup"
@@ -26,6 +28,12 @@ const (
 	actionSettings
 	actionQuit
 )
+
+// renderNow is a song in flight and how far it has got.
+type renderNow struct {
+	song     library.Song
+	progress backend.Progress
+}
 
 type launcherItem struct {
 	action launcherAction
@@ -48,6 +56,12 @@ type launcherState struct {
 	queued    int
 	rendering *library.Song
 	progress  backend.Progress
+	// renders are every song in flight, rendering's first; waiting counts
+	// songs whose machine stopped answering. where names a single render's
+	// machine once machines are added.
+	renders []renderNow
+	waiting int
+	where   string
 
 	writerModel string
 	workerNote  string
@@ -82,12 +96,22 @@ func (a app) launcherState() launcherState {
 		st.after = a.afterRestart()
 	}
 	for _, s := range a.library.songs {
-		if s.Status == library.StatusQueued {
+		_, lost := lostMachine(s)
+		switch {
+		case lost:
+			st.waiting++
+		case s.Status == library.StatusQueued:
 			st.queued++
+		case s.Status == library.StatusRendering:
+			st.renders = append(st.renders, renderNow{song: s, progress: a.library.progress[s.ID]})
 		}
 	}
-	if s, p, ok := a.renderingSong(); ok {
-		st.rendering, st.progress = &s, p
+	if len(st.renders) > 0 {
+		r := st.renders[0]
+		st.rendering, st.progress = &r.song, r.progress
+		if a.machinesInUse(r.song) {
+			st.where = cmp.Or(r.song.RenderingOn, config.ThisComputer)
+		}
 	}
 	if a.d.WorkerNote != nil {
 		st.workerNote = a.d.WorkerNote()
@@ -129,16 +153,30 @@ func (st launcherState) items() []launcherItem {
 		newHint = "Write lyrics and a style yourself; the writer model is unavailable"
 	}
 	items = append(items, launcherItem{actionNew, "✦", "New song", newHint})
-	if st.rendering != nil {
-		items = append(items, launcherItem{actionNowRendering, "◐", "Now rendering",
-			fmt.Sprintf("%s · %s · open it in the library", st.rendering.Title, progressLabel(st.progress))})
+	switch {
+	case len(st.renders) > 1:
+		var each []string
+		for _, r := range st.renders {
+			each = append(each, r.song.Title+" "+progressLabel(r.progress))
+		}
+		items = append(items, launcherItem{actionNowRendering, "◐", fmt.Sprintf("Now rendering (%d)", len(st.renders)),
+			strings.Join(each, " · ") + " · open them in the library"})
+	case st.rendering != nil:
+		hint := fmt.Sprintf("%s · %s · open it in the library", st.rendering.Title, progressLabel(st.progress))
+		if st.where != "" {
+			hint = fmt.Sprintf("%s · %s on %s · open it in the library", st.rendering.Title, progressLabel(st.progress), st.where)
+		}
+		items = append(items, launcherItem{actionNowRendering, "◐", "Now rendering", hint})
 	}
 	items = append(items,
 		launcherItem{actionLibrary, "▤", fmt.Sprintf("Library (%d)", st.songs), "Play, edit and re-render your songs"},
 		launcherItem{actionSettings, "⚙", "Settings", "Writer model, render quality, server, folders…"},
 	)
 	quitHint := "Exit songsmith"
-	if st.rendering != nil {
+	switch {
+	case len(st.renders) > 1:
+		quitHint = "Exit songsmith; each machine finishes its song and songsmith collects them next time"
+	case st.rendering != nil:
 		quitHint = "Exit songsmith; ComfyUI finishes the current song and songsmith collects it next time"
 	}
 	return append(items, launcherItem{actionQuit, "✕", "Quit", quitHint})
@@ -409,9 +447,29 @@ func (st launcherState) serverChip() (string, chipTone) {
 }
 
 func (st launcherState) queueChip() (string, chipTone) {
+	waiting := ""
+	if st.waiting > 0 {
+		waiting = fmt.Sprintf(" · %d waiting for %s", st.waiting, plural(st.waiting, "its machine", "their machines"))
+	}
 	switch {
+	case len(st.renders) > 1:
+		v := fmt.Sprintf("%d rendering", len(st.renders)) + waiting
+		if st.queued > 0 {
+			v += fmt.Sprintf(" · %d queued", st.queued)
+		}
+		return v, toneWarn
 	case st.rendering != nil:
 		v := fmt.Sprintf("rendering %q %s", ansi.Truncate(st.rendering.Title, 24, "…"), progressLabel(st.progress))
+		if st.where != "" {
+			v += " on " + st.where
+		}
+		v += waiting
+		if st.queued > 0 {
+			v += fmt.Sprintf(" · %d queued", st.queued)
+		}
+		return v, toneWarn
+	case st.waiting > 0:
+		v := strings.TrimPrefix(waiting, " · ")
 		if st.queued > 0 {
 			v += fmt.Sprintf(" · %d queued", st.queued)
 		}

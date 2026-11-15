@@ -244,7 +244,11 @@ func (a *app) takeLine(song library.Song) string {
 	if i == 0 {
 		return ""
 	}
-	return labelStyle.Render(fmt.Sprintf("take %d of %d", i, len(takes))) + dimStyle.Render(" · "+takes[i-1].Label())
+	label := takes[i-1].Label()
+	if where := takeWhere(takes, takes[i-1], len(a.cfg().Machines) > 0); where != "" {
+		label += " " + where
+	}
+	return labelStyle.Render(fmt.Sprintf("take %d of %d", i, len(takes))) + dimStyle.Render(" · "+label)
 }
 
 // cycleTake makes the next take of a finished song the one the library
@@ -459,7 +463,15 @@ func (a *app) detailText(width int) string {
 	if song.DerivedFrom != "" {
 		b.WriteString(wrap.Render(dimStyle.Render("from "+a.songTitle(song.DerivedFrom))) + "\n")
 	}
-	if song.Status == library.StatusRendering {
+	_, lost := lostMachine(song)
+	if where := a.whereText(song); where != "" {
+		style := dimStyle
+		if song.Status == library.StatusRendering || lost {
+			style = warningStyle
+		}
+		b.WriteString(wrap.Render(style.Render(where)) + "\n")
+	}
+	if song.Status == library.StatusRendering && !lost {
 		b.WriteString(renderProgress(a.library.progress[song.ID], song.Started, max(10, width-2)) + "\n")
 	}
 	if j, ok := a.mastering.running[song.ID]; ok {
@@ -594,6 +606,9 @@ func (a app) libraryView() string {
 
 	listW := a.listWidth()
 	var rows []string
+	// first is each list row's first line; a busy song adds lines under
+	// its title saying where it renders.
+	var first []int
 	// Row: "› " + indent + badge(11) + " " + title + " " + length(5) + " " + age(4), inside 2 columns of padding.
 	fullW := max(8, listW-2-2-11-1-1-5-1-4)
 	for i, r := range a.library.rows {
@@ -630,14 +645,38 @@ func (a app) libraryView() string {
 		} else {
 			line = "  " + line
 		}
+		first = append(first, len(rows))
 		rows = append(rows, line)
+		if !r.isFolder() {
+			if where := a.whereLine(a.library.songs[r.song]); where != "" {
+				pad := "  " + indent + strings.Repeat(" ", 12)
+				for j, l := range wrapText("↳ "+where, listW-2-ansi.StringWidth(pad)) {
+					if j > 0 {
+						l = "  " + l
+					}
+					rows = append(rows, pad+warningStyle.Render(l))
+				}
+			}
+		}
 	}
 	if len(rows) == 0 {
 		rows = append(rows, dimStyle.Render("  (empty)"))
 	}
 	bodyH := a.bodyHeight()
-	start := max(0, min(a.library.cursor-bodyH/2, len(rows)-(bodyH-2)))
-	visible := rows[start:min(len(rows), start+bodyH-2)]
+	n := bodyH - 2
+	top, bottom := 0, 0
+	if c := a.library.cursor; c < len(first) {
+		top, bottom = first[c], len(rows)-1
+		if c+1 < len(first) {
+			bottom = first[c+1] - 1
+		}
+	}
+	start := max(0, min(top-n/2, len(rows)-n))
+	if bottom >= start+n {
+		start = bottom - n + 1
+	}
+	start = max(0, min(start, top))
+	visible := rows[start:min(len(rows), start+n)]
 	list := paneStyle.Width(listW).Height(bodyH - 2).Render(strings.Join(visible, "\n"))
 	detail := focusPane.Width(a.detailPaneWidth()).Height(bodyH - 2).Render(a.library.detail.View())
 	body := lipgloss.JoinHorizontal(lipgloss.Top, list, detail)
