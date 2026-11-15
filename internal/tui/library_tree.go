@@ -377,6 +377,10 @@ func (a app) openPicker() app {
 		return a
 	}
 	p.cursor = max(1, slices.Index(p.choices, p.current))
+	if len(p.choices) == 2 {
+		// No folders yet: making one is the only move there is.
+		p.cursor = 0
+	}
 	a.library.picker = p
 	a.layoutDetail()
 	return a

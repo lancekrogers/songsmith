@@ -183,7 +183,7 @@ songsmith
 | `t` | Switch to the song's next take |
 | `s` | Copy the selected song's seed |
 | `x` | Cancel a queued or rendering song |
-| `f` | Move the selected song or folder into a folder, or into a new one |
+| `f` | Move the selected song or folder into a folder. Folders are made here: pick `+ New folder…` and type a name (`Albums/Demos` nests) |
 | `d` | Delete the selected song with all its takes, or a folder with every song in it. It asks first: `y` deletes, any other key keeps it. Queued, rendering and mastering songs can't be deleted |
 | `enter` / `→` / `←` | On a folder: open or close it. `←` on a song goes up to its folder |
 | `q` | Quit. ComfyUI keeps rendering, and songsmith picks up the result next time |

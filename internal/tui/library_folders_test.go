@@ -64,7 +64,9 @@ func TestMovingSongsIntoANewFolderAndThenAnExistingOne(t *testing.T) {
 	if a.library.picker == nil || !strings.Contains(plain(a), "Move Stolen Future to") || !strings.Contains(plain(a), "+ New folder…") {
 		t.Fatalf("no picker:\n%s", plain(a))
 	}
-	a = libKey(t, a, "up")
+	if c := a.library.picker.choices[a.library.picker.cursor]; c != newFolderChoice {
+		t.Fatalf("with no folders yet the picker starts on %q, not + New folder…", c)
+	}
 	a, _ = send(t, a, key("enter"))
 	if a.library.naming == nil {
 		t.Fatalf("enter on new folder did not ask for a name:\n%s", plain(a))
@@ -204,7 +206,6 @@ func TestDeletingAndMovingStopsPlaybackOfThatSong(t *testing.T) {
 		t.Fatal("not playing")
 	}
 	a = libKey(t, a, "f")
-	a = libKey(t, a, "up")
 	a, _ = send(t, a, key("enter"), key("Live"))
 	a = libKey(t, a, "enter")
 	if player.Current() != "" {

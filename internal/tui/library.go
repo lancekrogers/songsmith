@@ -400,7 +400,7 @@ func (a app) libraryKeysFor(scroll bool) []string {
 		if hasSeed(song) {
 			keys = append(keys, "s copy seed")
 		}
-		keys = append(keys, "f move", "d delete")
+		keys = append(keys, "f move to folder", "d delete")
 		if song.Folder != "" {
 			keys = append(keys, "← up")
 		}
