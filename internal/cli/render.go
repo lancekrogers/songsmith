@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -46,12 +47,18 @@ func newRenderer(live *config.Live) *renderer {
 func machineList(cfg config.Config, local backend.Backend, remotes *remoteBackends) []queue.Machine {
 	out := []queue.Machine{{Name: config.ThisComputer, Backend: local, Enabled: cfg.Local.Enabled, Local: true}}
 	for _, mc := range cfg.Machines {
-		url := mc.URL
+		url, models := mc.URL, mc.Models(cfg.ComfyUI)
 		out = append(out, queue.Machine{
 			Name:    mc.Name,
 			Backend: remotes.backend(mc.Name, url),
 			Enabled: mc.Enabled,
 			Ping:    func(ctx context.Context) error { return machines.Ping(ctx, url) },
+			Ready: func(ctx context.Context) error {
+				if st := machines.Check(ctx, url, models); st.State != machines.Ready {
+					return errors.New(st.Detail)
+				}
+				return nil
+			},
 		})
 	}
 	return out

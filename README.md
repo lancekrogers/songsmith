@@ -333,10 +333,12 @@ How songs are shared out:
   gets measured.
 - `generate --machine <name>` pins a song to one machine (`"This computer"` is this
   one). A pinned song waits for its machine and never goes anywhere else.
-- A machine that does not answer when a song is about to go to it is skipped, and
-  tried again a little later.
-- If a machine stops answering mid-render, its song stays rendering and songsmith picks
-  the render up again when the machine is back. After `reclaim_after` (10 minutes by
+- Before a new song goes to another computer, songsmith checks that machine answers
+  and has the MiniMax Music 3 nodes and model files. A machine that fails the check is
+  skipped and checked again a little later, so it never fails songs it cannot render.
+- If a machine stops answering mid-render, whether it closes the connection or goes
+  quiet as a sleeping computer does, songsmith notices within about half a minute. The
+  song stays rendering and songsmith picks the render up again when the machine is back. After `reclaim_after` (10 minutes by
   default) the song is queued again; a pinned one goes back to waiting for its machine.
 - Quitting songsmith leaves every render running on its machine, and the next start
   picks each one up. A song whose machine was removed in the meantime is queued again.

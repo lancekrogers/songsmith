@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"os"
 	"slices"
 	"strings"
@@ -67,6 +68,7 @@ func (r *rig) queue() *Queue {
 	q.poll = 20 * time.Millisecond
 	q.offlineMin, q.offlineMax = 100*time.Millisecond, 200*time.Millisecond
 	q.lostMin, q.lostMax = 20*time.Millisecond, 50*time.Millisecond
+	q.liveEvery = 20 * time.Millisecond
 	q.SetSpeeds(r.speeds)
 	q.ReclaimAfter(func() time.Duration { return r.config().ReclaimAfter })
 	remote := map[string]backend.Backend{}
@@ -77,9 +79,21 @@ func (r *rig) queue() *Queue {
 			if remote[mc.Name] == nil {
 				remote[mc.Name] = machines.Backend(mc.Name, mc.URL, r.config)
 			}
-			url := mc.URL
+			url, models := mc.URL, mc.Models(cfg.ComfyUI)
 			ms = append(ms, Machine{Name: mc.Name, Backend: remote[mc.Name], Enabled: mc.Enabled,
-				Ping: func(ctx context.Context) error { return machines.Ping(ctx, url) }})
+				Ping: func(ctx context.Context) error {
+					ctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+					defer cancel()
+					return machines.Ping(ctx, url)
+				},
+				Ready: func(ctx context.Context) error {
+					ctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+					defer cancel()
+					if st := machines.Check(ctx, url, models); st.State != machines.Ready {
+						return errors.New(st.Detail)
+					}
+					return nil
+				}})
 		}
 		return ms
 	})
@@ -566,7 +580,7 @@ func TestRenderNamesWhyNoMachineCanTakeASong(t *testing.T) {
 	r.remotes[mbp].SetDown(true)
 	q := r.queue()
 	got := q.Render(t.Context(), r.song("Song", mbp))
-	if got.Status != library.StatusQueued || !strings.Contains(got.Error, mbp+" is not answering") {
+	if got.Status != library.StatusQueued || !strings.Contains(got.Error, mbp+" cannot take it: not answering at") {
 		t.Fatalf("render on an offline machine: %+v", got)
 	}
 	got = q.Render(t.Context(), r.song("Elsewhere", "Nowhere"))
@@ -583,5 +597,105 @@ func TestRenderOnThisComputerAloneIsUnchanged(t *testing.T) {
 	got := q.Render(t.Context(), create(t, store, "Song", library.StatusQueued))
 	if got.RenderingOn != "" || got.Takes[0].Machine != "" || calls.Load() != 1 {
 		t.Fatalf("song %+v, hook %d", got, calls.Load())
+	}
+}
+
+func TestAMachineThatAnswersButCannotRenderGetsNoNewSongs(t *testing.T) {
+	r := newRig(t, mbp)
+	models := config.Default().ComfyUI
+	r.remotes[mbp].SetModels(models.DiffusionModel, models.TextEncoder)
+	r.speeds.Record(mbp, time.Second, 60)
+	r.speeds.Record(config.ThisComputer, time.Hour, 60)
+	q := r.queue()
+	var songs []library.Song
+	for _, title := range []string{"One", "Two", "Three"} {
+		songs = append(songs, r.song(title, ""))
+	}
+	r.run(q)
+	eventually(t, "every song is done", func() bool {
+		for _, s := range songs {
+			if r.load(s.ID).Status != library.StatusDone {
+				return false
+			}
+		}
+		return true
+	})
+	for _, s := range songs {
+		if got := takeMachines(r.load(s.ID)); !slices.Equal(got, []string{"song.flac@"}) {
+			t.Fatalf("%s: takes %v", s.Title, got)
+		}
+	}
+	if got := r.remotes[mbp].Prompts(); len(got) != 0 {
+		t.Fatalf("a machine without the model files was sent %v", got)
+	}
+}
+
+func TestAMachineThatGoesSilentMidRenderIsWaitedForAndReattached(t *testing.T) {
+	r := newRig(t, mbp)
+	srv := r.remotes[mbp]
+	srv.SetHold(true)
+	r.change(func(c *config.Config) { c.Local.Enabled = false })
+	song := r.song("Song", "")
+	r.run(r.queue())
+	id := queued(t, srv)
+	r.job(song.ID)
+
+	srv.SetSilent(true)
+	eventually(t, "the song waits for its silent machine", func() bool { return !r.load(song.ID).LostSince.IsZero() })
+	if s := r.load(song.ID); s.Status != library.StatusRendering || s.JobID != id {
+		t.Fatalf("while silent: %+v", s)
+	}
+	if slices.Contains(srv.Stopped(), id) {
+		t.Fatal("going silent stopped the render")
+	}
+	srv.Finish(id)
+	srv.SetSilent(false)
+	eventually(t, "the song is done", func() bool { return r.load(song.ID).Status == library.StatusDone })
+	if got := srv.Prompts(); len(got) != 1 {
+		t.Fatalf("the render was sent again instead of reattached: %v", got)
+	}
+}
+
+func TestASongWhoseMachineStaysSilentIsQueuedAgain(t *testing.T) {
+	r := newRig(t, mbp)
+	srv := r.remotes[mbp]
+	srv.SetHold(true)
+	r.change(func(c *config.Config) { c.Local.Enabled = false; c.ReclaimAfter = 200 * time.Millisecond })
+	song := r.song("Song", "")
+	r.run(r.queue())
+	queued(t, srv)
+	r.job(song.ID)
+	srv.SetSilent(true)
+	eventually(t, "the song is queued again", func() bool {
+		s := r.load(song.ID)
+		return s.Status == library.StatusQueued && s.JobID == ""
+	})
+	if s := r.load(song.ID); !strings.Contains(s.Error, mbp+" did not answer for 200ms") {
+		t.Fatalf("reclaimed: %+v", s)
+	}
+}
+
+func TestAnEditFromAStaleCopyKeepsWhereTheRenderIs(t *testing.T) {
+	r := newRig(t, mbp)
+	q := r.queue()
+	song := r.song("Song", "")
+	stale := song
+	song.JobID, song.RenderingOn = "MacBookPro-3", mbp
+	if err := r.store.Save(song); err != nil {
+		t.Fatal(err)
+	}
+	stale.JobID = "MacBookPro-3"
+	stale.Title = "Renamed"
+	if err := q.SaveEdit(stale); err != nil {
+		t.Fatal(err)
+	}
+	if s := r.load(song.ID); s.JobID != "MacBookPro-3" || s.RenderingOn != mbp || s.Title != "Renamed" {
+		t.Fatalf("after an edit from a copy without rendering_on: %+v", s)
+	}
+	stale.RenderingOn = "Somewhere else"
+	stale.Status = library.StatusDraft
+	got, err := q.Enqueue(stale)
+	if err != nil || got.RenderingOn != mbp || got.JobID != "MacBookPro-3" {
+		t.Fatalf("enqueue from a copy naming another machine: %v %+v", err, got)
 	}
 }

@@ -44,6 +44,9 @@ type Queue struct {
 	// often a machine lost mid-render is checked for.
 	offlineMin, offlineMax time.Duration
 	lostMin, lostMax       time.Duration
+	// liveEvery is how often a machine on another computer is pinged while
+	// it renders.
+	liveEvery time.Duration
 
 	// mu guards renders and offline, and serializes the status changes that
 	// race with a render being claimed: claim, cancel, enqueue and edit saves.
@@ -83,6 +86,7 @@ func New(store *library.Store, b backend.Backend) *Queue {
 		offlineMax: 5 * time.Minute,
 		lostMin:    5 * time.Second,
 		lostMax:    30 * time.Second,
+		liveEvery:  15 * time.Second,
 		renders:    map[string]*render{},
 		offline:    map[string]backoff{},
 		orphans:    map[string][]string{},
@@ -185,7 +189,11 @@ func (q *Queue) dropStaleJob(song *library.Song, force bool) {
 		return
 	}
 	if m, ok := q.machine(stored.RenderingOn); ok {
-		_ = abandon(m, stored.JobID)
+		if q.resting(m.Name, q.now()) {
+			q.orphans[m.Name] = append(q.orphans[m.Name], stored.JobID)
+		} else {
+			_ = abandon(m, stored.JobID)
+		}
 	}
 	clearJob(song)
 }
@@ -211,6 +219,7 @@ func (q *Queue) SaveEdit(song library.Song) error {
 	}
 	q.dropStaleJob(&song, false)
 	q.keepTakes(&song)
+	q.keepJob(&song)
 	if err := q.store.Save(song); err != nil {
 		return err
 	}
@@ -224,6 +233,18 @@ func (q *Queue) keepTakes(song *library.Song) {
 	if stored, err := q.store.Load(song.ID); err == nil {
 		song.Audio, song.Duration = stored.Audio, stored.Duration
 	}
+}
+
+// keepJob gives song the stored record of where its detached render is, so
+// a copy read before the render detached or stopped answering cannot send
+// it to the wrong machine.
+func (q *Queue) keepJob(song *library.Song) {
+	stored, err := q.store.Load(song.ID)
+	if song.JobID == "" || err != nil || stored.JobID != song.JobID {
+		song.RenderingOn, song.LostSince = "", time.Time{}
+		return
+	}
+	song.RenderingOn, song.LostSince = stored.RenderingOn, stored.LostSince
 }
 
 // Enqueue marks a song queued and wakes the worker, returning the song it
@@ -253,6 +274,7 @@ func (q *Queue) Enqueue(song library.Song) (library.Song, error) {
 	}
 	q.dropStaleJob(&song, false)
 	q.keepTakes(&song)
+	q.keepJob(&song)
 	song.Status = library.StatusQueued
 	song.Error = ""
 	if err := q.store.Save(song); err != nil {
@@ -483,7 +505,7 @@ func (q *Queue) renderOn(ctx context.Context, song library.Song, m Machine) libr
 	// requeued sends the song back to the queue, saying why in note.
 	requeued, note := false, ""
 	for {
-		res, err = m.Backend.Generate(ctx, req, progress)
+		res, err = q.generate(ctx, m, req, progress)
 		if err == nil || m.Local || context.Cause(ctx) != nil || !errors.Is(err, backend.ErrUnreachable) {
 			break
 		}
@@ -491,6 +513,7 @@ func (q *Queue) renderOn(ctx context.Context, song library.Song, m Machine) libr
 			// The machine stopped answering before it took the song.
 			q.markOffline(m.Name)
 			requeued = true
+			note = fmt.Sprintf("%s stopped answering before it took the song (%v); it stays queued", m.Name, err)
 			break
 		}
 		switch q.waitForMachine(ctx, &song, m) {
@@ -498,7 +521,7 @@ func (q *Queue) renderOn(ctx context.Context, song library.Song, m Machine) libr
 			req.ResumeID, resumed = song.JobID, true
 			continue
 		case machineGone:
-			q.letGo(m, song.JobID)
+			q.orphan(m.Name, song.JobID)
 			q.markOffline(m.Name)
 			requeued = true
 			note = fmt.Sprintf("%s did not answer for %s, so the song was queued again", m.Name, q.reclaim())

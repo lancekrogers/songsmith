@@ -33,8 +33,10 @@ type Server struct {
 	mu sync.Mutex
 	// Hold keeps each prompt running until Finish; otherwise it finishes
 	// as soon as it is queued.
-	hold    bool
-	down    bool
+	hold bool
+	down bool
+	// silent is open while the server says nothing at all.
+	silent  chan struct{}
 	memory  int64
 	models  []string
 	missing string
@@ -65,6 +67,14 @@ func New(t testing.TB, name string) *Server {
 	mux.HandleFunc("POST /free", func(http.ResponseWriter, *http.Request) {})
 	mux.HandleFunc("GET /view", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "audio from "+name) })
 	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if quiet := s.quiet(); quiet != nil {
+			select {
+			case <-quiet:
+			case <-r.Context().Done():
+			}
+			drop(w)
+			return
+		}
 		if s.isDown() {
 			drop(w)
 			return
@@ -79,7 +89,30 @@ func New(t testing.TB, name string) *Server {
 // Close stops the server for good; its address then refuses connections.
 func (s *Server) Close() {
 	s.SetDown(true)
+	s.SetSilent(false)
 	s.srv.Close()
+}
+
+// SetSilent makes the server stop answering without closing anything, as
+// a computer that went to sleep or lost its network does: requests hang and
+// the websocket goes quiet. Prompts keep their state. When it answers again,
+// the requests that hung are dropped.
+func (s *Server) SetSilent(silent bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case silent && s.silent == nil:
+		s.silent = make(chan struct{})
+	case !silent && s.silent != nil:
+		close(s.silent)
+		s.silent = nil
+	}
+}
+
+func (s *Server) quiet() chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.silent
 }
 
 // SetHold makes new prompts wait for Finish.
@@ -248,6 +281,9 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case msg := <-ch:
+			if s.quiet() != nil {
+				continue
+			}
 			if conn.Write(r.Context(), websocket.MessageText, []byte(msg)) != nil {
 				return
 			}

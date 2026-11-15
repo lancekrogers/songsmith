@@ -115,7 +115,8 @@ func newGenerateCmd(a *app) *cobra.Command {
 				return nil
 			case library.StatusQueued:
 				if song.JobID == "" {
-					return fmt.Errorf("%s did not render: %s. It is saved as %s, and the songsmith terminal UI renders it once a machine can take it", song.Title, song.Error, song.ID)
+					return fmt.Errorf("%s. It is saved as %s, and the songsmith terminal UI renders it once a machine can take it",
+						cmp.Or(song.Error, song.Title+" did not render: no machine took it"), song.ID)
 				}
 				fmt.Fprintf(out, "\nDetached; ComfyUI on %s keeps rendering %s and songsmith picks up the result the next time it runs its queue.\n",
 					cmp.Or(song.RenderingOn, config.ThisComputer), song.ID)

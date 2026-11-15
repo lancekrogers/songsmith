@@ -231,7 +231,7 @@ func TestGenerateRefusesAMachineItCannotUse(t *testing.T) {
 	}
 
 	_, err = e.run("generate", "--machine", "Laptop", "--title", "Waits", "--lyrics", lyrics, "--caption", caption)
-	if err == nil || !strings.Contains(err.Error(), "Laptop is not answering") || !strings.Contains(err.Error(), "renders it once a machine can take it") {
+	if err == nil || !strings.Contains(err.Error(), "Laptop cannot take it: not answering at "+gone.URL) || !strings.Contains(err.Error(), "renders it once a machine can take it") {
 		t.Fatalf("offline machine: %v", err)
 	}
 	songs, _ := library.NewStore(e.config().LibraryDir).List()

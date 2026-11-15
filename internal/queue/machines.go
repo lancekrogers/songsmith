@@ -24,8 +24,22 @@ type Machine struct {
 	// Local is this computer.
 	Local bool
 	// Ping reports whether a machine on another computer answers. It is
-	// called before a song is sent there and while a song waits for it.
+	// called before a song reattaches to a render there, while a render
+	// runs there, and while a song waits for it to come back.
 	Ping func(ctx context.Context) error
+	// Ready reports whether a machine on another computer can take a new
+	// song: it answers and has what the render needs. It is called before
+	// a new song is sent there; nil means Ping.
+	Ready func(ctx context.Context) error
+}
+
+// probe is the check a song makes before it goes to m: reattaching needs
+// only an answer, a new song needs the machine ready. nil means none.
+func (m Machine) probe(song library.Song) func(context.Context) error {
+	if song.JobID == "" && m.Ready != nil {
+		return m.Ready
+	}
+	return m.Ping
 }
 
 // Speeds measures how fast each machine renders.
@@ -210,10 +224,10 @@ func (q *Queue) pick(ctx context.Context, song library.Song) (Machine, error) {
 	ms := q.machines()
 	var tried []string
 	for _, m := range q.candidates(song, ms, true) {
-		if m.Ping != nil {
-			if err := m.Ping(ctx); err != nil {
+		if probe := m.probe(song); probe != nil {
+			if err := probe(ctx); err != nil {
 				q.markOffline(m.Name)
-				tried = append(tried, fmt.Sprintf("%s is not answering (%v)", m.Name, err))
+				tried = append(tried, fmt.Sprintf("%s cannot take it: %v", m.Name, err))
 				continue
 			}
 			q.markOnline(m.Name)
@@ -273,12 +287,12 @@ func (q *Queue) dispatch(ctx context.Context) {
 	}
 }
 
-// send renders song on m, once m answers; if it does not, the song stays
-// queued for another machine.
+// send renders song on m, once m answers and, for a new song, is ready; if
+// not, the song stays queued for another machine.
 func (q *Queue) send(ctx context.Context, song library.Song, m Machine) {
 	defer q.Wake()
-	if m.Ping != nil {
-		if err := m.Ping(ctx); err != nil {
+	if probe := m.probe(song); probe != nil {
+		if err := probe(ctx); err != nil {
 			q.release(song.ID)
 			if ctx.Err() == nil {
 				q.markOffline(m.Name)
@@ -298,15 +312,12 @@ func (q *Queue) send(ctx context.Context, song library.Song, m Machine) {
 	q.renderOn(ctx, song, m)
 }
 
-// letGo abandons jobID on m, or, when m does not answer, keeps it to stop
-// once m answers again.
-func (q *Queue) letGo(m Machine, jobID string) {
-	if abandon(m, jobID) == nil {
-		return
-	}
+// orphan keeps jobID, let go on a machine that does not answer, to stop
+// once the machine answers again.
+func (q *Queue) orphan(machine, jobID string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	q.orphans[m.Name] = append(q.orphans[m.Name], jobID)
+	q.orphans[machine] = append(q.orphans[machine], jobID)
 }
 
 // stopOrphans abandons the jobs let go on m while it did not answer.
@@ -316,7 +327,9 @@ func (q *Queue) stopOrphans(m Machine) {
 	delete(q.orphans, m.Name)
 	q.mu.Unlock()
 	for _, id := range jobs {
-		q.letGo(m, id)
+		if abandon(m, id) != nil {
+			q.orphan(m.Name, id)
+		}
 	}
 }
 
@@ -347,8 +360,7 @@ func (q *Queue) unstick(song *library.Song, ms []Machine) bool {
 		if !resting {
 			return false
 		}
-		jobID := song.JobID
-		q.running.Go(func() { q.letGo(m, jobID) })
+		q.orphan(m.Name, song.JobID)
 		note = fmt.Sprintf("%s did not answer for %s, so the song was queued again", m.Name, q.reclaim())
 	}
 	q.update(song.ID, func(s *library.Song) {
@@ -401,7 +413,7 @@ func (q *Queue) waitForMachine(ctx context.Context, song *library.Song, m Machin
 		select {
 		case <-ctx.Done():
 			if errors.Is(context.Cause(ctx), ErrCancelled) {
-				q.letGo(m, song.JobID)
+				q.orphan(m.Name, song.JobID)
 			}
 			return waitStopped
 		case <-time.After(min(wait, left)):
@@ -413,4 +425,57 @@ func (q *Queue) waitForMachine(ctx context.Context, song *library.Song, m Machin
 		}
 		wait = min(wait*2, q.lostMax)
 	}
+}
+
+// errSilent stops a render attempt on a machine that stopped answering
+// without closing its connections, as a computer that went to sleep does.
+// It is a detach, so the render keeps its job there.
+var errSilent = fmt.Errorf("%w: the machine stopped answering", backend.ErrDetach)
+
+// watch pings m while a render attempt runs there, and stops the attempt
+// with errSilent once m misses two pings in a row.
+func (q *Queue) watch(ctx context.Context, m Machine, stop context.CancelCauseFunc) {
+	missed := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(q.liveEvery):
+		}
+		if m.Ping(ctx) == nil {
+			missed = 0
+			continue
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if missed++; missed >= 2 {
+			stop(errSilent)
+			return
+		}
+	}
+}
+
+// generate runs one render attempt on m. On another computer it also
+// watches that m keeps answering, and reports a silent machine as one that
+// cannot be reached.
+func (q *Queue) generate(ctx context.Context, m Machine, req backend.Request, progress func(backend.Progress)) (backend.Result, error) {
+	if m.Local || m.Ping == nil {
+		return m.Backend.Generate(ctx, req, progress)
+	}
+	attempt, stop := context.WithCancelCause(ctx)
+	defer stop(nil)
+	watched := make(chan struct{})
+	go func() {
+		defer close(watched)
+		q.watch(attempt, m, stop)
+	}()
+	res, err := m.Backend.Generate(attempt, req, progress)
+	silent := errors.Is(context.Cause(attempt), errSilent) && ctx.Err() == nil
+	stop(nil)
+	<-watched
+	if silent {
+		err = fmt.Errorf("%s stopped answering: %w", m.Name, backend.ErrUnreachable)
+	}
+	return res, err
 }
