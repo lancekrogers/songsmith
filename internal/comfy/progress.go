@@ -120,7 +120,11 @@ type RunOptions struct {
 // returns the finished history entry. Cancelling ctx stops only this prompt.
 func (c *Client) Run(ctx context.Context, g Graph, opts RunOptions) (HistoryEntry, error) {
 	if opts.ResumeID != "" {
-		if h, ok, err := c.History(ctx, opts.ResumeID); err == nil && ok {
+		h, ok, err := c.History(ctx, opts.ResumeID)
+		if errors.Is(err, ErrUnreachable) {
+			return HistoryEntry{}, err
+		}
+		if err == nil && ok {
 			if opts.OnQueued != nil {
 				opts.OnQueued(opts.ResumeID)
 			}

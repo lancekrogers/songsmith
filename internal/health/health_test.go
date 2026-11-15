@@ -214,6 +214,9 @@ func TestNodeChecks(t *testing.T) {
 	for class, inputs := range comfy.RequiredNodes {
 		all[class] = nodeInfo(t, inputs, nil)
 	}
+	all["UNETLoader"] = nodeInfo(t, []string{"weight_dtype"}, map[string][]string{"unet_name": {c.DiffusionModel}})
+	all["CLIPLoader"] = nodeInfo(t, []string{"type"}, map[string][]string{"clip_name": {c.TextEncoder}})
+	all["VAELoader"] = nodeInfo(t, nil, map[string][]string{"vae_name": {c.VAE}})
 	if got := nodeChecks(t.Context(), all, c); len(got) != 1 || got[0].Result != OK {
 		t.Fatalf("all present: %+v", got)
 	}
@@ -364,5 +367,31 @@ func TestLowMemoryCheck(t *testing.T) {
 	cuda, _ := lowMemoryCheck(config.LowMemoryOff, server.Status{Running: true, Device: "cuda", Memory: 24 * gib})
 	if strings.Contains(cuda.Detail, "MPS") {
 		t.Errorf("cuda warning mentions MPS: %s", cuda.Detail)
+	}
+}
+
+func TestNodeChecksReadTheNewerComboShape(t *testing.T) {
+	c := comfyCfg("/x")
+	info := fakeInfo{}
+	for class, inputs := range comfy.RequiredNodes {
+		info[class] = nodeInfo(t, inputs, nil)
+	}
+	info["UNETLoader"] = nodeInfo(t, []string{"weight_dtype"}, map[string][]string{"unet_name": {c.DiffusionModel}})
+	info["CLIPLoader"] = nodeInfo(t, []string{"type"}, map[string][]string{"clip_name": {c.TextEncoder}})
+	vae := comfy.NodeInfo{}
+	vae.Input.Required = map[string]json.RawMessage{"vae_name": json.RawMessage(`["COMBO",{"multiselect":false,"options":["other.safetensors"]}]`)}
+	info["VAELoader"] = vae
+	got := nodeChecks(t.Context(), info, c)
+	if len(got) != 2 || got[1].ID != IDServerModelFiles || got[1].Result != Fail || !strings.Contains(got[1].Detail, c.VAE) {
+		t.Fatalf("a file missing from a COMBO list: %+v", got)
+	}
+
+	vae.Input.Required["vae_name"] = json.RawMessage(`["COMBO",{"multiselect":false,"remote":{"route":"/models/vae"}}]`)
+	got = nodeChecks(t.Context(), info, c)
+	if len(got) != 2 || got[0].Result != OK {
+		t.Fatalf("nodes: %+v", got)
+	}
+	if ch := got[1]; ch.ID != IDServerModelFiles || ch.Result != Warn || ch.Blocking || !strings.Contains(ch.Detail, c.VAE) {
+		t.Fatalf("a file list that cannot be read: %+v", ch)
 	}
 }

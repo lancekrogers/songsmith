@@ -65,6 +65,8 @@ type launcherState struct {
 
 	writerModel string
 	workerNote  string
+	// noMachine says that no machine takes new songs, or is "".
+	noMachine   string
 	notice, err string
 	// musicJob, writerJob and comfyJob say how a running install is doing.
 	musicJob, writerJob, comfyJob string
@@ -116,6 +118,7 @@ func (a app) launcherState() launcherState {
 	if a.d.WorkerNote != nil {
 		st.workerNote = a.d.WorkerNote()
 	}
+	st.noMachine = a.noMachineNote()
 	for _, j := range a.runningJobs() {
 		switch j.target.kind {
 		case setup.KindModel:
@@ -366,7 +369,7 @@ func (st launcherState) chips(width int) string {
 		{"Writer", st.writerChip},
 		{"Music model", st.musicChip},
 		{"Server", st.serverChip},
-		{"Queue", st.queueChip},
+		{"Queue", func() (string, chipTone) { return st.queueChip(width - len("Queue") - 3) }},
 	} {
 		v, tone := c.get()
 		ch := ansi.Truncate(chip(c.name, v, tone), width, "…")
@@ -446,7 +449,10 @@ func (st launcherState) serverChip() (string, chipTone) {
 	}
 }
 
-func (st launcherState) queueChip() (string, chipTone) {
+// queueChip is the Queue chip's value in at most width columns where it
+// can. With one render, the machine name shrinks, then the title and the
+// progress go, before any count is cut.
+func (st launcherState) queueChip(width int) (string, chipTone) {
 	waiting := ""
 	if st.waiting > 0 {
 		waiting = fmt.Sprintf(" · %d waiting for %s", st.waiting, plural(st.waiting, "its machine", "their machines"))
@@ -459,15 +465,30 @@ func (st launcherState) queueChip() (string, chipTone) {
 		}
 		return v, toneWarn
 	case st.rendering != nil:
-		v := fmt.Sprintf("rendering %q %s", ansi.Truncate(st.rendering.Title, 24, "…"), progressLabel(st.progress))
-		if st.where != "" {
-			v += " on " + st.where
-		}
-		v += waiting
+		tail := waiting
 		if st.queued > 0 {
-			v += fmt.Sprintf(" · %d queued", st.queued)
+			tail += fmt.Sprintf(" · %d queued", st.queued)
 		}
-		return v, toneWarn
+		pct := progressLabel(st.progress)
+		heads := []string{
+			fmt.Sprintf("rendering %q %s", ansi.Truncate(st.rendering.Title, 24, "…"), pct),
+			"1 rendering " + pct,
+			"1 rendering",
+		}
+		if st.where != "" {
+			for _, head := range heads {
+				room := width - ansi.StringWidth(head+" on "+tail)
+				if room >= min(8, ansi.StringWidth(st.where)) {
+					return head + " on " + ansi.Truncate(st.where, room, "…") + tail, toneWarn
+				}
+			}
+		}
+		for _, head := range heads {
+			if ansi.StringWidth(head+tail) <= width {
+				return head + tail, toneWarn
+			}
+		}
+		return heads[len(heads)-1] + tail, toneWarn
 	case st.waiting > 0:
 		v := strings.TrimPrefix(waiting, " · ")
 		if st.queued > 0 {
@@ -511,6 +532,10 @@ func (st launcherState) noticeLines(width int) []string {
 		lines = append(lines, hangLines("  The install folder "+st.comfyDir+" has no ComfyUI. Use that folder, or install a separate copy from Setup.", dimStyle, width)...)
 	default:
 		b, blocked := blockerSummary(st.checks)
+		if !blocked && st.noMachine != "" {
+			lines = hangLines("! "+st.noMachine, warningStyle, width)
+			break
+		}
 		if !blocked {
 			// A stopped server is normal (it starts on the first render) and
 			// its chip already says so; every other problem counts.

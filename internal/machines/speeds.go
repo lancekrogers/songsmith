@@ -41,23 +41,32 @@ func NewSpeeds(stateDir string) *Speeds {
 	return &Speeds{path: filepath.Join(stateDir, "machines.json")}
 }
 
-// load reads the file once. Call with s.mu held.
-func (s *Speeds) load() {
+// load reads the file once it can. A missing file has no speeds; one that
+// cannot be read or decoded is an error, and is tried again next time.
+// Call with s.mu held.
+func (s *Speeds) load() error {
 	if s.loaded {
-		return
+		return nil
 	}
-	s.loaded = true
-	s.byName = map[string]Speed{}
 	data, err := os.ReadFile(s.path)
+	if errors.Is(err, fs.ErrNotExist) {
+		s.loaded, s.byName = true, map[string]Speed{}
+		return nil
+	}
 	if err != nil {
-		return
+		return fmt.Errorf("read machine speeds: %w", err)
 	}
 	var file struct {
 		Speeds map[string]Speed `json:"speeds"`
 	}
-	if json.Unmarshal(data, &file) == nil && file.Speeds != nil {
-		s.byName = file.Speeds
+	if err := json.Unmarshal(data, &file); err != nil {
+		return fmt.Errorf("read machine speeds from %s: %w", s.path, err)
 	}
+	if file.Speeds == nil {
+		file.Speeds = map[string]Speed{}
+	}
+	s.loaded, s.byName = true, file.Speeds
+	return nil
 }
 
 // Speed returns the seconds machine took per second of audio, and false
@@ -65,7 +74,9 @@ func (s *Speeds) load() {
 func (s *Speeds) Speed(machine string) (float64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.load()
+	if s.load() != nil {
+		return 0, false
+	}
 	sp, ok := s.byName[machine]
 	if !ok || sp.PerAudioSecond() <= 0 {
 		return 0, false
@@ -77,7 +88,9 @@ func (s *Speeds) Speed(machine string) (float64, bool) {
 func (s *Speeds) All() map[string]Speed {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.load()
+	if s.load() != nil {
+		return map[string]Speed{}
+	}
 	return maps.Clone(s.byName)
 }
 
@@ -88,7 +101,9 @@ func (s *Speeds) Record(machine string, took time.Duration, audioSeconds float64
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.load()
+	if err := s.load(); err != nil {
+		return err
+	}
 	sp := s.byName[machine]
 	sp.RenderSeconds += took.Seconds()
 	sp.AudioSeconds += audioSeconds

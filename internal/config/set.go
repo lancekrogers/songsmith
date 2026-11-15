@@ -28,27 +28,62 @@ var writeMu sync.Mutex
 // A key whose value is a whole struct, such as "master.default", takes a
 // value of that struct's type and is replaced as a whole.
 func Set(path, key string, value any) error {
+	val, err := encodeValue(key, value)
+	if err != nil {
+		return err
+	}
+	writeMu.Lock()
+	defer writeMu.Unlock()
+	return write(path, key, val)
+}
+
+// update applies change to the config file as it is now: change sees the
+// file's current settings and returns the one key to write. The read and
+// the write happen under writeMu, so no other writer in this process can
+// slip a change in between.
+func update(path string, change func(cur Config) (key string, value any, err error)) error {
+	writeMu.Lock()
+	defer writeMu.Unlock()
+	cur, err := Load(path)
+	if err != nil {
+		return err
+	}
+	key, value, err := change(cur)
+	if err != nil {
+		return err
+	}
+	val, err := encodeValue(key, value)
+	if err != nil {
+		return err
+	}
+	return write(path, key, val)
+}
+
+// encodeValue turns value into the YAML for key, refusing a typo in key or
+// a value of the wrong type.
+func encodeValue(key string, value any) (*yaml.Node, error) {
 	field, err := fieldType(key)
 	if errors.Is(err, errSection) && value != nil && reflect.TypeOf(value) == field {
 		err = nil
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var val yaml.Node
 	if err := val.Encode(value); err != nil {
-		return fmt.Errorf("encode %s: %w", key, err)
+		return nil, fmt.Errorf("encode %s: %w", key, err)
 	}
 	// yaml.v3 truncates a float into an int field, so whole numbers are
 	// checked by tag. A duration is written as text, such as "10m0s".
 	isInt := field.Kind() >= reflect.Int && field.Kind() <= reflect.Int64 && field != reflect.TypeFor[time.Duration]()
 	if err := val.Decode(reflect.New(field).Interface()); err != nil || isInt && val.Tag != "!!int" {
-		return fmt.Errorf("%s: %v is not a valid %s", key, value, field)
+		return nil, fmt.Errorf("%s: %v is not a valid %s", key, value, field)
 	}
+	return &val, nil
+}
 
-	writeMu.Lock()
-	defer writeMu.Unlock()
-
+// write puts val at key in the file at path. Call with writeMu held.
+func write(path, key string, val *yaml.Node) error {
 	data, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("read config %s: %w", path, err)
@@ -72,7 +107,7 @@ func Set(path, key string, value any) error {
 	if root.Kind != yaml.MappingNode {
 		return fmt.Errorf("config %s: top level is not a map", path)
 	}
-	if err := setPath(root, strings.Split(key, "."), &val); errors.Is(err, errAnchored) {
+	if err := setPath(root, strings.Split(key, "."), val); errors.Is(err, errAnchored) {
 		return fmt.Errorf("config %s: %s uses a YAML anchor and must be edited by hand", path, key)
 	} else if err != nil {
 		return fmt.Errorf("config %s: %w", path, err)
@@ -88,7 +123,7 @@ func Set(path, key string, value any) error {
 		return fmt.Errorf("encode config: %w", err)
 	}
 	check := Default()
-	if err := yaml.Unmarshal(out.Bytes(), &check); err != nil {
+	if err := decodeConfig(out.Bytes(), &check); err != nil {
 		return fmt.Errorf("updated config does not parse: %w", err)
 	}
 	if err := check.validate(); err != nil {

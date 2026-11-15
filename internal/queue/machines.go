@@ -327,9 +327,7 @@ func (q *Queue) stopOrphans(m Machine) {
 	delete(q.orphans, m.Name)
 	q.mu.Unlock()
 	for _, id := range jobs {
-		if abandon(m, id) != nil {
-			q.orphan(m.Name, id)
-		}
+		q.stop(m, id)
 	}
 }
 

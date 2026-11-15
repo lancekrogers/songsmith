@@ -176,7 +176,7 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("read config %s: %w", path, err)
 	}
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := decodeConfig(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	cfg.LibraryDir = ExpandHome(cfg.LibraryDir)
@@ -197,6 +197,30 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("config %s: %w", path, err)
 	}
 	return cfg, nil
+}
+
+// decodeConfig reads the YAML in data over cfg. A bare number for
+// reclaim_after is seconds, as Ollama reads keep_alive.
+func decodeConfig(data []byte, cfg *Config) error {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return err
+	}
+	if len(doc.Content) == 0 {
+		return nil
+	}
+	if root := doc.Content[0]; root.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(root.Content); i += 2 {
+			v := root.Content[i+1]
+			if root.Content[i].Value != "reclaim_after" || v.Kind != yaml.ScalarNode || v.Tag != "!!int" {
+				continue
+			}
+			if n, err := strconv.ParseInt(v.Value, 0, 64); err == nil {
+				v.Value, v.Tag = (time.Duration(n) * time.Second).String(), "!!str"
+			}
+		}
+	}
+	return doc.Decode(cfg)
 }
 
 // ExpandHome turns ~ and a path starting with ~/ into one under the home

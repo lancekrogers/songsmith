@@ -2,6 +2,8 @@ package machines
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,6 +52,35 @@ func TestCheckReportsWhatTheMachineHas(t *testing.T) {
 	}
 	if err := Ping(t.Context(), srv.URL); !errors.Is(err, comfy.ErrUnreachable) {
 		t.Fatalf("ping a closed server: %v", err)
+	}
+}
+
+func TestCheckTellsAnErrorAnswerFromNoAnswer(t *testing.T) {
+	models := config.Default().ComfyUI
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	t.Cleanup(broken.Close)
+	if st := Check(t.Context(), broken.URL, models); st.State != Offline || !st.AnsweredWithError {
+		t.Fatalf("a server that answers with an error: %+v", st)
+	}
+	gone := comfytest.New(t, "gone")
+	gone.Close()
+	if st := Check(t.Context(), gone.URL, models); st.State != Offline || st.AnsweredWithError {
+		t.Fatalf("a server that does not answer: %+v", st)
+	}
+}
+
+func TestCheckSaysWhenItCannotReadTheFileList(t *testing.T) {
+	models := config.Default().ComfyUI
+	srv := comfytest.New(t, "mbp")
+	st := Check(t.Context(), srv.URL, models)
+	if st.State != Ready || len(st.Unchecked) != 3 || !strings.Contains(st.Detail, "could not read") || !strings.Contains(st.Detail, models.VAE) {
+		t.Fatalf("a server whose loaders list no files: %+v", st)
+	}
+	srv.SetModels(models.DiffusionModel, models.TextEncoder, models.VAE)
+	if st := Check(t.Context(), srv.URL, models); st.State != Ready || len(st.Unchecked) != 0 || strings.Contains(st.Detail, "could not read") {
+		t.Fatalf("a server that lists the files: %+v", st)
 	}
 }
 
@@ -117,5 +148,32 @@ func TestLowMemoryIsDecidedByEachMachinesOwnMemory(t *testing.T) {
 	}
 	if got := big.Prompts(); len(got) != 1 || big.Graph(got[0])[comfy.NodeSaveLatent].ClassType != "" {
 		t.Fatalf("the 128 GB machine did not render in one prompt: %v", got)
+	}
+}
+
+func TestSpeedsNeverOverwriteAFileTheyCannotRead(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "machines.json")
+	garbage := []byte(`{"speeds": {"MacBook Pro": {"render_seconds": 300, `)
+	if err := os.WriteFile(path, garbage, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := NewSpeeds(dir)
+	if _, ok := s.Speed("MacBook Pro"); ok {
+		t.Fatal("a speed was read from a broken file")
+	}
+	if err := s.Record("Attic", time.Minute, 60); err == nil {
+		t.Fatal("recording into a broken file did not fail")
+	}
+	if data, _ := os.ReadFile(path); string(data) != string(garbage) {
+		t.Fatalf("the broken file was overwritten: %s", data)
+	}
+
+	fresh := NewSpeeds(filepath.Join(dir, "new"))
+	if err := fresh.Record("Attic", time.Minute, 60); err != nil {
+		t.Fatal(err)
+	}
+	if sp, ok := NewSpeeds(filepath.Join(dir, "new")).Speed("Attic"); !ok || sp != 1 {
+		t.Fatalf("a missing file was not started afresh: %v %v", sp, ok)
 	}
 }

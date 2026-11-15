@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -97,9 +96,13 @@ func (a *app) checkMachine(key, url string, models config.ComfyUI) tea.Cmd {
 	})
 }
 
-// checkAllMachines checks this computer and every added machine, and reads
-// the speeds measured so far.
+// checkAllMachines reads the config file again, so a machine added in
+// another terminal shows, then checks this computer and every added machine
+// and reads the speeds measured so far.
 func (a *app) checkAllMachines() tea.Cmd {
+	if a.d.Config.Reload() == nil {
+		a.reloadSaved()
+	}
 	cfg := a.cfg()
 	cmds := []tea.Cmd{a.checkMachine(machineKey(config.ThisComputer), cfg.ComfyUI.BaseURL(), cfg.ComfyUI)}
 	for _, m := range cfg.Machines {
@@ -109,6 +112,19 @@ func (a *app) checkAllMachines() tea.Cmd {
 	cmds = append(cmds, a.events.run(func(send func(tea.Msg)) {
 		send(machineSpeedsMsg{speeds: machines.NewSpeeds(stateDir).All()})
 	}))
+	return tea.Batch(cmds...)
+}
+
+// checkUnchecked checks each machine that has no check yet, such as one a
+// save just found in the config file.
+func (a *app) checkUnchecked() tea.Cmd {
+	cfg := a.cfg()
+	var cmds []tea.Cmd
+	for _, m := range cfg.Machines {
+		if _, ok := a.settings.machines.checks[machineKey(m.Name)]; !ok {
+			cmds = append(cmds, a.checkMachine(machineKey(m.Name), m.URL, m.Models(cfg.ComfyUI)))
+		}
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -187,7 +203,7 @@ func (a app) machineBlock(name, url string, enabled, local bool, width int) []se
 	if enabled {
 		toggle.current = 1
 	}
-	toggle.set = func(a *app, i int) tea.Cmd { return a.setMachineEnabled(name, local, i == 1) }
+	toggle.set = func(a *app, i int) tea.Cmd { return a.setMachineEnabled(name, i == 1) }
 	rows = append(rows, toggle)
 	if local {
 		toggle := &rows[len(rows)-1]
@@ -228,6 +244,12 @@ func (a app) statusRow(check machineCheck, checked, local bool) settingRow {
 		if st.Version != "" {
 			row.value += " · ComfyUI " + st.Version
 		}
+		if len(st.Unchecked) > 0 {
+			row.mark = warningStyle.Render("!")
+			row.value += " · model files not checked"
+		}
+	case st.AnsweredWithError:
+		row.mark, row.value = errorStyle.Render("✕"), "answered with an error"
 	case st.State == machines.Offline && local:
 		row.mark, row.value = dimStyle.Render("·"), "stopped"
 	case st.State == machines.Offline:
@@ -245,16 +267,19 @@ func (a app) statusRow(check machineCheck, checked, local bool) settingRow {
 
 // statusReport says, wrapped under the status, what is wrong and what to do.
 func statusReport(st machines.Status, done, local bool, url string, width int, anchor string) []settingRow {
-	if !done || st.State == machines.Ready || st.State == "" {
+	if !done || st.State == "" || st.State == machines.Ready && len(st.Unchecked) == 0 {
 		return nil
 	}
 	text, style := st.Detail, &warningStyle
 	missing := strings.Join(st.Missing, ", ")
 	switch {
+	case st.State == machines.Ready:
+		text = "Could not read which model files ComfyUI at " + url + " lists, so songsmith did not check that it sees " +
+			strings.Join(st.Unchecked, ", ") + ". A render there fails at once if it does not."
+	case st.AnsweredWithError:
+		text = "ComfyUI at " + url + " " + st.Reason + "."
 	case st.State == machines.Offline && local:
 		text, style = "ComfyUI is not running at "+url+"; songsmith starts it on the first render here.", nil
-	case st.State == machines.Offline && strings.HasPrefix(st.Reason, "answered"):
-		text = "ComfyUI at " + url + " " + st.Reason + "."
 	case st.State == machines.Offline:
 		text = "Not answering at " + url + " (" + st.Reason + "). Check that the computer is awake, that ComfyUI runs there " +
 			"(songsmith server start on that computer), and that its comfyui.host is an address this computer can reach."
@@ -423,46 +448,50 @@ func (a *app) checkDraft() tea.Cmd {
 	return a.checkMachine(draftKey, d.machine.URL, d.machine.Models(a.cfg().ComfyUI))
 }
 
+// changeMachines applies one change to the machines in the config file as
+// the file is now, so a machine added in another terminal is kept, then
+// reloads the running settings from the file.
+func (a *app) changeMachines(change func(path string) error) error {
+	if err := a.d.Config.Update(change); err != nil {
+		return err
+	}
+	a.reloadSaved()
+	return nil
+}
+
 func (a *app) saveDraftMachine() tea.Cmd {
 	ms := &a.settings.machines
 	d := ms.add
-	list, err := a.cfg().WithMachine(d.machine)
+	added := d.machine
+	err := a.changeMachines(func(path string) error {
+		var err error
+		added, err = config.AddMachine(path, d.machine)
+		return err
+	})
 	if err != nil {
 		a.settingsError("Not saved: " + err.Error())
-		return nil
-	}
-	if !a.saveSetting("machines", list) {
 		return nil
 	}
 	if ms.checks == nil {
 		ms.checks = map[string]machineCheck{}
 	}
-	ms.checks[machineKey(d.machine.Name)] = d.check
+	ms.checks[machineKey(added.Name)] = d.check
 	ms.add = nil
 	a.wakeQueue()
-	a.settingsNote(capitalize(appliesNextSent) + " · Added " + d.machine.Name + " at " + d.machine.URL)
-	a.settings.marks[sectionMachines] = lineAnchor{set: true, name: "machine " + machineKey(d.machine.Name) + " status", option: -1}
-	return nil
+	a.settingsNote(capitalize(appliesNextSent) + " · Added " + added.Name + " at " + added.URL)
+	a.settings.marks[sectionMachines] = lineAnchor{set: true, name: "machine " + machineKey(added.Name) + " status", option: -1}
+	return a.checkUnchecked()
 }
 
-func (a *app) setMachineEnabled(name string, local, on bool) tea.Cmd {
-	what := name + " renders new songs: " + onOff(on)
-	if local {
-		a.saved("local.enabled", on, what, appliesNextSent)
-		a.wakeQueue()
+func (a *app) setMachineEnabled(name string, on bool) tea.Cmd {
+	err := a.changeMachines(func(path string) error { return config.SetMachineEnabled(path, name, on) })
+	if err != nil {
+		a.settingsError("Not saved: " + err.Error())
 		return nil
 	}
-	cfg := a.cfg()
-	list := slices.Clone(cfg.Machines)
-	i := slices.IndexFunc(list, func(m config.Machine) bool { return strings.EqualFold(m.Name, name) })
-	if i < 0 {
-		a.settingsError(name + " is no longer in the config")
-		return nil
-	}
-	list[i].Enabled = on
-	a.saved("machines", list, what, appliesNextSent)
+	a.settingsNote(capitalize(appliesNextSent) + " · " + name + " renders new songs: " + onOff(on))
 	a.wakeQueue()
-	return nil
+	return a.checkUnchecked()
 }
 
 func onOff(on bool) string {
@@ -483,7 +512,7 @@ func (a *app) askRemoveMachine(name string) {
 			here = append(here, s.Title)
 		case s.Status == library.StatusQueued && s.JobID != "" && strings.EqualFold(s.RenderingOn, name):
 			held = append(held, s.Title)
-		case s.Status != library.StatusDone && strings.EqualFold(s.Machine, name):
+		case s.Status == library.StatusQueued && strings.EqualFold(s.Machine, name):
 			pinned = append(pinned, s.Title)
 		}
 	}
@@ -512,18 +541,20 @@ func (a app) answerRemove(key tea.KeyMsg) (app, tea.Cmd) {
 		a.settingsNote("Kept " + name)
 		return a, nil
 	}
-	list, err := a.cfg().WithoutMachine(name)
+	err := a.changeMachines(func(path string) error {
+		_, err := config.RemoveMachine(path, name)
+		return err
+	})
 	if err != nil {
 		a.settingsError("Not removed: " + err.Error())
 		return a, nil
 	}
-	if !a.saved("machines", list, "Removed "+name, appliesNextSent) {
-		return a, nil
-	}
+	a.settingsNote(capitalize(appliesNextSent) + " · Removed " + name)
 	delete(ms.checks, machineKey(name))
 	a.wakeQueue()
 	a.syncSettings()
-	return a, nil
+	cmd := a.checkUnchecked()
+	return a, cmd
 }
 
 func (a *app) wakeQueue() {

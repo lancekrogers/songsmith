@@ -464,9 +464,10 @@ func (a *app) detailText(width int) string {
 		b.WriteString(wrap.Render(dimStyle.Render("from "+a.songTitle(song.DerivedFrom))) + "\n")
 	}
 	_, lost := lostMachine(song)
+	_, _, stuck := a.noMachine(song)
 	if where := a.whereText(song); where != "" {
 		style := dimStyle
-		if song.Status == library.StatusRendering || lost {
+		if song.Status == library.StatusRendering || lost || stuck {
 			style = warningStyle
 		}
 		b.WriteString(wrap.Render(style.Render(where)) + "\n")
@@ -612,7 +613,8 @@ func (a app) libraryView() string {
 	// Row: "› " + indent + badge(11) + " " + title + " " + length(5) + " " + age(4), inside 2 columns of padding.
 	fullW := max(8, listW-2-2-11-1-1-5-1-4)
 	for i, r := range a.library.rows {
-		indent := strings.Repeat("  ", min(r.depth, 6))
+		// Deep folders stop indenting where a title would no longer fit.
+		indent := strings.Repeat("  ", min(r.depth, 6, (fullW-4)/2))
 		titleW := max(4, fullW-len(indent))
 		var line string
 		if r.isFolder() {
@@ -649,12 +651,13 @@ func (a app) libraryView() string {
 		rows = append(rows, line)
 		if !r.isFolder() {
 			if where := a.whereLine(a.library.songs[r.song]); where != "" {
-				pad := "  " + indent + strings.Repeat(" ", 12)
-				for j, l := range wrapText("↳ "+where, listW-2-ansi.StringWidth(pad)) {
-					if j > 0 {
-						l = "  " + l
-					}
-					rows = append(rows, pad+warningStyle.Render(l))
+				pad := strings.Repeat(" ", min(2+len(indent)+12, listW-2-16))
+				lines := []string{warningStyle.Render("↳ " + where)}
+				if w := listW - 2 - len(pad); ansi.StringWidth("↳ "+where) > w {
+					lines = hangLines("↳ "+where, warningStyle, w)
+				}
+				for _, l := range lines {
+					rows = append(rows, pad+l)
 				}
 			}
 		}

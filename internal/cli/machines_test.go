@@ -3,9 +3,15 @@ package cli
 import (
 	"bytes"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/lancekrogers/songsmith/internal/comfy/comfytest"
@@ -244,5 +250,126 @@ func TestGenerateRefusesAMachineItCannotUse(t *testing.T) {
 	}
 	if _, err := e.run("generate", "--machine", config.ThisComputer, "--lyrics", lyrics, "--caption", caption); err == nil || !strings.Contains(err.Error(), "turned off") {
 		t.Fatalf("this computer turned off: %v", err)
+	}
+}
+
+func TestMachinesAddKeepsAMachineAddedDuringItsCheck(t *testing.T) {
+	e := newMachinesEnv(t)
+	srv := comfytest.New(t, "mbp")
+	target, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	var once sync.Once
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() {
+			if _, err := config.AddMachine(e.path, config.Machine{Name: "Attic", URL: "http://attic.invalid:8188", Enabled: true}); err != nil {
+				t.Error(err)
+			}
+		})
+		proxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(slow.Close)
+
+	if out, err := e.run("machines", "add", "MacBook Pro", slow.URL); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	cfg := e.config()
+	if _, ok := cfg.Machine("Attic"); !ok {
+		t.Fatalf("the machine added during the check was lost: %+v", cfg.Machines)
+	}
+	if _, ok := cfg.Machine("MacBook Pro"); !ok {
+		t.Fatalf("the machine added here was not saved: %+v", cfg.Machines)
+	}
+}
+
+func TestMachinesRemoveKeepsTheLastMachineThatTakesNewSongs(t *testing.T) {
+	e := newMachinesEnv(t)
+	srv := comfytest.New(t, "mbp")
+	if _, err := e.run("machines", "add", "MacBook Pro", srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Set(e.path, "local.enabled", false); err != nil {
+		t.Fatal(err)
+	}
+	_, err := e.run("machines", "remove", "MacBook Pro")
+	if err == nil || !strings.Contains(err.Error(), "MacBook Pro is the only machine that renders new songs") {
+		t.Fatalf("removed the last machine that takes new songs: %v", err)
+	}
+	if len(e.config().Machines) != 1 {
+		t.Fatal("removed anyway")
+	}
+}
+
+func TestMachinesSaysWhichModelFilesItCouldNotCheck(t *testing.T) {
+	e := newMachinesEnv(t)
+	models := e.config().ComfyUI
+	listed := comfytest.New(t, "mbp")
+	listed.SetModels(models.DiffusionModel, models.TextEncoder, models.VAE)
+	unlisted := comfytest.New(t, "attic")
+	out, err := e.run("machines", "add", "MacBook Pro", listed.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "could not read") {
+		t.Fatalf("a machine that lists its files:\n%s", out)
+	}
+	out, err = e.run("machines", "add", "Attic", unlisted.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(out, "could not read which model files") != 1 || !strings.Contains(out, models.VAE) {
+		t.Fatalf("adding a machine whose files could not be checked:\n%s", out)
+	}
+
+	out, err = e.run("machines")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mbp, attic string
+	for _, l := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(l, "MacBook Pro  "):
+			mbp = l
+		case strings.HasPrefix(l, "Attic  "):
+			attic = l
+		}
+	}
+	if !strings.Contains(mbp, "ready") || strings.Contains(mbp, "not checked") {
+		t.Errorf("a machine that lists its files: %q", mbp)
+	}
+	if !strings.Contains(attic, "ready, files not checked") {
+		t.Errorf("a machine whose files could not be checked: %q", attic)
+	}
+	note := "Attic: ready at " + unlisted.URL
+	if !strings.Contains(out, note) || !strings.Contains(out, "could not read which model files") || !strings.Contains(out, models.VAE) {
+		t.Errorf("no note for the files that could not be checked:\n%s", out)
+	}
+	if strings.Contains(out, "MacBook Pro: ") {
+		t.Errorf("a note for a machine that checked clean:\n%s", out)
+	}
+}
+
+func TestMachinesSaysWhenThisComputersServerAnswersWithAnError(t *testing.T) {
+	e := newMachinesEnv(t)
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	t.Cleanup(broken.Close)
+	u, _ := url.Parse(broken.URL)
+	port, _ := strconv.Atoi(u.Port())
+	if err := config.Set(e.path, "comfyui.port", port); err != nil {
+		t.Fatal(err)
+	}
+	out, err := e.run("machines")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "stopped") || strings.Contains(out, "is not running") {
+		t.Fatalf("a server that answered is called stopped:\n%s", out)
+	}
+	if !strings.Contains(out, config.ThisComputer+": ComfyUI at "+broken.URL+" answered with an error") {
+		t.Fatalf("what the server answered is not said:\n%s", out)
 	}
 }

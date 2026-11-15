@@ -93,6 +93,32 @@ func TestSetupShowsAFailingChecksTextUnderThatRowOnly(t *testing.T) {
 	}
 }
 
+func TestSetupSaysWhenTheServersModelListCouldNotBeRead(t *testing.T) {
+	for _, tc := range []struct {
+		result      health.Result
+		blocking    bool
+		want, never string
+	}{
+		{health.Warn, false, "could not read the file list", "needs a restart"},
+		{health.Fail, true, "needs a restart", "could not read the file list"},
+	} {
+		checks := append(readyChecks(), health.Check{ID: health.IDServerModelFiles, Name: "ComfyUI model list", Result: tc.result, Blocking: tc.blocking,
+			Detail: "the check's own text"})
+		a, _ := newSettingsApp(t, checks)
+		a, _ = send(t, a, tea.WindowSizeMsg{Width: 100, Height: 30})
+		a = openSettingsOn(t, a, sectionSetup)
+		row := ""
+		for _, l := range sectionText(a) {
+			if strings.Contains(l, "ComfyUI model list") {
+				row = l
+			}
+		}
+		if !strings.Contains(row, tc.want) || strings.Contains(row, tc.never) {
+			t.Errorf("%s: %q\n%s", tc.result, row, plain(a))
+		}
+	}
+}
+
 func TestSetupWithNothingInstalledListsEveryMissingPiece(t *testing.T) {
 	a, _ := newSettingsApp(t, nothingInstalled())
 	a, _ = send(t, a, tea.WindowSizeMsg{Width: 120, Height: 50})

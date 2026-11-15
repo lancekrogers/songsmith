@@ -47,6 +47,9 @@ type Queue struct {
 	// liveEvery is how often a machine on another computer is pinged while
 	// it renders.
 	liveEvery time.Duration
+	// fetchPause is how long this computer waits before fetching audio
+	// again after a download was cut off.
+	fetchPause time.Duration
 
 	// mu guards renders and offline, and serializes the status changes that
 	// race with a render being claimed: claim, cancel, enqueue and edit saves.
@@ -87,6 +90,7 @@ func New(store *library.Store, b backend.Backend) *Queue {
 		lostMin:    5 * time.Second,
 		lostMax:    30 * time.Second,
 		liveEvery:  15 * time.Second,
+		fetchPause: 2 * time.Second,
 		renders:    map[string]*render{},
 		offline:    map[string]backoff{},
 		orphans:    map[string][]string{},
@@ -178,7 +182,7 @@ func renderInputsChanged(a, b library.Song) bool {
 
 // dropStaleJob clears song's detached job when its render inputs changed, or
 // it is now pinned to another machine, and stops that job on the machine
-// that holds it. Call with q.mu held.
+// that holds it in the background. Call with q.mu held.
 func (q *Queue) dropStaleJob(song *library.Song, force bool) {
 	stored, err := q.store.Load(song.ID)
 	if err != nil || stored.JobID == "" {
@@ -192,10 +196,18 @@ func (q *Queue) dropStaleJob(song *library.Song, force bool) {
 		if q.resting(m.Name, q.now()) {
 			q.orphans[m.Name] = append(q.orphans[m.Name], stored.JobID)
 		} else {
-			_ = abandon(m, stored.JobID)
+			go q.stop(m, stored.JobID)
 		}
 	}
 	clearJob(song)
+}
+
+// stop abandons jobID on m, and if m does not take it, keeps it to stop
+// once m answers again.
+func (q *Queue) stop(m Machine, jobID string) {
+	if abandon(m, jobID) != nil {
+		q.orphan(m.Name, jobID)
+	}
 }
 
 // clearJob forgets song's detached render.
@@ -504,9 +516,31 @@ func (q *Queue) renderOn(ctx context.Context, song library.Song, m Machine) libr
 	var err error
 	// requeued sends the song back to the queue, saying why in note.
 	requeued, note := false, ""
+	// fetchFails counts the attempts in a row to fetch a render the machine
+	// holds that were cut off: its audio, or on this computer, any reattach.
+	fetchFails, unfetched := 0, false
 	for {
 		res, err = q.generate(ctx, m, req, progress)
-		if err == nil || m.Local || context.Cause(ctx) != nil || !errors.Is(err, backend.ErrUnreachable) {
+		if err == nil || context.Cause(ctx) != nil || !errors.Is(err, backend.ErrUnreachable) {
+			break
+		}
+		reattached := m.Local && req.ResumeID != ""
+		if song.JobID != "" && (errors.Is(err, backend.ErrDownload) || reattached) {
+			if fetchFails++; fetchFails >= fetchTries {
+				unfetched = true
+				break
+			}
+			if m.Local {
+				if !pause(ctx, q.fetchPause) {
+					break
+				}
+				req.ResumeID, resumed = song.JobID, true
+				continue
+			}
+		} else {
+			fetchFails = 0
+		}
+		if m.Local {
 			break
 		}
 		if song.JobID == "" {
@@ -542,12 +576,26 @@ func (q *Queue) renderOn(ctx context.Context, song library.Song, m Machine) libr
 		song.Duration = q.probe(res.AudioPath)
 		clearJob(&song)
 		if !resumed && q.speeds != nil {
-			_ = q.speeds.Record(m.Name, song.Finished.Sub(song.Started), song.Duration)
+			if err := q.speeds.Record(m.Name, song.Finished.Sub(song.Started), song.Duration); err != nil {
+				song.Error = fmt.Sprintf("the render finished, but its speed on %s was not recorded: %v", spoken(m), err)
+			}
 		}
 	case requeued:
 		song.Status = library.StatusQueued
 		song.Error = note
 		clearJob(&song)
+	case unfetched:
+		// The render is still on the machine: keeping the job lets rendering
+		// the song again pick it up instead of rendering it anew.
+		song.Status = library.StatusFailed
+		song.Error = fmt.Sprintf("the render finished, but its audio could not be fetched from %s (%v); render it again to fetch it once more", spoken(m), err)
+		if !errors.Is(err, backend.ErrDownload) {
+			song.Error = fmt.Sprintf("could not pick up its render on %s (%v); render it again to try once more", spoken(m), err)
+		}
+		if hadTake {
+			song.Status = library.StatusDone
+			song.Error += "; kept the previous take"
+		}
 	case errors.Is(context.Cause(ctx), backend.ErrDetach):
 		// The app is shutting down; leave the song queued so the next run
 		// reattaches to the render, which keeps going on its machine.
@@ -581,6 +629,30 @@ func (q *Queue) renderOn(ctx context.Context, song library.Song, m Machine) libr
 		song = q.runAfterRender(parent, song)
 	}
 	return song
+}
+
+// fetchTries is how many downloads in a row may be cut off before a render
+// whose audio cannot be fetched fails.
+const fetchTries = 3
+
+// pause waits for d, and reports false if ctx ended first.
+func pause(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// spoken names m as a sentence does: "this computer", or its name.
+func spoken(m Machine) string {
+	if m.Local {
+		return "this computer"
+	}
+	return m.Name
 }
 
 // finish saves the outcome of a render. A new take is recorded and made

@@ -96,6 +96,9 @@ type composeModel struct {
 	instrumental bool
 	// machine is the machine the song is pinned to; "" is any free one.
 	machine string
+	// machineRow keeps Render on drawn for the rest of the visit once shown,
+	// so it never goes away under the cursor.
+	machineRow bool
 	// lastSeed is the seed the song's latest render used, which p pins.
 	lastSeed int64
 	// texts are Lyrics, Global metadata, Vocal details and Arrangement.
@@ -231,7 +234,7 @@ func (c *composeModel) startEdit(song library.Song, newSeconds float64) tea.Cmd 
 	c.autoLength = song.ID == "" && !c.copied && song.Seconds == 0
 	c.draftedLength, c.lengthSet = false, false
 	c.instrumental = song.Instrumental
-	c.machine = song.Machine
+	c.machine, c.machineRow = song.Machine, false
 	c.texts = [4]string{song.Lyrics, song.Caption.GlobalMetadata, song.Caption.VocalDetails, song.Caption.Arrangement}
 	c.initial = c.fields()
 	c.editor, c.drafting, c.cancel, c.armed, c.msg, c.note = nil, false, nil, "", "", ""
@@ -261,6 +264,7 @@ func (c *composeModel) fitSeed() {
 func asCopy(song library.Song) library.Song {
 	song.DerivedFrom = cmp.Or(song.ID, song.DerivedFrom)
 	song.ID, song.Status, song.Audio, song.Duration, song.Error, song.JobID = "", "", "", 0, "", ""
+	song.RenderingOn, song.LostSince = "", time.Time{}
 	song.Takes = nil
 	song.Started, song.Finished, song.Timings = time.Time{}, time.Time{}, nil
 	if !song.SeedPinned {
@@ -881,15 +885,17 @@ func (a *app) refreshFormSkips() {
 	c.skip[rowRevise] = down || !c.hasLyrics()
 	_, _, show := a.formMachines()
 	c.skip[rowMachine] = !show
+	c.machineRow = show
 }
 
 // anyMachine is the Render on choice that pins nothing.
 const anyMachine = "any free machine"
 
 // formMachines is what the Render on row offers: any free machine, then
-// each machine that gets new songs, this computer first, and the song's own
-// pin when it is none of those. show is whether the row is drawn: when more
-// than one machine gets new songs, or the song is pinned.
+// each machine that gets new songs, this computer first, then the pin the
+// song was opened with and the chosen one when they are none of those. show
+// is whether the row is drawn: when more than one machine gets new songs,
+// the song is or was pinned, or the row was drawn earlier in the visit.
 func (a app) formMachines() (names []string, cur int, show bool) {
 	cfg := a.cfg()
 	names = []string{anyMachine}
@@ -902,16 +908,21 @@ func (a app) formMachines() (names []string, cur int, show bool) {
 		}
 	}
 	enabled := len(names) - 1
-	pin := a.compose.machine
-	cur = 0
-	if pin != "" {
-		cur = slices.IndexFunc(names[1:], func(n string) bool { return strings.EqualFold(n, pin) }) + 1
-		if cur == 0 {
-			names = append(names, pin)
-			cur = len(names) - 1
+	c := &a.compose
+	offer := func(pin string) int {
+		if pin == "" {
+			return 0
 		}
+		i := slices.IndexFunc(names[1:], func(n string) bool { return strings.EqualFold(n, pin) }) + 1
+		if i == 0 {
+			names = append(names, pin)
+			i = len(names) - 1
+		}
+		return i
 	}
-	return names, cur, enabled > 1 || pin != ""
+	offer(c.base.Machine)
+	cur = offer(c.machine)
+	return names, cur, enabled > 1 || c.machine != "" || c.base.Machine != "" || c.machineRow
 }
 
 // stepMachine pins the song to the next or previous machine on offer.

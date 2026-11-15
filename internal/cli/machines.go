@@ -67,8 +67,13 @@ func printMachines(ctx context.Context, w io.Writer, cfg config.Config) {
 	fmt.Fprintln(tw, "MACHINE\tSTATUS\tADDRESS\tSPEED\tENABLED")
 	for _, r := range rows {
 		state := string(r.status.State)
-		if r.local && r.status.State == machines.Offline {
+		switch {
+		case r.status.AnsweredWithError:
+			state = "error"
+		case r.local && r.status.State == machines.Offline:
 			state = "stopped"
+		case r.status.State == machines.Ready && len(r.status.Unchecked) > 0:
+			state = "ready, files not checked"
 		}
 		speed := "not measured yet"
 		if sp, ok := speeds[r.name]; ok && sp.PerAudioSecond() > 0 {
@@ -79,9 +84,9 @@ func printMachines(ctx context.Context, w io.Writer, cfg config.Config) {
 	tw.Flush()
 	for _, r := range rows {
 		switch {
-		case r.local && r.status.State == machines.Offline:
+		case r.local && r.status.State == machines.Offline && !r.status.AnsweredWithError:
 			fmt.Fprintf(w, "\n%s: ComfyUI is not running at %s; songsmith starts it on the first render here (shell: `songsmith server start`).\n", r.name, r.url)
-		case r.status.State != machines.Ready:
+		case r.status.State != machines.Ready || len(r.status.Unchecked) > 0:
 			fmt.Fprintf(w, "\n%s: %s\n", r.name, r.status.Detail)
 		}
 	}
@@ -127,10 +132,10 @@ func newMachinesAddCmd(a *app) *cobra.Command {
 			} else {
 				fmt.Fprintf(out, "%s is %s: %s\n", added.Name, st.State, st.Detail)
 			}
-			if err := config.Set(config.Path(a.configPath), "machines", list); err != nil {
+			if _, err := config.AddMachine(config.Path(a.configPath), m); err != nil {
 				return err
 			}
-			fmt.Fprintf(out, "Saved %s. Songs go to it once it is ready; a songsmith that is already open uses it after it restarts.\n", added.Name)
+			fmt.Fprintf(out, "Saved %s. Songs go to it once it is ready; a songsmith that is already open uses it once Settings → Machines is opened there, or after it restarts.\n", added.Name)
 			fmt.Fprintln(out, privateNetworkNote)
 			return nil
 		},
@@ -151,12 +156,11 @@ func newMachinesRemoveCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			list, err := cfg.WithoutMachine(args[0])
-			if err != nil {
-				return fmt.Errorf("%w; the machines are: %s", err, machineNames(cfg))
+			if _, ok := cfg.Machine(args[0]); !ok {
+				return fmt.Errorf("there is no machine named %q; the machines are: %s", args[0], machineNames(cfg))
 			}
-			m, _ := cfg.Machine(args[0])
-			if err := config.Set(config.Path(a.configPath), "machines", list); err != nil {
+			m, err := config.RemoveMachine(config.Path(a.configPath), args[0])
+			if err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Removed %s. A song that was rendering there is queued again the next time songsmith starts, and its render there is left alone.\n", m.Name)

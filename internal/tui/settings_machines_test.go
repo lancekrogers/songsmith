@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -12,6 +15,7 @@ import (
 	"github.com/lancekrogers/songsmith/internal/comfy/comfytest"
 	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/library"
+	"github.com/lancekrogers/songsmith/internal/machines"
 )
 
 func TestMachinesShowsEachMachineAndWhatItsCheckFound(t *testing.T) {
@@ -260,6 +264,13 @@ func TestRemoveAsksFirstAndAnyOtherKeyKeepsTheMachine(t *testing.T) {
 	if _, err := r.store.Create(pinned); err != nil {
 		t.Fatal(err)
 	}
+	for _, st := range []library.Status{library.StatusDraft, library.StatusFailed} {
+		idle := renderable("Not waiting " + string(st))
+		idle.Machine, idle.Status = attic, st
+		if _, err := r.store.Create(idle); err != nil {
+			t.Fatal(err)
+		}
+	}
 	held := renderable("Coast Road")
 	held.Status, held.JobID, held.RenderingOn, held.LostSince = library.StatusQueued, "attic-3", attic, time.Now()
 	held, err := r.store.Create(held)
@@ -352,10 +363,13 @@ func TestAMachineAddedOrRemovedHereIsUsedWithoutARestart(t *testing.T) {
 		return s.Status == library.StatusDone
 	})
 
-	a = focusAnchor(t, a, "machine den imac remove")
-	a = pressSettings(t, a, "enter", "y")
 	a = focusAnchor(t, a, "machine this computer toggle")
 	a = pressSettings(t, a, "enter")
+	a = focusAnchor(t, a, "machine den imac remove")
+	a = pressSettings(t, a, "enter", "y")
+	if _, ok := r.live.Get().Machine("Den iMac"); ok {
+		t.Fatalf("Den iMac was not removed:\n%s", plain(a))
+	}
 	r.local.SetHold(true)
 	next, err := r.store.Create(renderable("Second Harbor"))
 	if err != nil {
@@ -424,5 +438,174 @@ func TestAComfyUIThatIsTooOldSaysWhichNodeItLacks(t *testing.T) {
 				t.Errorf("a line is %d wide: %q", w, l)
 			}
 		}
+	}
+}
+
+func TestAMachineAddedInAnotherTerminalSurvivesChangesHere(t *testing.T) {
+	a, r := newMachinesRig(t, 120, 40)
+	a = openSettingsOn(t, a, sectionMachines)
+	other := comfytest.New(t, "den")
+	added := func(name string) {
+		t.Helper()
+		if _, err := config.AddMachine(r.live.Path(), config.Machine{Name: name, URL: other.URL, Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kept := func(name, after string) {
+		t.Helper()
+		saved, err := config.Load(r.live.Path())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := saved.Machine(name); !ok {
+			t.Fatalf("%s: %s, added in another terminal, is gone from the config file", after, name)
+		}
+		if _, ok := r.live.Get().Machine(name); !ok {
+			t.Fatalf("%s: %s is not in the running settings", after, name)
+		}
+		if lineOfAnchor(a, "machine "+machineKey(name)+" status") < 0 {
+			t.Fatalf("%s: %s is not shown:\n%s", after, name, plain(a))
+		}
+	}
+
+	added("Den iMac")
+	a = focusAnchor(t, a, "machine attic pc toggle")
+	a = pressSettings(t, a, "enter")
+	kept("Den iMac", "a toggle")
+	if c, ok := a.settings.machines.checks["den imac"]; !ok || c.checking {
+		t.Fatalf("Den iMac, found in the file, was never checked: %+v", c)
+	}
+
+	if _, err := config.RemoveMachine(r.live.Path(), "Den iMac"); err != nil {
+		t.Fatal(err)
+	}
+	added("Loft")
+	a = focusAnchor(t, a, "machine macbook air remove")
+	a = pressSettings(t, a, "enter", "y")
+	kept("Loft", "a removal")
+
+	if _, err := config.RemoveMachine(r.live.Path(), "Loft"); err != nil {
+		t.Fatal(err)
+	}
+	porch := comfytest.New(t, "porch")
+	a = focusAnchor(t, a, "add machine")
+	a = pressSettings(t, a, "enter")
+	a = typeIntoSettings(t, a, "Porch")
+	a = pressSettings(t, a, "enter")
+	a = typeIntoSettings(t, a, porch.URL)
+	a = pressSettings(t, a, "enter")
+	added("Shed")
+	a = focusAnchor(t, a, "draft save")
+	a = pressSettings(t, a, "enter")
+	kept("Shed", "adding a machine")
+	kept("Porch", "adding a machine")
+}
+
+func TestOpeningMachinesShowsAMachineAddedInAnotherTerminal(t *testing.T) {
+	a, r := newMachinesRig(t, 120, 40)
+	den := comfytest.New(t, "den")
+	if _, err := config.AddMachine(r.live.Path(), config.Machine{Name: "Den iMac", URL: den.URL, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	a = openSettingsOn(t, a, sectionMachines)
+	if lineOfAnchor(a, "machine den imac status") < 0 {
+		t.Fatalf("Den iMac is not shown:\n%s", plain(a))
+	}
+}
+
+func TestTheLastMachineThatRendersNewSongsCannotBeTurnedOffOrRemoved(t *testing.T) {
+	a, r := newMachinesRig(t, 120, 40)
+	ms := r.live.Get().Machines
+	for i := range ms {
+		ms[i].Enabled = ms[i].Name == studio
+	}
+	if err := r.live.Set("machines", ms); err != nil {
+		t.Fatal(err)
+	}
+	a = openSettingsOn(t, a, sectionMachines)
+	a = focusAnchor(t, a, "machine this computer toggle")
+	a = pressSettings(t, a, "enter")
+	if r.live.Get().Local.Enabled {
+		t.Fatalf("this computer was kept on while Studio Mac also takes songs:\n%s", plain(a))
+	}
+
+	a = focusAnchor(t, a, "machine studio mac toggle")
+	a = pressSettings(t, a, "enter")
+	if m, _ := r.live.Get().Machine(studio); !m.Enabled {
+		t.Fatal("the last machine that takes new songs was turned off")
+	}
+	if !shows(a, "Not saved: Studio Mac is the only machine that renders new songs; turn on another one first") {
+		t.Fatalf("no reason given:\n%s", plain(a))
+	}
+	if strings.Contains(plain(a), "Studio Mac · gets no new songs") {
+		t.Fatalf("the heading says it is off:\n%s", plain(a))
+	}
+
+	a = focusAnchor(t, a, "machine studio mac remove")
+	a = pressSettings(t, a, "enter", "y")
+	if _, ok := r.live.Get().Machine(studio); !ok {
+		t.Fatal("the last machine that takes new songs was removed")
+	}
+	if !shows(a, "Not removed: Studio Mac is the only machine that renders new songs") {
+		t.Fatalf("no reason given:\n%s", plain(a))
+	}
+
+	a = focusAnchor(t, a, "machine this computer toggle")
+	a = pressSettings(t, a, "enter")
+	a = focusAnchor(t, a, "machine studio mac toggle")
+	a = pressSettings(t, a, "enter")
+	a = focusAnchor(t, a, "machine this computer toggle")
+	a = pressSettings(t, a, "enter")
+	if !r.live.Get().Local.Enabled || !shows(a, "Not saved: This computer is the only machine that renders new songs") {
+		t.Fatalf("this computer, the last one on, was turned off:\n%s", plain(a))
+	}
+}
+
+func TestAMachineWhoseFilesCouldNotBeCheckedSaysSo(t *testing.T) {
+	a, r := newMachinesRig(t, 80, 24)
+	r.servers[studio].SetModels()
+	vae := r.live.Get().ComfyUI.VAE
+	a = openSettingsOn(t, a, sectionMachines)
+	views := screens(t, a)
+	for _, want := range []string{"model files not checked", "Could not read which model files ComfyUI at " + r.servers[studio].URL, vae, "A render there fails at once"} {
+		if !seen(views, want) {
+			t.Errorf("%q is never shown:\n%s", want, strings.Join(views, "\n"))
+		}
+	}
+	for _, v := range views {
+		for _, l := range strings.Split(v, "\n") {
+			if w := ansi.StringWidth(l); w > 80 {
+				t.Errorf("a line is %d wide: %q", w, l)
+			}
+			if strings.Contains(l, "…") && !strings.Contains(l, "checking…") {
+				t.Errorf("a line was cut: %q", l)
+			}
+		}
+	}
+	if seen(views, "ComfyUI at "+r.local.URL+" lists") {
+		t.Errorf("this computer lists its files but says they were not checked:\n%s", strings.Join(views, "\n"))
+	}
+}
+
+func TestThisComputerAnsweringWithAnErrorIsNotCalledStopped(t *testing.T) {
+	a, r := newMachinesRig(t, 120, 40)
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	t.Cleanup(broken.Close)
+	local := r.live.Get().ComfyUI.BaseURL()
+	a.d.CheckMachine = func(ctx context.Context, url string, models config.ComfyUI) machines.Status {
+		if url == local {
+			url = broken.URL
+		}
+		return machines.Check(ctx, url, models)
+	}
+	a = openSettingsOn(t, a, sectionMachines)
+	views := screens(t, a)
+	if seen(views, "stopped") || seen(views, "ComfyUI is not running") {
+		t.Fatalf("a server that answered is called stopped:\n%s", strings.Join(views, "\n"))
+	}
+	if !seen(views, "answered with an error") {
+		t.Fatalf("what the server answered is not said:\n%s", strings.Join(views, "\n"))
 	}
 }

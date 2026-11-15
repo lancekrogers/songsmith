@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -69,6 +70,7 @@ func (r *rig) queue() *Queue {
 	q.offlineMin, q.offlineMax = 100*time.Millisecond, 200*time.Millisecond
 	q.lostMin, q.lostMax = 20*time.Millisecond, 50*time.Millisecond
 	q.liveEvery = 20 * time.Millisecond
+	q.fetchPause = 20 * time.Millisecond
 	q.SetSpeeds(r.speeds)
 	q.ReclaimAfter(func() time.Duration { return r.config().ReclaimAfter })
 	remote := map[string]backend.Backend{}
@@ -697,5 +699,146 @@ func TestAnEditFromAStaleCopyKeepsWhereTheRenderIs(t *testing.T) {
 	got, err := q.Enqueue(stale)
 	if err != nil || got.RenderingOn != mbp || got.JobID != "MacBookPro-3" {
 		t.Fatalf("enqueue from a copy naming another machine: %v %+v", err, got)
+	}
+}
+
+func TestADownloadCutOffMidwayIsFetchedAgain(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		memory  int64
+		prompts int
+	}{{"one prompt", 128 * comfytest.GiB, 1}, {"low memory", 32 * comfytest.GiB, 2}} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t, mbp)
+			srv := r.remotes[mbp]
+			srv.SetMemory(tc.memory)
+			srv.CutDownloads(1)
+			r.change(func(c *config.Config) { c.Local.Enabled = false })
+			song := r.song("Song", "")
+			r.run(r.queue())
+			eventually(t, "the render ends", func() bool {
+				s := r.load(song.ID).Status
+				return s == library.StatusDone || s == library.StatusFailed
+			})
+			done := r.load(song.ID)
+			if done.Status != library.StatusDone || done.JobID != "" || done.Error != "" {
+				t.Fatalf("after a download cut off midway: %+v", done)
+			}
+			if got := srv.Prompts(); len(got) != tc.prompts {
+				t.Fatalf("the render was sent again instead of fetched again: %v", got)
+			}
+			if got := takeMachines(done); !slices.Equal(got, []string{"song.flac@" + mbp}) {
+				t.Fatalf("takes %v", got)
+			}
+			audio := r.store.AudioPath(done)
+			if data, _ := os.ReadFile(audio); string(data) != "audio from MacBookPro" {
+				t.Fatalf("audio %q", data)
+			}
+			if left, _ := filepath.Glob(filepath.Join(filepath.Dir(audio), ".audio-*")); len(left) != 0 {
+				t.Fatalf("partial downloads left behind: %v", left)
+			}
+		})
+	}
+}
+
+func TestADownloadCutOffMidwayOnThisComputerIsFetchedAgain(t *testing.T) {
+	r := newRig(t)
+	r.local.CutDownloads(1)
+	song := r.song("Song", "")
+	r.run(r.queue())
+	eventually(t, "the render ends", func() bool {
+		s := r.load(song.ID).Status
+		return s == library.StatusDone || s == library.StatusFailed
+	})
+	done := r.load(song.ID)
+	if done.Status != library.StatusDone || done.JobID != "" || done.Error != "" {
+		t.Fatalf("after a download cut off midway: %+v", done)
+	}
+	if got := r.local.Prompts(); len(got) != 1 {
+		t.Fatalf("the render was sent again instead of fetched again: %v", got)
+	}
+	if data, _ := os.ReadFile(r.store.AudioPath(done)); string(data) != "audio from local" {
+		t.Fatalf("audio %q", data)
+	}
+}
+
+func TestAudioThatCannotBeFetchedFailsTheSongAndKeepsItsJob(t *testing.T) {
+	for _, tc := range []struct{ machine, where string }{{config.ThisComputer, "this computer"}, {mbp, mbp}} {
+		t.Run(tc.machine, func(t *testing.T) {
+			r := newRig(t, mbp)
+			srv := r.local
+			if tc.machine == mbp {
+				srv = r.remotes[mbp]
+			}
+			srv.CutDownloads(1000)
+			song := r.song("Song", tc.machine)
+			stop := r.run(r.queue())
+			eventually(t, "the render ends", func() bool {
+				s := r.load(song.ID).Status
+				return s == library.StatusDone || s == library.StatusFailed
+			})
+			failed := r.load(song.ID)
+			if failed.Status != library.StatusFailed || failed.JobID == "" || !strings.Contains(failed.Error, "could not be fetched from "+tc.where) {
+				t.Fatalf("after every download was cut off: %+v", failed)
+			}
+			stop()
+
+			srv.CutDownloads(0)
+			q := r.queue()
+			r.run(q)
+			if _, err := q.Enqueue(failed); err != nil {
+				t.Fatal(err)
+			}
+			eventually(t, "the song is done", func() bool { return r.load(song.ID).Status == library.StatusDone })
+			if got := srv.Prompts(); len(got) != 1 {
+				t.Fatalf("rendering it again sent the render again instead of fetching it: %v", got)
+			}
+			if done := r.load(song.ID); done.JobID != "" || done.Error != "" {
+				t.Fatalf("done: %+v", done)
+			}
+		})
+	}
+}
+
+func TestAReattachWhoseHistoryIsCutOffFetchesTheRenderInsteadOfSendingItAgain(t *testing.T) {
+	for _, machine := range []string{config.ThisComputer, mbp} {
+		for _, tc := range []struct {
+			name    string
+			memory  int64
+			prompts int
+		}{{"one prompt", 128 * comfytest.GiB, 1}, {"low memory", 32 * comfytest.GiB, 2}} {
+			t.Run(machine+"/"+tc.name, func(t *testing.T) {
+				r := newRig(t, mbp)
+				srv := r.local
+				if machine == mbp {
+					srv = r.remotes[mbp]
+				}
+				if tc.prompts == 1 {
+					r.change(func(c *config.Config) { c.Render.LowMemory = config.LowMemoryOff })
+				}
+				srv.SetMemory(tc.memory)
+				srv.SetHold(true)
+				song := r.song("Song", machine)
+				stop := r.run(r.queue())
+				id := queued(t, srv)
+				r.job(song.ID)
+				stop()
+
+				srv.Finish(id)
+				srv.SetHold(false)
+				srv.CutHistory(1)
+				r.run(r.queue())
+				eventually(t, "the render ends", func() bool {
+					s := r.load(song.ID).Status
+					return s == library.StatusDone || s == library.StatusFailed
+				})
+				if done := r.load(song.ID); done.Status != library.StatusDone || done.Error != "" {
+					t.Fatalf("after its history was cut off: %+v", done)
+				}
+				if got := srv.Prompts(); len(got) != tc.prompts {
+					t.Fatalf("the render was sent again: %v", got)
+				}
+			})
+		}
 	}
 }

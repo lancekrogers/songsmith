@@ -21,7 +21,16 @@ var (
 	ErrJobLost = comfy.ErrPromptLost
 	// ErrUnreachable means the server did not answer at all.
 	ErrUnreachable = comfy.ErrUnreachable
+	// ErrDownload means the render finished but fetching its audio failed,
+	// so the audio is still on the server.
+	ErrDownload = errors.New("audio download failed")
 )
+
+// downloadError keeps err's message and also matches ErrDownload.
+type downloadError struct{ err error }
+
+func (e *downloadError) Error() string   { return e.err.Error() }
+func (e *downloadError) Unwrap() []error { return []error{e.err, ErrDownload} }
 
 // Starter makes sure a ComfyUI server is reachable before a render.
 type Starter interface {
@@ -207,7 +216,7 @@ func (b *ComfyMiniMax) download(ctx context.Context, f comfy.OutputFile, dst str
 	defer os.Remove(tmp.Name())
 	if err := b.client.Download(ctx, f, tmp); err != nil {
 		tmp.Close()
-		return err
+		return &downloadError{err: err}
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("write audio: %w", err)

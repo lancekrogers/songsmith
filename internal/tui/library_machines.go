@@ -23,9 +23,48 @@ func lostMachine(s library.Song) (string, bool) {
 	return cmp.Or(s.RenderingOn, config.ThisComputer), held && !s.LostSince.IsZero()
 }
 
+// noMachine reports whether no machine can take a queued song even once
+// one is free. machine is the one it is set to render on, which is turned
+// off or, when gone, no longer added; it is "" when every machine is off.
+func (a *app) noMachine(s library.Song) (machine string, gone, stuck bool) {
+	if s.Status != library.StatusQueued || s.JobID != "" {
+		return "", false, false
+	}
+	cfg := a.cfg()
+	if s.Machine == "" {
+		return "", false, !cfg.TakesNewSongs()
+	}
+	if strings.EqualFold(s.Machine, config.ThisComputer) {
+		return config.ThisComputer, false, !cfg.Local.Enabled
+	}
+	m, ok := cfg.Machine(s.Machine)
+	if !ok {
+		return s.Machine, true, true
+	}
+	return m.Name, false, !m.Enabled
+}
+
+// noMachineNote says, for the launcher, that no machine takes new songs;
+// "" when one does.
+func (a *app) noMachineNote() string {
+	if a.cfg().TakesNewSongs() {
+		return ""
+	}
+	return "Every machine is turned off; songs wait until one is on (Settings → Machines)"
+}
+
 // whereLine says, in a few words, where a busy song renders or what it
 // waits for, for its line in the list; "" when there is nothing to add.
 func (a *app) whereLine(s library.Song) string {
+	if machine, gone, stuck := a.noMachine(s); stuck {
+		switch {
+		case machine == "":
+			return "waits: every machine is turned off"
+		case gone:
+			return "waits: " + machine + " is not one of the machines"
+		}
+		return "waits: " + machine + " is turned off"
+	}
 	if !a.machinesInUse(s) {
 		return ""
 	}
@@ -47,6 +86,16 @@ func (a *app) whereLine(s library.Song) string {
 // whereText says, for the detail pane, where the song renders, what it
 // waits for, or the machine it is set to render on.
 func (a *app) whereText(s library.Song) string {
+	if machine, gone, stuck := a.noMachine(s); stuck {
+		switch {
+		case machine == "":
+			return "Waits: every machine is turned off. Turn one on in Settings → Machines."
+		case gone:
+			return "Waits for " + machine + ", the machine it is set to render on, which is not one of the machines. Choose another machine for it."
+		}
+		return "Waits for " + machine + ", the machine it is set to render on, which is turned off. " +
+			"Turn it on in Settings → Machines, or choose another machine for it."
+	}
 	if !a.machinesInUse(s) {
 		return ""
 	}
@@ -99,15 +148,4 @@ func takeWhere(takes []library.Take, t library.Take, local bool) string {
 		return ""
 	}
 	return prefix + cmp.Or(machine, config.ThisComputer)
-}
-
-// renderingSongs are the songs rendering here or in another process.
-func (a app) renderingSongs() []library.Song {
-	var out []library.Song
-	for _, s := range a.library.songs {
-		if s.Status == library.StatusRendering {
-			out = append(out, s)
-		}
-	}
-	return out
 }

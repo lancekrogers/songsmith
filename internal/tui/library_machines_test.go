@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -143,11 +144,7 @@ func TestTheLibraryShowsEachRenderOnItsMachineWithItsOwnProgress(t *testing.T) {
 				t.Errorf("%dx%d: list does not show %q:\n%s", size[0], size[1], want, view)
 			}
 		}
-		for _, l := range strings.Split(view, "\n") {
-			if w := ansi.StringWidth(l); w > size[0] {
-				t.Errorf("%dx%d: a line is %d wide: %q", size[0], size[1], w, l)
-			}
-		}
+		fitsScreen(t, a, size[0], size[1], fmt.Sprintf("%dx%d", size[0], size[1]))
 
 		studioSong, _ := a.songByID(ids[studio])
 		a = selectTitle(t, a, studioSong.Title)
@@ -255,4 +252,105 @@ func TestTheMasterScreenSaysWhereEachTakeWasRendered(t *testing.T) {
 	if row := masterRow(t, a, anchorTakes); !strings.Contains(row.extras[1], "on This computer") {
 		t.Fatalf("a take rendered here does not say so once machines are added: %q", row.extras)
 	}
+}
+
+func TestAQueuedSongSaysWhyNoMachineTakesIt(t *testing.T) {
+	a, store := newTestModel(t, fakeDrafter{})
+	if err := a.d.Config.Set("local.enabled", false); err != nil {
+		t.Fatal(err)
+	}
+	s, err := store.Create(renderable("Solo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Status = library.StatusQueued
+	if err := store.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	a = runCmd(t, a, a.loadSongs())
+	a, _ = send(t, a, switchScreenMsg(screenLibrary))
+	a = selectTitle(t, a, "Solo")
+	if d := strings.Join(strings.Fields(ansi.Strip(a.library.detail.View())), " "); !strings.Contains(d, "Waits: every machine is turned off. Turn one on in Settings → Machines.") {
+		t.Errorf("detail of a song no machine takes:\n%s", d)
+	}
+	if !listShows(a, "↳ waits: every machine is turned off") {
+		t.Errorf("list:\n%s", plain(a))
+	}
+	a, _ = send(t, a, switchScreenMsg(screenLauncher))
+	a = finishHealth(t, a)
+	if v := plain(a); !shows(a, "Every machine is turned off; songs wait until one is on (Settings → Machines)") || strings.Contains(v, "Ready to render") {
+		t.Errorf("launcher with every machine off:\n%s", v)
+	}
+
+	if err := a.d.Config.Set("local.enabled", true); err != nil {
+		t.Fatal(err)
+	}
+	a, _ = send(t, a, switchScreenMsg(screenLibrary))
+	a = selectTitle(t, a, "Solo")
+	if v := plain(a); strings.Contains(v, "every machine is turned off") || strings.Contains(v, "↳") {
+		t.Errorf("a reason is still shown once this computer is on:\n%s", v)
+	}
+}
+
+func TestAQueuedSongNeverClaimsAFreeMachineWhenNoneIsOn(t *testing.T) {
+	for _, size := range [][2]int{{120, 40}, {80, 24}} {
+		queuedWithNoMachineOn(t, size[0], size[1])
+	}
+}
+
+func queuedWithNoMachineOn(t *testing.T, width, height int) {
+	where := fmt.Sprintf("%dx%d", width, height)
+	a, r := newMachinesRig(t, width, height)
+	ms := r.live.Get().Machines
+	for i := range ms {
+		ms[i].Enabled = false
+	}
+	ms = append(ms, config.Machine{Name: "Loft", URL: "http://127.0.0.1:3", Enabled: false})
+	for _, kv := range []savedKV{{"machines", ms}, {"local.enabled", false}} {
+		if err := r.live.Set(kv.key, kv.value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	free, err := r.store.Create(renderable("Free Song"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	free.Status = library.StatusQueued
+	pinned := renderable("Pinned Song")
+	pinned.Status, pinned.Machine = library.StatusQueued, studio
+	gone := renderable("Gone Song")
+	gone.Status, gone.Machine = library.StatusQueued, "Old Laptop"
+	for _, s := range []library.Song{free, pinned, gone} {
+		if s.ID == "" {
+			if _, err := r.store.Create(s); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := r.store.Save(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a = runCmd(t, a, a.loadSongs())
+	a, _ = send(t, a, switchScreenMsg(screenLibrary))
+	for title, want := range map[string]string{
+		"Free Song":   "Waits: every machine is turned off.",
+		"Pinned Song": "Waits for Studio Mac, the machine it is set to render on, which is turned off.",
+		"Gone Song":   "Waits for Old Laptop, the machine it is set to render on, which is not one of the machines.",
+	} {
+		a = selectTitle(t, a, title)
+		d := strings.Join(strings.Fields(ansi.Strip(a.library.detail.View())), " ")
+		if !strings.Contains(d, want) || strings.Contains(d, "Goes to the first free machine") {
+			t.Errorf("%s: %s: detail lacks %q:\n%s", where, title, want, d)
+		}
+		fitsScreen(t, a, width, height, where+" "+title)
+	}
+	for _, want := range []string{"↳ waits: every machine is turned off", "↳ waits: Studio Mac is turned off", "↳ waits: Old Laptop is not one of the machines"} {
+		if !listShows(a, want) {
+			t.Errorf("%s: list lacks %q:\n%s", where, want, plain(a))
+		}
+	}
+	a, _ = send(t, a, switchScreenMsg(screenLauncher))
+	if !shows(a, "Every machine is turned off; songs wait until one is on (Settings → Machines)") {
+		t.Errorf("%s: launcher:\n%s", where, plain(a))
+	}
+	fitsScreen(t, a, width, height, where+" launcher")
 }

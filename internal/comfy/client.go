@@ -160,24 +160,43 @@ func (c *Client) ObjectInfo(ctx context.Context, class string) (NodeInfo, bool, 
 }
 
 // ComboOptions returns the allowed values for a combo input, such as the
-// model files a loader node can see.
+// model files a loader node can see, or nil when it cannot read them.
 func (n NodeInfo) ComboOptions(name string) []string {
+	opts, _ := n.ComboList(name)
+	return opts
+}
+
+// ComboList returns the allowed values for a combo input, and false when
+// the input is missing, is not a combo, or does not list its values. It
+// reads both the [[values], {...}] shape and the newer
+// ["COMBO", {"options": [values]}].
+func (n NodeInfo) ComboList(name string) ([]string, bool) {
 	raw, ok := n.Input.Required[name]
 	if !ok {
 		raw, ok = n.Input.Optional[name]
 	}
 	if !ok {
-		return nil
+		return nil, false
 	}
 	var spec []json.RawMessage
 	if json.Unmarshal(raw, &spec) != nil || len(spec) == 0 {
-		return nil
+		return nil, false
 	}
 	var opts []string
-	if json.Unmarshal(spec[0], &opts) == nil {
-		return opts
+	if json.Unmarshal(spec[0], &opts) == nil && opts != nil {
+		return opts, true
 	}
-	return nil
+	var typ string
+	if json.Unmarshal(spec[0], &typ) != nil || typ != "COMBO" || len(spec) < 2 {
+		return nil, false
+	}
+	var extra struct {
+		Options []string `json:"options"`
+	}
+	if json.Unmarshal(spec[1], &extra) != nil || extra.Options == nil {
+		return nil, false
+	}
+	return extra.Options, true
 }
 
 // ErrUnreachable means the server did not answer at all: it is stopped,
@@ -310,10 +329,35 @@ func (c *Client) Download(ctx context.Context, f OutputFile, w io.Writer) error 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download %s: HTTP %d", f.Filename, resp.StatusCode)
 	}
-	if _, err := io.Copy(w, resp.Body); err != nil {
-		return fmt.Errorf("download %s: %w", f.Filename, err)
+	body := &bodyReader{r: resp.Body}
+	if _, err := io.Copy(w, body); err != nil {
+		return fmt.Errorf("download %s: %w", f.Filename, body.cut(ctx, err))
 	}
 	return nil
+}
+
+// bodyReader records the error reading a response body, so a connection
+// that drops midway can be told apart from a file that cannot be written.
+type bodyReader struct {
+	r   io.Reader
+	err error
+}
+
+func (b *bodyReader) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if err != nil && err != io.EOF {
+		b.err = err
+	}
+	return n, err
+}
+
+// cut marks err as unreachable when the body stopped arriving, unless ctx
+// ended.
+func (b *bodyReader) cut(ctx context.Context, err error) error {
+	if b.err != nil && ctx.Err() == nil {
+		return &unreachableError{err: err}
+	}
+	return err
 }
 
 // Interrupt stops promptID if it is the prompt currently executing.
@@ -379,8 +423,9 @@ func (c *Client) getJSON(ctx context.Context, path string, v any) error {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return fmt.Errorf("GET %s: HTTP %d: %s", path, resp.StatusCode, bytes.TrimSpace(body))
 	}
-	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
-		return fmt.Errorf("decode %s: %w", path, err)
+	body := &bodyReader{r: resp.Body}
+	if err := json.NewDecoder(body).Decode(v); err != nil {
+		return fmt.Errorf("decode %s: %w", path, body.cut(ctx, err))
 	}
 	return nil
 }

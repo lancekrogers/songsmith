@@ -41,6 +41,8 @@ type Server struct {
 	memory  int64
 	models  []string
 	missing string
+	cuts    int
+	hcuts   int
 	n       int
 	state   map[string]string
 	graphs  map[string]comfy.Graph
@@ -93,7 +95,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /queue", s.deleteQueued)
 	mux.HandleFunc("POST /interrupt", s.interrupt)
 	mux.HandleFunc("POST /free", func(http.ResponseWriter, *http.Request) {})
-	mux.HandleFunc("GET /view", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "audio from "+s.prefix) })
+	mux.HandleFunc("GET /view", s.view)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if quiet := s.quiet(); quiet != nil {
 			select {
@@ -154,8 +156,8 @@ func (s *Server) SetMemory(bytes int64) {
 	s.memory = bytes
 }
 
-// SetModels sets the model files the loaders list; nil lists none, which
-// passes any file name.
+// SetModels sets the model files the loaders list; nil lists none, so the
+// files cannot be checked.
 func (s *Server) SetModels(files ...string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -168,6 +170,22 @@ func (s *Server) SetMissingNode(class string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.missing = class
+}
+
+// CutDownloads makes the next n downloads drop the connection halfway
+// through the file.
+func (s *Server) CutDownloads(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cuts = n
+}
+
+// CutHistory makes the next n history answers drop the connection halfway
+// through.
+func (s *Server) CutHistory(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hcuts = n
 }
 
 // SetDown makes the server drop every connection, as a machine that went to
@@ -256,6 +274,29 @@ func drop(w http.ResponseWriter) {
 	if conn, _, err := hj.Hijack(); err == nil {
 		conn.Close()
 	}
+}
+
+func (s *Server) view(w http.ResponseWriter, _ *http.Request) {
+	s.answer(w, &s.cuts, "audio from "+s.prefix)
+}
+
+// answer writes body, or while *cuts is above zero counts it down and drops
+// the connection halfway through body.
+func (s *Server) answer(w http.ResponseWriter, cuts *int, body string) {
+	s.mu.Lock()
+	cut := *cuts > 0
+	if cut {
+		*cuts--
+	}
+	s.mu.Unlock()
+	if !cut {
+		io.WriteString(w, body)
+		return
+	}
+	w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+	io.WriteString(w, body[:len(body)/2])
+	w.(http.Flusher).Flush()
+	panic(http.ErrAbortHandler)
 }
 
 func (s *Server) stats(w http.ResponseWriter, _ *http.Request) {
@@ -367,16 +408,18 @@ func (s *Server) history(w http.ResponseWriter, r *http.Request) {
 	st := s.state[id]
 	sample := s.graphs[id][comfy.NodeSaveLatent].ClassType != ""
 	s.mu.Unlock()
+	var body string
 	switch {
 	case st == "done" && sample:
-		fmt.Fprintf(w, `{%q:{"status":{"status_str":"success","completed":true},"outputs":{"save_latent":{"latents":[{"filename":%q,"subfolder":"songsmith/latents","type":"output"}]}}}}`, id, id+".latent")
+		body = fmt.Sprintf(`{%q:{"status":{"status_str":"success","completed":true},"outputs":{"save_latent":{"latents":[{"filename":%q,"subfolder":"songsmith/latents","type":"output"}]}}}}`, id, id+".latent")
 	case st == "done":
-		fmt.Fprintf(w, `{%q:{"status":{"status_str":"success","completed":true},"outputs":{"save":{"audio":[{"filename":"song.flac","subfolder":"songsmith","type":"output"}]}}}}`, id)
+		body = fmt.Sprintf(`{%q:{"status":{"status_str":"success","completed":true},"outputs":{"save":{"audio":[{"filename":"song.flac","subfolder":"songsmith","type":"output"}]}}}}`, id)
 	case st == "interrupted":
-		fmt.Fprintf(w, `{%q:{"status":{"status_str":"error","completed":false,"messages":[["execution_interrupted",{"prompt_id":%q}]]},"outputs":{}}}`, id, id)
+		body = fmt.Sprintf(`{%q:{"status":{"status_str":"error","completed":false,"messages":[["execution_interrupted",{"prompt_id":%q}]]},"outputs":{}}}`, id, id)
 	default:
-		io.WriteString(w, "{}")
+		body = "{}"
 	}
+	s.answer(w, &s.hcuts, body)
 }
 
 func (s *Server) queue(w http.ResponseWriter, _ *http.Request) {

@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 
@@ -137,4 +140,100 @@ func TestRenderOnWrapsAtEightyColumns(t *testing.T) {
 		}
 	}
 	t.Log("\n" + plain(a))
+}
+
+func TestSteppingOffAPinToAGoneMachineKeepsTheRowAndTheWayBack(t *testing.T) {
+	a, r := newMachinesRig(t, 80, 40)
+	if err := r.live.Set("machines", []config.Machine{}); err != nil {
+		t.Fatal(err)
+	}
+	song := renderable("Night Drive")
+	song.Machine = "Old Tower"
+	song, err := r.store.Create(song)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ = send(t, a, openComposeMsg{song: &song})
+	a = toMachineRow(t, a)
+	for _, step := range []struct{ key, want string }{
+		{"left", "✓ This computer"},
+		{"left", "✓ any free machine"},
+		{"left", "✓ any free machine"},
+		{"right", "✓ This computer"},
+		{"right", "✓ Old Tower (not one of the machines)"},
+		{"right", "✓ Old Tower (not one of the machines)"},
+	} {
+		a, _ = send(t, a, key(step.key))
+		if a.compose.focus != rowMachine || !shows(a, "Render on") {
+			t.Fatalf("after %s the Render on row went away (focus %v):\n%s", step.key, a.compose.focus, plain(a))
+		}
+		if !shows(a, step.want) {
+			t.Fatalf("after %s want %q:\n%s", step.key, step.want, plain(a))
+		}
+		if !shows(a, "Old Tower") {
+			t.Fatalf("after %s the song's own pin is no longer offered:\n%s", step.key, plain(a))
+		}
+	}
+	a, _ = send(t, a, key("left"), key("left"), key("ctrl+d"))
+	if s, _ := r.store.Load(song.ID); s.Machine != "" {
+		t.Fatalf("pin after choosing any free machine: %q", s.Machine)
+	}
+	saved, _ := r.store.Load(song.ID)
+	a, _ = send(t, a, openComposeMsg{song: &saved})
+	if shows(a, "Render on") || shows(a, "Old Tower") {
+		t.Fatalf("a saved song with no pin and one machine still offers Render on:\n%s", plain(a))
+	}
+}
+
+func TestRenderOnStaysWhileTheFormIsOpenWhenMachinesStopTakingSongs(t *testing.T) {
+	a, r := newMachinesRig(t, 120, 50)
+	a, _ = send(t, a, openComposeMsg{})
+	a = toMachineRow(t, a)
+	a, _ = send(t, a, key("right"))
+	if err := r.live.Set("machines", []config.Machine{}); err != nil {
+		t.Fatal(err)
+	}
+	a, _ = send(t, a, key("left"))
+	if a.compose.focus != rowMachine || !shows(a, "Render on ✓ any free machine") {
+		t.Fatalf("Render on went away under the cursor (focus %v):\n%s", a.compose.focus, plain(a))
+	}
+	a, _ = send(t, a, key("right"))
+	if !shows(a, "✓ This computer") {
+		t.Fatalf("→ does nothing on Render on:\n%s", plain(a))
+	}
+}
+
+func TestACopyCarriesNoRenderState(t *testing.T) {
+	a, r := newMachinesRig(t, 120, 50)
+	busy := renderable("Neon Water")
+	busy.Status, busy.JobID, busy.RenderingOn, busy.LostSince, busy.Started = library.StatusRendering, "studio-1", studio, time.Now(), time.Now()
+	busy.Machine = studio
+	busy, err := r.store.Create(busy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ = send(t, a, openComposeMsg{song: &busy})
+	a, _ = send(t, a, key("ctrl+d"))
+	songs, _ := r.store.List()
+	var copied *library.Song
+	for i := range songs {
+		if songs[i].ID != busy.ID {
+			copied = &songs[i]
+		}
+	}
+	if copied == nil {
+		t.Fatalf("no copy saved: %+v", songs)
+	}
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(r.store.AudioPath(*copied)), "song.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"rendering_on"`, `"lost_since"`, `"job_id"`} {
+		if strings.Contains(string(raw), field) {
+			t.Errorf("the copy's song.json has %s:\n%s", field, raw)
+		}
+	}
+	if copied.Machine != studio {
+		t.Errorf("the copy lost the machine it is set to render on: %q", copied.Machine)
+	}
 }

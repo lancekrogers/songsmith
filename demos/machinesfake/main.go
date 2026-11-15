@@ -42,24 +42,60 @@ func main() {
 			log.Fatalf("%s: machinesfake listens on loopback only", addr)
 		}
 	}
-	models := config.Default().ComfyUI
-	start := func(addr, name string, memory int64) *comfytest.Server {
-		s, err := comfytest.Listen(addr, name)
-		if err != nil {
-			log.Fatal(err)
-		}
-		s.SetHold(true)
-		s.SetMemory(memory * comfytest.GiB)
-		return s
+	s, err := standIns(*local, *studio, *air, *den)
+	if err != nil {
+		log.Fatal(err)
 	}
-	here := start(*local, "local", 64)
-	go tick(here, 48, 5*time.Second)
-	go tick(start(*studio, "studio", 128), 12, 1500*time.Millisecond)
-	start(*air, "air", 16).SetModels(models.DiffusionModel, models.TextEncoder)
-	start(*den, "den", 96)
+	go tick(s.here, 48, 5*time.Second)
+	go tick(s.studio, 12, 1500*time.Millisecond)
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
+}
+
+type servers struct{ here, studio, air, den *comfytest.Server }
+
+func (s servers) all() []*comfytest.Server {
+	return []*comfytest.Server{s.here, s.studio, s.air, s.den}
+}
+
+func (s servers) close() {
+	for _, srv := range s.all() {
+		if srv != nil {
+			srv.Close()
+		}
+	}
+}
+
+// standIns starts the stand-in servers, each holding its prompts and listing
+// the model files that computer has.
+func standIns(local, studio, air, den string) (servers, error) {
+	models := config.Default().ComfyUI
+	all := []string{models.DiffusionModel, models.TextEncoder, models.VAE}
+	var s servers
+	for _, sp := range []struct {
+		srv    **comfytest.Server
+		addr   string
+		name   string
+		memory int64
+		files  []string
+	}{
+		{&s.here, local, "local", 64, all},
+		{&s.studio, studio, "studio", 128, all},
+		{&s.air, air, "air", 16, all[:2]},
+		{&s.den, den, "den", 96, all},
+	} {
+		srv, err := comfytest.Listen(sp.addr, sp.name)
+		if err != nil {
+			s.close()
+			return servers{}, err
+		}
+		srv.SetHold(true)
+		srv.SetMemory(sp.memory * comfytest.GiB)
+		srv.SetModels(sp.files...)
+		*sp.srv = srv
+	}
+	return s, nil
 }
 
 // tick moves each held prompt on s one sampler step of 100 every interval,

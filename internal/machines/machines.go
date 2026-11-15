@@ -34,9 +34,16 @@ type Status struct {
 	// Missing names the nodes a machine that is too old lacks, or the model
 	// files a machine with models missing cannot see.
 	Missing []string
+	// Unchecked names the model files a ready machine's loaders do not
+	// list the files for, so the check could not tell whether it sees them.
+	Unchecked []string
 	// Reason is, in a few words, why a machine that is offline did not
 	// answer, such as "connection refused".
-	Reason  string
+	Reason string
+	// AnsweredWithError is set on an offline machine whose server answered,
+	// with an error, rather than not answering at all.
+	AnsweredWithError bool
+
 	Memory  int64
 	Device  string
 	Version string
@@ -60,7 +67,7 @@ func Check(ctx context.Context, baseURL string, models config.ComfyUI) Status {
 	if len(stats.Devices) > 0 {
 		st.Device = stats.Devices[0].Type
 	}
-	nodes, files, err := health.MissingNodes(ctx, c, models)
+	nodes, files, unchecked, err := health.MissingNodes(ctx, c, models)
 	switch {
 	case err != nil:
 		return offline(baseURL, err)
@@ -73,8 +80,12 @@ func Check(ctx context.Context, baseURL string, models config.ComfyUI) Status {
 		st.Detail = fmt.Sprintf("ComfyUI at %s cannot see %s. Install the MiniMax Music 3 files on that computer (`songsmith setup --install` there) "+
 			"or set this machine's model file names, then restart ComfyUI there.", baseURL, strings.Join(files, ", "))
 	default:
-		st.State = Ready
+		st.State, st.Unchecked = Ready, unchecked
 		st.Detail = "ready at " + baseURL + st.about()
+		if len(unchecked) > 0 {
+			st.Detail += fmt.Sprintf("; could not read which model files it lists, so %s %s not checked and a render there fails at once if ComfyUI cannot see %s",
+				strings.Join(unchecked, ", "), plural(len(unchecked), "was", "were"), plural(len(unchecked), "it", "them"))
+		}
 	}
 	return st
 }
@@ -89,11 +100,12 @@ func offline(baseURL string, err error) Status {
 	if errors.Is(err, context.DeadlineExceeded) {
 		reason = fmt.Sprintf("no answer within %s", CheckTimeout)
 	}
-	if !errors.Is(err, comfy.ErrUnreachable) && !errors.Is(err, context.DeadlineExceeded) {
+	answered := !errors.Is(err, comfy.ErrUnreachable) && !errors.Is(err, context.DeadlineExceeded)
+	if answered {
 		detail = fmt.Sprintf("ComfyUI at %s answered with an error: %v", baseURL, err)
 		reason = "answered with an error: " + err.Error()
 	}
-	return Status{State: Offline, Detail: detail, Reason: reason}
+	return Status{State: Offline, Detail: detail, Reason: reason, AnsweredWithError: answered}
 }
 
 // about describes the hardware a check found, such as ", mps, 64 GB, ComfyUI 0.3.60".
@@ -137,4 +149,11 @@ func Ping(ctx context.Context, baseURL string) error {
 	defer cancel()
 	_, err := comfy.NewClient(baseURL).SystemStats(ctx)
 	return err
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }

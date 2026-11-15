@@ -55,6 +55,8 @@ func newMachinesRig(t *testing.T, width, height int) (app, *machinesRig) {
 	cfg.ComfyUI.Dir = filepath.Join(dir, "comfyui")
 	cfg.ComfyUI.Host, cfg.ComfyUI.Port = hostPort(t, r.local.URL)
 	cfg.Ollama.URL = "http://127.0.0.1:1"
+	r.local.SetModels(cfg.ComfyUI.DiffusionModel, cfg.ComfyUI.TextEncoder, cfg.ComfyUI.VAE)
+	r.servers[studio].SetModels(cfg.ComfyUI.DiffusionModel, cfg.ComfyUI.TextEncoder, cfg.ComfyUI.VAE)
 	r.servers[air].SetModels(cfg.ComfyUI.DiffusionModel, cfg.ComfyUI.TextEncoder)
 	cfg.Machines = []config.Machine{
 		{Name: studio, URL: r.servers[studio].URL, Enabled: true},
