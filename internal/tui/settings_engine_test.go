@@ -173,7 +173,7 @@ func TestFoldersAndHostSaveOnlyTheirKeyForTheNextStart(t *testing.T) {
 		t.Fatalf("host:\n%s", plain(a))
 	}
 
-	a = pressSettings(t, a, "8")
+	a = pressSettings(t, a, "9")
 	view := plain(a)
 	for _, s := range []string{"Library folder", "State folder", "Config file"} {
 		if !strings.Contains(view, s) {

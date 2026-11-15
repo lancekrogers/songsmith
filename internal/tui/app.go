@@ -14,6 +14,7 @@ import (
 	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/health"
 	"github.com/lancekrogers/songsmith/internal/library"
+	"github.com/lancekrogers/songsmith/internal/machines"
 	"github.com/lancekrogers/songsmith/internal/master"
 	"github.com/lancekrogers/songsmith/internal/queue"
 	"github.com/lancekrogers/songsmith/internal/writer"
@@ -69,6 +70,9 @@ type Deps struct {
 	Installer Installer
 	// Clipboard copies text for the user; nil means the system clipboard.
 	Clipboard func(text string) error
+	// CheckMachine asks a ComfyUI server whether it can render with models;
+	// nil means machines.Check. It is called off the UI goroutine.
+	CheckMachine func(ctx context.Context, url string, models config.ComfyUI) machines.Status
 }
 
 type screen int

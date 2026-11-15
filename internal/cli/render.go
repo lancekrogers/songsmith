@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
-	"sync"
 	"time"
 
 	"github.com/lancekrogers/songsmith/internal/backend"
@@ -33,54 +31,13 @@ func newRenderer(live *config.Live) *renderer {
 	b := backend.NewComfyMiniMax(m.Client(), backend.StarterFunc(m.Ensure), live.Get)
 	store := library.NewStore(cfg.LibraryDir)
 	q := queue.New(store, b)
-	remotes := &remoteBackends{settings: live.Get, byKey: map[string]*backend.ComfyMiniMax{}}
-	q.SetMachines(func() []queue.Machine { return machineList(live.Get(), b, remotes) })
+	q.SetMachines(queue.ConfigMachines(live.Get, b))
 	q.SetSpeeds(machines.NewSpeeds(cfg.StateDir))
 	q.ReclaimAfter(func() time.Duration { return live.Get().ReclaimAfter })
 	q.BeforeRender(func(ctx context.Context) { unloadWriter(ctx, live.Get().Ollama) })
 	run := master.NewRunner()
 	q.AfterRender(autoMaster(store, live.Get, run))
 	return &renderer{store: store, server: m, backend: b, queue: q, master: run}
-}
-
-// machineList is this computer, then each added machine in config order.
-func machineList(cfg config.Config, local backend.Backend, remotes *remoteBackends) []queue.Machine {
-	out := []queue.Machine{{Name: config.ThisComputer, Backend: local, Enabled: cfg.Local.Enabled, Local: true}}
-	for _, mc := range cfg.Machines {
-		url, models := mc.URL, mc.Models(cfg.ComfyUI)
-		out = append(out, queue.Machine{
-			Name:    mc.Name,
-			Backend: remotes.backend(mc.Name, url),
-			Enabled: mc.Enabled,
-			Ping:    func(ctx context.Context) error { return machines.Ping(ctx, url) },
-			Ready: func(ctx context.Context) error {
-				if st := machines.Check(ctx, url, models); st.State != machines.Ready {
-					return errors.New(st.Detail)
-				}
-				return nil
-			},
-		})
-	}
-	return out
-}
-
-// remoteBackends keeps one backend per added machine and address.
-type remoteBackends struct {
-	settings func() config.Config
-	mu       sync.Mutex
-	byKey    map[string]*backend.ComfyMiniMax
-}
-
-func (r *remoteBackends) backend(name, url string) *backend.ComfyMiniMax {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	key := name + "\x00" + url
-	b, ok := r.byKey[key]
-	if !ok {
-		b = machines.Backend(name, url, r.settings)
-		r.byKey[key] = b
-	}
-	return b
 }
 
 // unloadWriter asks Ollama to drop the writer model before a render, when

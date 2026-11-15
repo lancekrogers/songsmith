@@ -50,9 +50,11 @@ type settingRow struct {
 	key  string
 	name string
 	kind rowKind
-	// value is what the row shows; detail is a dim tail after it.
+	// value is what the row shows; detail is a dim tail after it. wrap
+	// breaks a long value over more lines under itself instead of cutting it.
 	value  string
 	detail string
+	wrap   bool
 	// group heads the rows that share it; a row whose group differs from the
 	// row before starts a new block. gap starts one without a heading.
 	group string
@@ -112,6 +114,8 @@ func (a app) sectionRows() []settingRow {
 		return a.masterSettingsRows()
 	case sectionServer:
 		return a.serverRows()
+	case sectionMachines:
+		return a.machineRows()
 	case sectionAdvanced:
 		return a.advancedRows()
 	case sectionLibrary:

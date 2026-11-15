@@ -286,6 +286,9 @@ func (a app) settingsKeys() []string {
 	if a.settings.filter.on {
 		return []string{"type to filter", "↑/↓ move", "enter choose", "esc clear"}
 	}
+	if a.settings.machines.remove != "" {
+		return a.machineKeys()
+	}
 	keys := []string{"↑/↓ move", "←/→ section"}
 	if row, line, ok := a.focusedSetting(); ok {
 		switch {
@@ -506,7 +509,7 @@ func rowLine(row settingRow, focused bool, nameWidth, valueWidth int) string {
 	}
 	gap := max(nw-lipgloss.Width(name), 1)
 	values := row.valueLines(valueWidth)
-	if row.kind != rowChoice {
+	if row.kind != rowChoice && !row.wrap {
 		values = []string{rowValue(row)}
 	}
 	line := "  " + cursor + mark + nameStyle.Render(name) + strings.Repeat(" ", gap) + values[0]
@@ -590,6 +593,17 @@ func shortPath(v string) string {
 // valueLines is a choice row's options with [current] marked, wrapped to
 // width so every option stays on screen; any other row is one line.
 func (r settingRow) valueLines(width int) []string {
+	if r.wrap && r.kind != rowChoice {
+		style := normalStyle
+		if r.kind == rowInfo {
+			style = dimStyle
+		}
+		lines := wrapText(r.value, width)
+		for i, l := range lines {
+			lines[i] = style.Render(l)
+		}
+		return lines
+	}
 	if r.kind != rowChoice {
 		return []string{""}
 	}

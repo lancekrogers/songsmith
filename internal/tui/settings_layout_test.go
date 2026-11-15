@@ -69,6 +69,11 @@ func busyApp(t *testing.T, w, h int) app {
 func TestEverySectionFitsIn80x24WithALargeLibrary(t *testing.T) {
 	a := busyApp(t, 80, 24)
 	for sec := range settingsSectionCount {
+		if sec == sectionMachines {
+			// A block per machine added: it scrolls, and is checked at
+			// 80x24 on its own.
+			continue
+		}
 		a = openSettingsOn(t, a, sec)
 		rows, lines := a.settingsLayout()
 		for i, l := range lines {

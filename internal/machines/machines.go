@@ -30,7 +30,13 @@ type Status struct {
 	State State
 	// Detail says what was found, and for a machine that is not ready,
 	// what to do about it.
-	Detail  string
+	Detail string
+	// Missing names the nodes a machine that is too old lacks, or the model
+	// files a machine with models missing cannot see.
+	Missing []string
+	// Reason is, in a few words, why a machine that is offline did not
+	// answer, such as "connection refused".
+	Reason  string
 	Memory  int64
 	Device  string
 	Version string
@@ -59,11 +65,11 @@ func Check(ctx context.Context, baseURL string, models config.ComfyUI) Status {
 	case err != nil:
 		return offline(baseURL, err)
 	case len(nodes) > 0:
-		st.State = TooOld
+		st.State, st.Missing = TooOld, nodes
 		st.Detail = fmt.Sprintf("ComfyUI at %s lacks %s. Update ComfyUI on that computer to a version with MiniMax Music 3 support.",
 			baseURL, strings.Join(nodes, ", "))
 	case len(files) > 0:
-		st.State = ModelsMissing
+		st.State, st.Missing = ModelsMissing, files
 		st.Detail = fmt.Sprintf("ComfyUI at %s cannot see %s. Install the MiniMax Music 3 files on that computer (`songsmith setup --install` there) "+
 			"or set this machine's model file names, then restart ComfyUI there.", baseURL, strings.Join(files, ", "))
 	default:
@@ -76,10 +82,18 @@ func Check(ctx context.Context, baseURL string, models config.ComfyUI) Status {
 func offline(baseURL string, err error) Status {
 	detail := fmt.Sprintf("not answering at %s (%v). Check that the computer is awake, that ComfyUI runs there (`songsmith server start` on that computer), "+
 		"and that its comfyui.host is an address this computer can reach.", baseURL, err)
+	reason := err.Error()
+	if i := strings.LastIndex(reason, ": "); i >= 0 {
+		reason = reason[i+2:]
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		reason = fmt.Sprintf("no answer within %s", CheckTimeout)
+	}
 	if !errors.Is(err, comfy.ErrUnreachable) && !errors.Is(err, context.DeadlineExceeded) {
 		detail = fmt.Sprintf("ComfyUI at %s answered with an error: %v", baseURL, err)
+		reason = "answered with an error: " + err.Error()
 	}
-	return Status{State: Offline, Detail: detail}
+	return Status{State: Offline, Detail: detail, Reason: reason}
 }
 
 // about describes the hardware a check found, such as ", mps, 64 GB, ComfyUI 0.3.60".

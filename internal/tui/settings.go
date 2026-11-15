@@ -20,6 +20,7 @@ const (
 	sectionRender
 	sectionMaster
 	sectionServer
+	sectionMachines
 	sectionAdvanced
 	sectionLibrary
 	settingsSectionCount
@@ -32,6 +33,7 @@ var sectionNames = [settingsSectionCount]string{
 	sectionRender:     "Render",
 	sectionMaster:     "Master",
 	sectionServer:     "Server",
+	sectionMachines:   "Machines",
 	sectionAdvanced:   "Advanced",
 	sectionLibrary:    "Library",
 }
@@ -63,6 +65,10 @@ type settingsModel struct {
 	models   modelsState
 	samplers samplersState
 	server   serverState
+	machines machinesState
+	// editSeq numbers each editor opened, so a commit that opens the next
+	// one keeps it open.
+	editSeq int
 	// variants is the on-disk state of the music model files, read when
 	// the Music model section opens.
 	variants map[string][]ModelVariant
@@ -123,6 +129,8 @@ func (a *app) enterSection(sec settingsSection) tea.Cmd {
 		return a.loadServerStatus()
 	case sectionRender:
 		return a.loadServerStatus()
+	case sectionMachines:
+		return a.checkAllMachines()
 	case sectionAdvanced:
 		return a.loadSamplers()
 	}
@@ -142,6 +150,9 @@ func (a app) updateSettings(msg tea.Msg) (app, tea.Cmd) {
 	}
 	if a.settings.edit.active {
 		return a.updateSettingsEditor(key)
+	}
+	if a.settings.machines.remove != "" {
+		return a.answerRemove(key)
 	}
 	a.syncSettings()
 	if a.settings.filter.on {
@@ -342,6 +353,7 @@ type settingsEditor struct {
 	live     func(value string) string
 	complete func(value string) (string, []string)
 	hint     string
+	id       int
 	// note stands in for the hint after enter: why the value was not saved.
 	// confirm is a value a second enter saves as typed.
 	note       string
@@ -351,6 +363,8 @@ type settingsEditor struct {
 
 func (a *app) beginEdit(label, initial string, commit func(a *app, value string) (tea.Cmd, error)) tea.Cmd {
 	a.settings.edit = newEditor(label, initial, a.settingsContentWidth(), commit)
+	a.settings.editSeq++
+	a.settings.edit.id = a.settings.editSeq
 	a.clearSettingsNote()
 	return textinput.Blink
 }
@@ -393,6 +407,7 @@ func (a app) updateSettingsEditor(key tea.KeyMsg) (app, tea.Cmd) {
 		}
 	case "enter":
 		value := strings.TrimSpace(a.settings.edit.input.Value())
+		id := a.settings.edit.id
 		cmd, err := a.settings.edit.commit(&a, value)
 		if errors.Is(err, errSaveFailed) {
 			// The editor stays open with the typed value; the reason is shown.
@@ -402,7 +417,9 @@ func (a app) updateSettingsEditor(key tea.KeyMsg) (app, tea.Cmd) {
 			a.settingsError(err.Error())
 			return a, nil
 		}
-		a.settings.edit = settingsEditor{}
+		if a.settings.edit.id == id {
+			a.settings.edit = settingsEditor{}
+		}
 		a.syncSettings()
 		return a, cmd
 	}
@@ -438,6 +455,10 @@ func (a app) receiveSettings(msg settingsAsync) (app, tea.Cmd) {
 		return a.receiveServer(msg)
 	case afterRestartMsg:
 		a.receiveAfterRestart(msg)
+	case machineCheckedMsg:
+		a.receiveMachine(msg)
+	case machineSpeedsMsg:
+		a.settings.machines.speeds = msg.speeds
 	}
 	return a, nil
 }
