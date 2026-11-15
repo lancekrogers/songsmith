@@ -407,3 +407,22 @@ func eventually(t *testing.T, cond func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestAComfyUIThatIsTooOldSaysWhichNodeItLacks(t *testing.T) {
+	a, r := newMachinesRig(t, 80, 24)
+	r.servers[studio].SetMissingNode("MiniMaxMusic3TextEncode")
+	a = openSettingsOn(t, a, sectionMachines)
+	views := screens(t, a)
+	for _, want := range []string{"ComfyUI too old", "Missing nodes: MiniMaxMusic3TextEncode", "Update ComfyUI on that computer"} {
+		if !seen(views, want) {
+			t.Errorf("%q is never shown:\n%s", want, strings.Join(views, "\n"))
+		}
+	}
+	for _, v := range views {
+		for _, l := range strings.Split(v, "\n") {
+			if w := ansi.StringWidth(l); w > 80 {
+				t.Errorf("a line is %d wide: %q", w, l)
+			}
+		}
+	}
+}

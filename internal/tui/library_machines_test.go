@@ -201,6 +201,15 @@ func TestTheLauncherCountsRendersInFlight(t *testing.T) {
 	if !strings.Contains(view, "Now rendering (2)") {
 		t.Fatalf("no Now rendering item for both:\n%s", view)
 	}
+	a, _ = send(t, a, windowSize(80, 30))
+	if !shows(a, "Queue 2 rendering · 1 waiting for its machine · 1 queued") {
+		t.Fatalf("queue chip at 80 columns:\n%s", plain(a))
+	}
+	for _, l := range strings.Split(plain(a), "\n") {
+		if w := ansi.StringWidth(l); w > 80 {
+			t.Fatalf("a line is %d wide: %q", w, l)
+		}
+	}
 }
 
 func TestWithoutMachinesTheLibraryAndLauncherReadAsBefore(t *testing.T) {

@@ -671,7 +671,7 @@ func (a app) libraryView() string {
 			bottom = first[c+1] - 1
 		}
 	}
-	start := max(0, min(top-n/2, len(rows)-n))
+	start := max(0, min(top-bodyH/2, len(rows)-n))
 	if bottom >= start+n {
 		start = bottom - n + 1
 	}
