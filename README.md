@@ -176,13 +176,16 @@ songsmith
 | `n` | New song |
 | `enter` / `space` | Play or stop the selected finished song |
 | `g` | Draft lyrics and style for a song that only has an idea |
-| `e` | Edit the selected song (editing a finished song makes a copy) |
+| `e` | Edit the selected song (editing a finished song makes a copy), or rename the selected folder |
 | `r` | Queue the selected song. On a finished song it queues a new version, "Title (v2)", with a new seed unless the seed is pinned; the finished song keeps its audio and seed |
 | `v` | Revise or extend the selected song with the writer (a finished song gets a copy with the same seed, pinned) |
 | `m` | Master the selected finished song |
 | `t` | Switch to the song's next take |
 | `s` | Copy the selected song's seed |
 | `x` | Cancel a queued or rendering song |
+| `f` | Move the selected song or folder into a folder, or into a new one |
+| `d` | Delete the selected song with all its takes, or a folder with every song in it. It asks first: `y` deletes, any other key keeps it. Queued, rendering and mastering songs can't be deleted |
+| `enter` / `→` / `←` | On a folder: open or close it. `←` on a song goes up to its folder |
 | `q` | Quit. ComfyUI keeps rendering, and songsmith picks up the result next time |
 
 ### Song form
@@ -262,23 +265,33 @@ songsmith config                           # the effective configuration
 
 ## Your library
 
-Each song is a folder under `library_dir`:
+Each song is a folder under `library_dir`, at the top or inside folders of your own:
 
 ```text
 ~/Music/Songsmith/
-├── 20261113-090000-lantern-road/
-│   ├── song.json             lyrics, style, seed, status, timings, takes
-│   ├── song.flac             the render
-│   └── song.master-1.flac    a master of it
-└── 20261113-094500-lantern-road-v2/
-    ├── song.json             derived_from: 20261113-090000-lantern-road
-    └── song.flac
+├── Lantern Road/                       a folder made with f in the library
+│   ├── 20261113-090000-lantern-road/
+│   │   ├── song.json                   lyrics, style, seed, status, timings, takes
+│   │   ├── song.flac                   the render
+│   │   └── song.master-1.flac          a master of it
+│   └── 20261113-094500-lantern-road-v2/
+│       ├── song.json                   derived_from: 20261113-090000-lantern-road
+│       └── song.flac
+└── 20261112-200000-neon-water/
 ```
+
+A song's ID is its own folder's name, so moving it keeps its ID, and the CLI finds
+it wherever it is. Any folder without a `song.json` is a folder for songs, so you
+can also arrange them with Finder or `mv`, as long as nothing is rendering.
+
+<p align="center">
+  <img src="demos/folders.gif" width="900" alt="The library: Lantern Road (v2) moved into a new folder named Lantern Road with f, Lantern Road moved into it too, the folder opened to show both, and an untitled draft deleted after d asks and y confirms">
+</p>
 
 A **version** is a new performance: rendering a finished song again makes a new
 song, "Title (v2)", that records which song it came from. A **take** is a file of
-the same performance: the render and the masters made from it. Nothing deletes or
-overwrites either. Only one songsmith process renders at a time; another open
+the same performance: the render and the masters made from it. Nothing overwrites
+either, and only `d` in the library deletes them. Only one songsmith process renders at a time; another open
 songsmith waits and takes over when the first one quits.
 
 ## Configuration

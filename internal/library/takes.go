@@ -26,7 +26,7 @@ const (
 )
 
 // Take is one audio file of a song: a render, or a master made from one.
-// Nothing ever deletes or overwrites a take.
+// Nothing overwrites a take; only deleting its song removes it.
 type Take struct {
 	File string   `json:"file"`
 	Kind TakeKind `json:"kind"`

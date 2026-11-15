@@ -63,6 +63,10 @@ type Song struct {
 	// Takes records the song's audio files; Audio names the current one.
 	// Songs without it list the take files found in their folder.
 	Takes []Take `json:"takes,omitempty"`
+	// Folder is the library folder the song is in, such as "Albums/Demos",
+	// "" for the top level. Where the song is on disk is the record; Load
+	// and List fill this in, and Create puts a new song there.
+	Folder string `json:"-"`
 }
 
 // CheckRender reports what stops the song from rendering, as the
@@ -81,6 +85,9 @@ type Store struct {
 	Probe func(path string) float64
 	// mu keeps each Save's merge of take records, and each Update, whole.
 	mu sync.Mutex
+	// where is the folder each song was last seen in, by ID.
+	idx   sync.Mutex
+	where map[string]string
 }
 
 func NewStore(dir string) *Store {
@@ -99,7 +106,12 @@ func ProbeDuration(path string) float64 {
 
 func (s *Store) Dir() string { return s.dir }
 
-func (s *Store) songDir(id string) string { return filepath.Join(s.dir, id) }
+// songDir is where song id is on disk; a song not in the library would go
+// at the top level.
+func (s *Store) songDir(id string) string {
+	folder, _ := s.locate(id)
+	return filepath.Join(s.folderPath(folder), id)
+}
 
 // AudioPath is where a song's rendered audio lives.
 func (s *Store) AudioPath(song Song) string {
@@ -152,6 +164,7 @@ func (s *Store) NewVersion(src Song) (Song, error) {
 		Seconds: src.Seconds, Instrumental: src.Instrumental, DerivedFrom: src.ID,
 		Status: StatusDraft,
 	}
+	v.Folder, _ = s.FolderOf(src.ID)
 	if src.SeedPinned {
 		v.Seed, v.SeedPinned = src.Seed, true
 	}
@@ -169,23 +182,37 @@ func NewID(title string, at time.Time) string {
 	return at.Format("20060102-150405") + "-" + cmp.Or(slug, "untitled")
 }
 
-// Create assigns an ID and saves a new song.
+// Create assigns an ID and saves a new song in song.Folder, which it
+// creates if needed.
 func (s *Store) Create(song Song) (Song, error) {
+	folder, err := s.MakeFolder(song.Folder)
+	if err != nil {
+		return song, err
+	}
 	now := s.now()
 	song.ID = NewID(song.Title, now)
 	song.Created = now
 	song.Status = cmp.Or(song.Status, StatusDraft)
+	song.Folder = folder
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for i := 2; ; i++ {
-		if _, err := os.Stat(s.songDir(song.ID)); errors.Is(err, fs.ErrNotExist) {
+		_, taken := s.locate(song.ID)
+		if _, err := os.Lstat(filepath.Join(s.folderPath(folder), song.ID)); !taken && errors.Is(err, fs.ErrNotExist) {
 			break
 		}
 		song.ID = fmt.Sprintf("%s-%d", NewID(song.Title, now), i)
 	}
-	return song, s.Save(song)
+	dir := filepath.Join(s.folderPath(folder), song.ID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return song, fmt.Errorf("create song dir: %w", err)
+	}
+	return song, s.write(song, dir)
 }
 
 // Save writes song.json atomically. Take records are only ever added: any
-// the stored copy has and song lacks are kept.
+// the stored copy has and song lacks are kept. Only Create adds a song: a
+// song that was deleted is not brought back.
 func (s *Store) Save(song Song) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -196,17 +223,23 @@ func (s *Store) save(song Song) error {
 	if song.ID == "" {
 		return errors.New("save song: empty id")
 	}
-	if stored, err := s.Load(song.ID); err == nil {
+	stored, err := s.Load(song.ID)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("save %s: %w", cmp.Or(song.Title, song.ID), ErrNoSong)
+		}
+	} else {
 		for _, t := range stored.Takes {
 			if !slices.ContainsFunc(song.Takes, func(x Take) bool { return x.File == t.File }) {
 				song.Takes = append(song.Takes, t)
 			}
 		}
 	}
-	dir := s.songDir(song.ID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create song dir: %w", err)
-	}
+	return s.write(song, s.songDir(song.ID))
+}
+
+// write writes song.json in dir.
+func (s *Store) write(song Song, dir string) error {
 	song.Updated = s.now()
 	data, err := json.MarshalIndent(song, "", "  ")
 	if err != nil {
@@ -231,7 +264,15 @@ func (s *Store) save(song Song) error {
 }
 
 func (s *Store) Load(id string) (Song, error) {
-	data, err := os.ReadFile(filepath.Join(s.songDir(id), songFile))
+	folder, ok := s.locate(id)
+	if !ok {
+		return Song{}, fmt.Errorf("load song %s: %w", id, ErrNoSong)
+	}
+	return s.read(id, folder)
+}
+
+func (s *Store) read(id, folder string) (Song, error) {
+	data, err := os.ReadFile(filepath.Join(s.folderPath(folder), id, songFile))
 	if err != nil {
 		return Song{}, fmt.Errorf("load song %s: %w", id, err)
 	}
@@ -239,26 +280,18 @@ func (s *Store) Load(id string) (Song, error) {
 	if err := json.Unmarshal(data, &song); err != nil {
 		return Song{}, fmt.Errorf("load song %s: %w", id, err)
 	}
+	song.Folder = folder
 	return song, nil
 }
 
 // List returns every readable song, newest first, plus an error describing
 // any song files that could not be read.
 func (s *Store) List() ([]Song, error) {
-	entries, err := os.ReadDir(s.dir)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("list library: %w", err)
-	}
+	where, _, err := s.scan()
 	var songs []Song
-	var errs []error
-	for _, e := range entries {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
-			continue
-		}
-		song, err := s.Load(e.Name())
+	errs := []error{err}
+	for id, folder := range where {
+		song, err := s.read(id, folder)
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {
 				errs = append(errs, err)

@@ -69,6 +69,17 @@ demo-setup: build
         demos/with-setupfake.sh vhs demos/setup.tape
     ls -lh demos/setup.gif
 
+# Record demos/folders.gif: songs filed into a new folder, the folder opened, and a draft deleted after its confirmation (throwaway library in /tmp; nothing plays)
+demo-folders: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    env -u NO_COLOR -u CLICOLOR \
+        CLICOLOR_FORCE=1 FORCE_COLOR=1 \
+        TERM=xterm-256color COLORTERM=truecolor \
+        SONGSMITH_COLOR_PROFILE=ansi \
+        vhs demos/folders.tape
+    ls -lh demos/folders.gif
+
 # Record demos/master.gif: the Master screen on a fixture song whose audio is a tone made by ffmpeg (throwaway config in /tmp; nothing plays)
 demo-master: build
     #!/usr/bin/env bash

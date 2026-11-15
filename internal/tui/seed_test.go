@@ -170,7 +170,7 @@ func TestTheLibraryFooterWrapsInsteadOfCuttingKeys(t *testing.T) {
 	if len(lines) > 24 {
 		t.Fatalf("%d lines", len(lines))
 	}
-	foot := strings.Join(lines[len(lines)-2:], " ")
+	foot := strings.Join(lines[len(lines)-3:], " ")
 	for _, k := range []string{"↑/↓ select", "e edit", "v revise / extend", "s copy seed", "n new song", "esc back"} {
 		if !strings.Contains(foot, k) {
 			t.Fatalf("footer lacks %q:\n%s", k, plain(m))

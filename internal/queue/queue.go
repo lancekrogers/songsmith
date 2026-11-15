@@ -487,3 +487,39 @@ func (q *Queue) save(song library.Song) {
 	}
 	q.publish(u)
 }
+
+// Delete removes a song for good unless it is queued or rendering.
+func (q *Queue) Delete(id string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.busy(id) {
+		return ErrBusy
+	}
+	return q.store.Delete(id)
+}
+
+// Move puts a song in a library folder unless it is queued or rendering.
+func (q *Queue) Move(id, folder string) (library.Song, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.busy(id) {
+		return library.Song{}, ErrBusy
+	}
+	return q.store.Move(id, folder)
+}
+
+// MoveFolder moves or renames a library folder unless a song in it is
+// queued or rendering.
+func (q *Queue) MoveFolder(from, to string) (string, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.store.MoveFolder(from, to)
+}
+
+// DeleteFolder removes a library folder and its songs for good unless one
+// of them is queued or rendering.
+func (q *Queue) DeleteFolder(folder string) (int, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.store.DeleteFolder(folder)
+}
