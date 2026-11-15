@@ -222,3 +222,28 @@ func TestWithoutMachinesTheLibraryAndLauncherReadAsBefore(t *testing.T) {
 		t.Fatalf("queue chip without machines:\n%s", v)
 	}
 }
+
+func TestTheMasterScreenSaysWhereEachTakeWasRendered(t *testing.T) {
+	a, store := newTestModel(t, fakeDrafter{})
+	song := masterSong(t, store, "song.flac", "song-2.flac", "song.master-1.flac")
+	song.Takes = []library.Take{
+		{File: "song.flac", Kind: library.TakeRender, Machine: studio},
+		{File: "song-2.flac", Kind: library.TakeRender},
+		{File: "song.master-1.flac", Kind: library.TakeMaster, Source: "song.flac"},
+	}
+	if err := store.Save(song); err != nil {
+		t.Fatal(err)
+	}
+	a = openMasterOn(t, a, 120, 40)
+	row := masterRow(t, a, anchorTakes)
+	if len(row.extras) != 3 || !strings.Contains(row.extras[0], "on Studio Mac") ||
+		strings.Contains(row.extras[1], "This computer") || !strings.Contains(row.extras[2], "from a render on Studio Mac") {
+		t.Fatalf("take extras without machines added: %q", row.extras)
+	}
+	if err := a.d.Config.Set("machines", []config.Machine{{Name: studio, URL: "http://127.0.0.1:2"}}); err != nil {
+		t.Fatal(err)
+	}
+	if row := masterRow(t, a, anchorTakes); !strings.Contains(row.extras[1], "on This computer") {
+		t.Fatalf("a take rendered here does not say so once machines are added: %q", row.extras)
+	}
+}

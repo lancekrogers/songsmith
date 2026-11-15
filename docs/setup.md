@@ -58,7 +58,9 @@ Stop it with `songsmith server stop`. Its log is at
 Another computer with ComfyUI and the model files can render songs for this one.
 On that computer, follow steps 1 and 2 (or run `songsmith setup --install` there), set
 `comfyui.host` in its config to an address this computer can reach, such as its
-Tailscale IP, and run `songsmith server start`. Then, on this computer:
+Tailscale IP, and run `songsmith server start`. Then, on this computer, add it in
+Settings → Machines in the terminal UI, which checks it and shows what it found before
+saving it, or from a shell:
 
 ```bash
 songsmith machines add "MacBook Pro" http://100.101.102.103:8188

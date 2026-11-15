@@ -260,6 +260,12 @@ func TestRemoveAsksFirstAndAnyOtherKeyKeepsTheMachine(t *testing.T) {
 	if _, err := r.store.Create(pinned); err != nil {
 		t.Fatal(err)
 	}
+	held := renderable("Coast Road")
+	held.Status, held.JobID, held.RenderingOn, held.LostSince = library.StatusQueued, "attic-3", attic, time.Now()
+	held, err := r.store.Create(held)
+	if err != nil {
+		t.Fatal(err)
+	}
 	a = runCmd(t, a, a.loadSongs())
 	a = openSettingsOn(t, a, sectionMachines)
 	a = focusAnchor(t, a, "machine attic pc remove")
@@ -268,7 +274,8 @@ func TestRemoveAsksFirstAndAnyOtherKeyKeepsTheMachine(t *testing.T) {
 	}
 	a = pressSettings(t, a, "enter")
 	view := plain(a)
-	if !shows(a, "Remove Attic PC? 1 song set to render on it waits until you choose another machine for it.") {
+	if !shows(a, "Remove Attic PC? Coast Road is queued again for another machine, and its render there is left alone. "+
+		"1 song set to render on it waits until you choose another machine for it.") {
 		t.Fatalf("the question does not say what happens to its songs:\n%s", view)
 	}
 	if got := footerLine(a); !strings.Contains(got, "y remove Attic PC") || !strings.Contains(got, "any other key keeps it") || strings.Contains(got, "←/→") {
@@ -281,10 +288,15 @@ func TestRemoveAsksFirstAndAnyOtherKeyKeepsTheMachine(t *testing.T) {
 	if _, ok := r.live.Get().Machine(attic); !ok || !strings.Contains(plain(a), "Kept Attic PC") {
 		t.Fatalf("removed without y:\n%s", plain(a))
 	}
+	r.run()
 	a = pressSettings(t, a, "enter", "y")
 	if _, ok := r.live.Get().Machine(attic); ok {
 		t.Fatal("still in the running config after y")
 	}
+	eventually(t, func() bool {
+		s, _ := r.store.Load(held.ID)
+		return s.JobID == "" && s.RenderingOn != attic
+	})
 	if saved, _ := config.Load(r.live.Path()); len(saved.Machines) != 2 {
 		t.Fatalf("config file machines: %+v", saved.Machines)
 	}

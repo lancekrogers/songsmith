@@ -1,0 +1,24 @@
+# Throwaway settings for demos/machines.tape. Every path is under
+# /tmp/songsmith-demo-machines, and every ComfyUI is demos/machinesfake on a
+# loopback port (Attic PC's has nothing on it), so the recording never
+# reaches a real machine.
+library_dir: /tmp/songsmith-demo-machines/library
+state_dir: /tmp/songsmith-demo-machines/state
+comfyui:
+  dir: /tmp/songsmith-demo-machines/ComfyUI
+  host: 127.0.0.1
+  port: 18512 # the stand-in ComfyUI, not the usual 8188
+ollama:
+  # demos/setupfake's stand-in Ollama.
+  url: http://127.0.0.1:18491
+  model: songwriter:7b
+master:
+  auto: false
+reclaim_after: 2h
+machines:
+  - name: Studio Mac
+    url: http://127.0.0.1:18513
+  - name: Attic PC
+    url: http://127.0.0.1:18514
+  - name: MacBook Air
+    url: http://127.0.0.1:18515

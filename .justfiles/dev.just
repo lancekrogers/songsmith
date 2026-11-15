@@ -90,3 +90,14 @@ demo-master: build
         SONGSMITH_COLOR_PROFILE=ansi \
         demos/with-setupfake.sh vhs demos/master.tape
     ls -lh demos/master.gif
+
+# Record demos/machines.gif: Settings → Machines with three other computers, adding one, the song form's Render on row, and two songs rendering at once (throwaway config in /tmp; every ComfyUI is demos/machinesfake on a loopback port, nothing renders or plays)
+demo-machines: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    env -u NO_COLOR -u CLICOLOR \
+        CLICOLOR_FORCE=1 FORCE_COLOR=1 \
+        TERM=xterm-256color COLORTERM=truecolor \
+        SONGSMITH_COLOR_PROFILE=ansi \
+        demos/with-setupfake.sh demos/with-machinesfake.sh vhs demos/machines.tape
+    ls -lh demos/machines.gif

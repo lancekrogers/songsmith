@@ -285,8 +285,10 @@ func (a app) memoryRow(check machineCheck, checked bool, group, anchor string) s
 		}
 	case !checked || check.checking:
 		row.value = "checking…"
-	default:
+	case st.State == machines.Offline:
 		row.value = "unknown until it answers"
+	default:
+		row.value = "not reported by its ComfyUI"
 	}
 	return row
 }
@@ -302,29 +304,25 @@ func (a app) speedRow(name, group, anchor string) settingRow {
 	return row
 }
 
-// addMachineRows are Add a machine, or the machine being added with what
-// its check found, then what the other computer needs.
+// addMachineRows are what the other computer needs and that its address
+// belongs on a private network, then Add a machine, or the machine being
+// added with what its check found.
 func (a app) addMachineRows(width int) []settingRow {
 	const group = "Add a machine"
-	var rows []settingRow
-	if d := a.settings.machines.add; d != nil {
-		rows = append(rows, a.draftRows(d, width)...)
-	} else {
-		rows = append(rows, settingRow{name: "Add", kind: rowAction, verb: "add", group: group, anchor: "add machine",
-			value: "type a name, then its address", wrap: true, applies: appliesNextSent,
-			help: "Checks the machine and shows what it found before saving it",
-			run:  (*app).beginAddMachine})
-	}
-	steps := styledReportRows("add machine steps", otherComputerSteps, width, nil)
+	rows := styledReportRows("add machine steps", otherComputerSteps, width, nil)
 	note := styledReportRows("add machine note", privateNetworkNote, width, &warningStyle)
-	for i := range steps {
-		steps[i].group = group
-	}
 	note[0].gap = true
-	for i := range note {
-		note[i].group = group
+	rows = append(rows, note...)
+	for i := range rows {
+		rows[i].group = group
 	}
-	return append(append(rows, steps...), note...)
+	if d := a.settings.machines.add; d != nil {
+		return append(rows, a.draftRows(d, width)...)
+	}
+	return append(rows, settingRow{name: "Add", kind: rowAction, verb: "add", group: group, anchor: "add machine", gap: true,
+		value: "type a name, then its address", wrap: true, applies: appliesNextSent,
+		help: "Checks the machine and shows what it found before saving it",
+		run:  (*app).beginAddMachine})
 }
 
 func (a app) draftRows(d *machineDraft, width int) []settingRow {
@@ -478,18 +476,24 @@ func onOff(on bool) string {
 // to the songs that use it.
 func (a *app) askRemoveMachine(name string) {
 	a.settings.machines.remove = name
-	var pinned, here []string
+	var pinned, here, held []string
 	for _, s := range a.library.songs {
 		switch {
 		case s.Status == library.StatusRendering && strings.EqualFold(s.RenderingOn, name):
 			here = append(here, s.Title)
+		case s.Status == library.StatusQueued && s.JobID != "" && strings.EqualFold(s.RenderingOn, name):
+			held = append(held, s.Title)
 		case s.Status != library.StatusDone && strings.EqualFold(s.Machine, name):
 			pinned = append(pinned, s.Title)
 		}
 	}
 	q := "Remove " + name + "?"
 	if len(here) > 0 {
-		q += " " + joinAnd(here) + " keeps rendering there until it finishes."
+		q += " " + joinAnd(here) + " keeps rendering there until " + plural(len(here), "it finishes", "they finish") + "."
+	}
+	if len(held) > 0 {
+		q += " " + joinAnd(held) + " " + plural(len(held), "is", "are") + " queued again for another machine, and " +
+			plural(len(held), "its render", "their renders") + " there " + plural(len(held), "is", "are") + " left alone."
 	}
 	if len(pinned) > 0 {
 		q += fmt.Sprintf(" %d %s set to render on it %s until you choose another machine for %s.",

@@ -201,7 +201,8 @@ func (c *composeModel) resize(w, h int) {
 	inner := c.boxWidth() - 4
 	c.idea.SetWidth(max(inner-1, 10))
 	c.fitIdea()
-	c.title.Width = max(inner-labelWidth-4, 10)
+	// The label column widens to fit Render on when that row is shown.
+	c.title.Width = max(inner-len(rowMachine.name())-4, 10)
 	c.fitSeed()
 	c.rv.input.Width = max(inner-8, 10)
 	c.layoutEditor()
