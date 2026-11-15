@@ -229,8 +229,8 @@ func TestDeletingAFolderNamesItsSongsAndRefusesIfItChanged(t *testing.T) {
 		t.Fatalf("selected folder %q", f)
 	}
 	a = libKey(t, a, "d")
-	if !strings.Contains(a.notice, "Delete the folder “Album” and the 2 songs in it") {
-		t.Fatalf("notice = %q", a.notice)
+	if !strings.Contains(plain(a), "Delete the folder “Album” and the 2 songs in it") {
+		t.Fatalf("question not shown:\n%s", plain(a))
 	}
 	// A song lands in the folder before the answer.
 	extra, _ := store.Create(library.Song{Title: "Late", Folder: "Album"})
@@ -310,11 +310,25 @@ func TestAnUntitledSongIsNamedInTheQuestionAndTheAnswer(t *testing.T) {
 	store.Create(library.Song{Idea: "a lighthouse keeper's last night"})
 	a = runCmd(t, a, a.loadSongs())
 	a = libKey(t, a, "d")
-	if !strings.Contains(a.notice, "Delete “Untitled” for good?") {
-		t.Fatalf("question = %q", a.notice)
+	if !strings.Contains(plain(a), "Delete “Untitled” for good?") {
+		t.Fatalf("question not shown:\n%s", plain(a))
 	}
 	a = libKey(t, a, "y")
 	if a.notice != "Deleted Untitled." {
 		t.Fatalf("answer = %q", a.notice)
+	}
+}
+
+func TestTheDeleteQuestionShowsOverAnEarlierErrorAndLaterNews(t *testing.T) {
+	a, _, _ := libraryWith(t, "Failed one")
+	a.err = "render failed: MPS out of memory"
+	a = libKey(t, a, "d")
+	if !strings.Contains(plain(a), "Delete “Failed one”") || strings.Contains(plain(a), "MPS out of memory") {
+		t.Fatalf("question hidden:\n%s", plain(a))
+	}
+	// News arriving while it waits does not hide it.
+	a.err = "render failed: something else"
+	if !strings.Contains(plain(a), "Delete “Failed one”") {
+		t.Fatalf("question hidden by later news:\n%s", plain(a))
 	}
 }

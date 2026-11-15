@@ -212,3 +212,40 @@ func TestNewVersionsStayInTheSourcesFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDeleteFolderLeavesAnythingThatIsNotASong(t *testing.T) {
+	s := NewStore(t.TempDir())
+	keep := mustCreate(t, s, Song{Title: "Keep", Folder: "Album/Inner"})
+	stray := filepath.Join(s.Dir(), "Album", "notes.txt")
+	os.WriteFile(stray, []byte("mine"), 0o644)
+	if _, err := s.DeleteFolder("Album"); err == nil {
+		t.Fatal("deleted a folder holding a stray file")
+	}
+	if _, err := os.Stat(stray); err != nil {
+		t.Fatal("stray file removed")
+	}
+	if _, err := s.Load(keep.ID); err != nil {
+		t.Fatal("a refused delete removed a song")
+	}
+	os.Remove(stray)
+
+	broken := filepath.Join(s.Dir(), "Album", "Inner", "20261114-000000-broken")
+	os.MkdirAll(broken, 0o755)
+	os.WriteFile(filepath.Join(broken, songFile), []byte("{not json"), 0o644)
+	if _, err := s.DeleteFolder("Album"); err == nil {
+		t.Fatal("deleted a folder holding a song that can't be read")
+	}
+	if _, err := os.Stat(filepath.Join(broken, songFile)); err != nil {
+		t.Fatal("unreadable song removed")
+	}
+	os.RemoveAll(broken)
+
+	os.WriteFile(filepath.Join(s.Dir(), "Album", "Inner", ".DS_Store"), []byte("x"), 0o644)
+	n, err := s.DeleteFolder("Album")
+	if err != nil || n != 1 {
+		t.Fatalf("delete = %d, %v", n, err)
+	}
+	if _, err := os.Stat(filepath.Join(s.Dir(), "Album")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("folder still there")
+	}
+}

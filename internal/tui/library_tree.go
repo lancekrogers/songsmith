@@ -30,6 +30,8 @@ type libConfirm struct {
 	songID, folder string
 	// count is how many songs the folder held when asked.
 	count int
+	// question is drawn in place of any other message while it waits.
+	question string
 }
 
 // folderPicker chooses where the selected song or folder goes.
@@ -279,13 +281,13 @@ func (a app) askDelete() app {
 			a.notice = why
 			return a
 		}
-		a.library.confirm = &libConfirm{songID: s.ID}
 		takes := len(a.library.takes[s.ID])
 		what := quote(songName(s))
 		if takes > 0 {
 			what = quote(songName(s)) + " and its " + count(takes, "take")
 		}
-		a.notice = "Delete " + what + " for good? y deletes it · any other key keeps it."
+		a.library.confirm = &libConfirm{songID: s.ID, question: "Delete " + what + " for good? y deletes it · any other key keeps it."}
+		a.err, a.notice = "", ""
 		return a
 	}
 	folder, ok := a.selectedFolder()
@@ -297,11 +299,12 @@ func (a app) askDelete() app {
 		return a
 	}
 	n := len(a.songsUnder(folder))
-	a.library.confirm = &libConfirm{folder: folder, count: n}
-	a.notice = "Delete the empty folder " + quote(folder) + "? y deletes it · any other key keeps it."
+	q := "Delete the empty folder " + quote(folder) + "? y deletes it · any other key keeps it."
 	if n > 0 {
-		a.notice = "Delete the folder " + quote(folder) + " and the " + count(n, "song") + " in it, with all their takes, for good? y deletes it all · any other key keeps it."
+		q = "Delete the folder " + quote(folder) + " and the " + count(n, "song") + " in it, with all their takes, for good? y deletes it all · any other key keeps it."
 	}
+	a.library.confirm = &libConfirm{folder: folder, count: n, question: q}
+	a.err, a.notice = "", ""
 	return a
 }
 

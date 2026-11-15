@@ -585,7 +585,7 @@ func age(t time.Time) string {
 }
 
 func (a app) libraryView() string {
-	header := headerStyle.Render("♪ Library") + dimStyle.Render(fmt.Sprintf("  %d songs · %s", len(a.library.songs), a.d.Store.Dir()))
+	header := headerStyle.Render("♪ Library") + dimStyle.Render("  "+count(len(a.library.songs), "song")+" · "+a.d.Store.Dir())
 	if a.d.WorkerNote != nil {
 		if note := a.d.WorkerNote(); note != "" {
 			header += "  " + errorStyle.Render(note)
@@ -643,6 +643,9 @@ func (a app) libraryView() string {
 	body := lipgloss.JoinHorizontal(lipgloss.Top, list, detail)
 
 	msg := launcherState{err: a.err, notice: a.notice}.messageLines(max(a.width-2, 10))
+	if c := a.library.confirm; c != nil {
+		msg = wrapMessage(c.question, warningStyle, max(a.width-2, 10))
+	}
 	for i := range msg {
 		msg[i] = " " + msg[i]
 	}

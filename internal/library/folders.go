@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -337,8 +338,10 @@ func (s *Store) MoveFolder(from, to string) (string, error) {
 }
 
 // DeleteFolder removes folder and every song in it, for good, returning
-// how many songs it removed. It is refused while any of them is queued or
-// rendering.
+// how many songs it removed. It removes only songs and the folders that
+// hold them: a folder holding anything else, such as a stray file or a
+// song that can't be read, is refused and left as it is, as it is while
+// any of its songs is queued or rendering.
 func (s *Store) DeleteFolder(path string) (int, error) {
 	folder, err := s.openFolder(path)
 	if err != nil {
@@ -349,12 +352,64 @@ func (s *Store) DeleteFolder(path string) (int, error) {
 	if err := s.refuseBusy(folder); err != nil {
 		return 0, err
 	}
-	songs, _ := s.SongsIn(folder)
-	if err := os.RemoveAll(s.folderPath(folder)); err != nil {
-		return 0, fmt.Errorf("delete folder %s: %w", folder, err)
+	songDirs, dirs, err := s.folderContents(folder)
+	if err != nil {
+		return 0, err
 	}
-	s.scan()
-	return len(songs), nil
+	defer s.scan()
+	for _, dir := range songDirs {
+		if err := os.RemoveAll(dir); err != nil {
+			return 0, fmt.Errorf("delete folder %s: %w", folder, err)
+		}
+	}
+	for _, dir := range slices.Backward(dirs) {
+		for name := range junk {
+			os.Remove(filepath.Join(dir, name))
+		}
+		if err := os.Remove(dir); err != nil {
+			return 0, fmt.Errorf("delete folder %s: %w", folder, err)
+		}
+	}
+	return len(songDirs), nil
+}
+
+// junk are the files a file manager leaves in folders, which go with them.
+var junk = map[string]bool{".DS_Store": true}
+
+// folderContents lists the song directories in folder and its folders,
+// parents first, failing on anything that is neither.
+func (s *Store) folderContents(folder string) (songDirs, dirs []string, err error) {
+	var walk func(dir string, depth int) error
+	walk = func(dir string, depth int) error {
+		dirs = append(dirs, dir)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return fmt.Errorf("delete folder %s: %w", folder, err)
+		}
+		rel := func(name string) string {
+			r, _ := filepath.Rel(s.dir, filepath.Join(dir, name))
+			return filepath.ToSlash(r)
+		}
+		for _, e := range entries {
+			p := filepath.Join(dir, e.Name())
+			switch {
+			case e.IsDir() && isSongDir(p):
+				if _, err := s.read(e.Name(), path.Dir(rel(e.Name()))); err != nil {
+					return fmt.Errorf("%s holds a song that can't be read, %s, so nothing was deleted", folder, rel(e.Name()))
+				}
+				songDirs = append(songDirs, p)
+			case e.IsDir() && validName(e.Name()) && depth < maxDepth:
+				if err := walk(p, depth+1); err != nil {
+					return err
+				}
+			case junk[e.Name()] && e.Type().IsRegular():
+			default:
+				return fmt.Errorf("%s holds %s, which is not a song, so nothing was deleted", folder, rel(e.Name()))
+			}
+		}
+		return nil
+	}
+	return songDirs, dirs, walk(s.folderPath(folder), strings.Count(folder, "/")+1)
 }
 
 // refuseBusy fails when a song in folder is queued or rendering. Call with
