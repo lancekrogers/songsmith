@@ -39,13 +39,11 @@ Down@500ms 2
 Enter
 Sleep 2s
 
-# Lantern Road (v2) goes in a new folder: f, then + New folder….
+# Lantern Road (v2) goes in a new folder: f opens on + New folder… while there are none.
 Down
 Sleep 800ms
 Type "f"
 Sleep 1.5s
-Up
-Sleep 700ms
 Enter
 Sleep 800ms
 Type "Lantern Road"

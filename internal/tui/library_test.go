@@ -18,11 +18,11 @@ func TestLibraryFooterListsOnlyKeysForTheSelectedSong(t *testing.T) {
 		status library.Status
 		want   string
 	}{
-		{library.StatusDraft, "r render   e edit   v revise / extend   f move   d delete   n new song   esc back"},
-		{library.StatusFailed, "r render   e edit   v revise / extend   f move   d delete   n new song   esc back"},
-		{library.StatusQueued, "x cancel   e edit   v revise / extend   f move   d delete   n new song   esc back"},
-		{library.StatusRendering, "x cancel   e edit   v revise / extend   f move   d delete   n new song   esc back"},
-		{library.StatusDone, "enter play   r new version   e edit   v revise / extend   f move   d delete   n new song   esc back"},
+		{library.StatusDraft, "r render   e edit   v revise / extend   f move to folder   d delete   n new song   esc back"},
+		{library.StatusFailed, "r render   e edit   v revise / extend   f move to folder   d delete   n new song   esc back"},
+		{library.StatusQueued, "x cancel   e edit   v revise / extend   f move to folder   d delete   n new song   esc back"},
+		{library.StatusRendering, "x cancel   e edit   v revise / extend   f move to folder   d delete   n new song   esc back"},
+		{library.StatusDone, "enter play   r new version   e edit   v revise / extend   f move to folder   d delete   n new song   esc back"},
 	}
 	for _, c := range cases {
 		t.Run(string(c.status), func(t *testing.T) {
