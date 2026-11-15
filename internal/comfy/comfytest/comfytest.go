@@ -42,6 +42,7 @@ type Server struct {
 	models  []string
 	missing string
 	cuts    int
+	refuses int
 	hcuts   int
 	n       int
 	state   map[string]string
@@ -180,6 +181,13 @@ func (s *Server) CutDownloads(n int) {
 	s.cuts = n
 }
 
+// RefuseDownloads makes the next n downloads answer with a server error.
+func (s *Server) RefuseDownloads(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refuses = n
+}
+
 // CutHistory makes the next n history answers drop the connection halfway
 // through.
 func (s *Server) CutHistory(n int) {
@@ -277,6 +285,16 @@ func drop(w http.ResponseWriter) {
 }
 
 func (s *Server) view(w http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	refuse := s.refuses > 0
+	if refuse {
+		s.refuses--
+	}
+	s.mu.Unlock()
+	if refuse {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+		return
+	}
 	s.answer(w, &s.cuts, "audio from "+s.prefix)
 }
 

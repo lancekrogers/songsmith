@@ -199,12 +199,32 @@ func checkMachines(local ComfyUI, ms []Machine) error {
 }
 
 // isLocalServer reports whether base reaches the ComfyUI server described by
-// local. A server listening on every address (0.0.0.0 or ::) is reached on
-// this computer's loopback addresses and its own network addresses too.
+// local, going by the addresses alone. A server listening on every address
+// (0.0.0.0 or ::) is reached on this computer's loopback addresses too.
 func isLocalServer(local ComfyUI, base string) bool {
+	host, ok := hostOnLocalPort(local, base)
+	if !ok {
+		return false
+	}
+	if strings.EqualFold(host, local.Host) || sameIP(host, local.Host) {
+		return true
+	}
+	return ownAddress(host) && ownAddress(local.Host)
+}
+
+// reachesOwnInterface reports whether base is one of this computer's network
+// addresses while its own server listens on every address. The answer
+// changes with the network the computer is on, so it is asked when a machine
+// is added and never decides whether a saved config loads.
+func reachesOwnInterface(local ComfyUI, base string) bool {
+	host, ok := hostOnLocalPort(local, base)
+	return ok && everyAddress(local.Host) && interfaceAddress(host)
+}
+
+func hostOnLocalPort(local ComfyUI, base string) (string, bool) {
 	u, err := url.Parse(base)
 	if err != nil {
-		return false
+		return "", false
 	}
 	port := u.Port()
 	if port == "" {
@@ -213,17 +233,7 @@ func isLocalServer(local ComfyUI, base string) bool {
 			port = "443"
 		}
 	}
-	if port != strconv.Itoa(local.Port) {
-		return false
-	}
-	host := u.Hostname()
-	if strings.EqualFold(host, local.Host) || sameIP(host, local.Host) {
-		return true
-	}
-	if ownAddress(host) && ownAddress(local.Host) {
-		return true
-	}
-	return everyAddress(local.Host) && interfaceAddress(host)
+	return u.Hostname(), port == strconv.Itoa(local.Port)
 }
 
 func sameIP(a, b string) bool {
@@ -283,6 +293,9 @@ func (c Config) WithMachine(m Machine) ([]Machine, error) {
 	if err := checkMachines(c.ComfyUI, ms); err != nil {
 		return nil, err
 	}
+	if u := ms[len(ms)-1].URL; reachesOwnInterface(c.ComfyUI, u) {
+		return nil, fmt.Errorf("machine %q: %s is this computer's own ComfyUI server (comfyui: host and port); it renders already, so it is not added as a machine", m.Name, u)
+	}
 	return ms, nil
 }
 
@@ -325,11 +338,6 @@ func RemoveMachine(path, name string) (Machine, error) {
 			return "", nil, err
 		}
 		removed, _ = cur.Machine(name)
-		after := cur
-		after.Machines = ms
-		if cur.TakesNewSongs() && !after.TakesNewSongs() {
-			return "", nil, onlyMachine(removed.Name)
-		}
 		return "machines", ms, nil
 	})
 	return removed, err
@@ -360,13 +368,19 @@ func SetMachineEnabled(path, name string, on bool) error {
 	})
 }
 
-// WithoutMachine returns c's machines without the one called name.
+// WithoutMachine returns c's machines without the one called name, or why
+// it cannot be removed.
 func (c Config) WithoutMachine(name string) ([]Machine, error) {
 	i := slices.IndexFunc(c.Machines, func(m Machine) bool { return strings.EqualFold(m.Name, name) })
 	if i < 0 {
 		return nil, fmt.Errorf("there is no machine named %q", name)
 	}
-	return slices.Delete(slices.Clone(c.Machines), i, i+1), nil
+	after := c
+	after.Machines = slices.Delete(slices.Clone(c.Machines), i, i+1)
+	if c.TakesNewSongs() && !after.TakesNewSongs() {
+		return nil, onlyMachine(c.Machines[i].Name)
+	}
+	return after.Machines, nil
 }
 
 // validate reports settings that cannot be used, normalizing machine URLs.

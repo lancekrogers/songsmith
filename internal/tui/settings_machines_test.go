@@ -542,7 +542,10 @@ func TestTheLastMachineThatRendersNewSongsCannotBeTurnedOffOrRemoved(t *testing.
 	}
 
 	a = focusAnchor(t, a, "machine studio mac remove")
-	a = pressSettings(t, a, "enter", "y")
+	a = pressSettings(t, a, "enter")
+	if shows(a, "y removes it") {
+		t.Fatalf("asked before refusing:\n%s", plain(a))
+	}
 	if _, ok := r.live.Get().Machine(studio); !ok {
 		t.Fatal("the last machine that takes new songs was removed")
 	}

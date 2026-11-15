@@ -124,6 +124,10 @@ func TestSetSavesMachinesAndRefusesBadOnes(t *testing.T) {
 		t.Fatal("a refused change was written")
 	}
 
+	if _, err := cfg.WithoutMachine("MACBOOK PRO"); !errors.Is(err, ErrOnlyMachine) {
+		t.Fatalf("removed the only machine that renders new songs: %v", err)
+	}
+	cfg.Local.Enabled = true
 	ms, err = cfg.WithoutMachine("MACBOOK PRO")
 	if err != nil || len(ms) != 0 {
 		t.Fatalf("remove: %v %v", ms, err)
@@ -332,6 +336,13 @@ func TestThisComputersServerIsNotAddedUnderAnotherName(t *testing.T) {
 	if ip, ok := networkAddress(t); ok {
 		if _, err := cfg.WithMachine(Machine{Name: "Me", URL: "http://" + ip + ":8188", Enabled: true}); err == nil {
 			t.Errorf("this computer's own network address %s was added while its server listens on every address", ip)
+		}
+		p := writeConfig(t, "comfyui:\n  host: 0.0.0.0\nmachines:\n  - name: Den\n    url: http://"+ip+":8188\n")
+		if _, err := Load(p); err != nil {
+			t.Errorf("a saved machine whose address this computer now has stopped the config loading: %v", err)
+		}
+		if _, err := RemoveMachine(p, "Den"); err != nil {
+			t.Errorf("removing it: %v", err)
 		}
 	}
 	if _, err := cfg.WithMachine(Machine{Name: "Other port", URL: "http://127.0.0.1:8190", Enabled: true}); err != nil {

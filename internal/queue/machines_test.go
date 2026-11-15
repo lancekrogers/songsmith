@@ -800,6 +800,30 @@ func TestAudioThatCannotBeFetchedFailsTheSongAndKeepsItsJob(t *testing.T) {
 	}
 }
 
+func TestADownloadTheMachineRefusesKeepsTheRenderToFetchLater(t *testing.T) {
+	r := newRig(t, mbp)
+	srv := r.remotes[mbp]
+	srv.RefuseDownloads(1)
+	song := r.song("Song", mbp)
+	stop := r.run(r.queue())
+	eventually(t, "the render ends", func() bool { return r.load(song.ID).Status == library.StatusFailed })
+	failed := r.load(song.ID)
+	if failed.JobID == "" || !strings.Contains(failed.Error, "could not be fetched from "+mbp) {
+		t.Fatalf("after the download was refused: %+v", failed)
+	}
+	stop()
+
+	q := r.queue()
+	r.run(q)
+	if _, err := q.Enqueue(failed); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the song is done", func() bool { return r.load(song.ID).Status == library.StatusDone })
+	if got := srv.Prompts(); len(got) != 1 {
+		t.Fatalf("rendering it again sent the render again instead of fetching it: %v", got)
+	}
+}
+
 func TestAReattachWhoseHistoryIsCutOffFetchesTheRenderInsteadOfSendingItAgain(t *testing.T) {
 	for _, machine := range []string{config.ThisComputer, mbp} {
 		for _, tc := range []struct {

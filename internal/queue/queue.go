@@ -522,6 +522,8 @@ func (q *Queue) renderOn(ctx context.Context, song library.Song, m Machine) libr
 	for {
 		res, err = q.generate(ctx, m, req, progress)
 		if err == nil || context.Cause(ctx) != nil || !errors.Is(err, backend.ErrUnreachable) {
+			// A machine that refuses the download still holds the render.
+			unfetched = err != nil && context.Cause(ctx) == nil && song.JobID != "" && errors.Is(err, backend.ErrDownload)
 			break
 		}
 		reattached := m.Local && req.ResumeID != ""

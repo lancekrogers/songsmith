@@ -504,6 +504,10 @@ func onOff(on bool) string {
 // askRemoveMachine waits for y before removing name, saying what happens
 // to the songs that use it.
 func (a *app) askRemoveMachine(name string) {
+	if _, err := a.cfg().WithoutMachine(name); err != nil {
+		a.settingsError("Not removed: " + err.Error())
+		return
+	}
 	a.settings.machines.remove = name
 	var pinned, here, held []string
 	for _, s := range a.library.songs {
