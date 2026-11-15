@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -38,8 +39,9 @@ func Set(path, key string, value any) error {
 	if err := val.Encode(value); err != nil {
 		return fmt.Errorf("encode %s: %w", key, err)
 	}
-	// yaml.v3 truncates a float into an int field, so whole numbers are checked by tag.
-	isInt := field.Kind() >= reflect.Int && field.Kind() <= reflect.Int64
+	// yaml.v3 truncates a float into an int field, so whole numbers are
+	// checked by tag. A duration is written as text, such as "10m0s".
+	isInt := field.Kind() >= reflect.Int && field.Kind() <= reflect.Int64 && field != reflect.TypeFor[time.Duration]()
 	if err := val.Decode(reflect.New(field).Interface()); err != nil || isInt && val.Tag != "!!int" {
 		return fmt.Errorf("%s: %v is not a valid %s", key, value, field)
 	}
@@ -85,9 +87,12 @@ func Set(path, key string, value any) error {
 	if err := enc.Close(); err != nil {
 		return fmt.Errorf("encode config: %w", err)
 	}
-	var check Config
+	check := Default()
 	if err := yaml.Unmarshal(out.Bytes(), &check); err != nil {
 		return fmt.Errorf("updated config does not parse: %w", err)
+	}
+	if err := check.validate(); err != nil {
+		return fmt.Errorf("%s not saved: %w", key, err)
 	}
 	return writeFile(path, out.Bytes())
 }

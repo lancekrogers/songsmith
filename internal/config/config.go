@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -103,6 +104,12 @@ type Config struct {
 	Master     Master  `yaml:"master"`
 	LibraryDir string  `yaml:"library_dir"`
 	StateDir   string  `yaml:"state_dir"`
+	// Machines are other computers' ComfyUI servers that render songs too.
+	Machines []Machine `yaml:"machines,omitempty"`
+	Local    Local     `yaml:"local"`
+	// ReclaimAfter is how long a song waits for a machine that stopped
+	// answering mid-render before it is queued again.
+	ReclaimAfter time.Duration `yaml:"reclaim_after"`
 }
 
 func Default() Config {
@@ -132,8 +139,10 @@ func Default() Config {
 			Scheduler:      "simple",
 			LowMemory:      LowMemoryAuto,
 		},
-		LibraryDir: filepath.Join(home, "Music", "Songsmith"),
-		StateDir:   filepath.Join(home, ".local", "state", "songsmith"),
+		LibraryDir:   filepath.Join(home, "Music", "Songsmith"),
+		StateDir:     filepath.Join(home, ".local", "state", "songsmith"),
+		Local:        Local{Enabled: true},
+		ReclaimAfter: DefaultReclaimAfter,
 	}
 }
 
@@ -183,6 +192,9 @@ func Load(path string) (Config, error) {
 	}
 	if cfg.Render.DefaultSeconds <= 0 {
 		cfg.Render.DefaultSeconds = Default().Render.DefaultSeconds
+	}
+	if err := cfg.validate(); err != nil {
+		return Config{}, fmt.Errorf("config %s: %w", path, err)
 	}
 	return cfg, nil
 }

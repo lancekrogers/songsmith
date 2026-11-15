@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -28,7 +29,7 @@ func TestLoad(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg != Default() {
+		if !reflect.DeepEqual(cfg, Default()) {
 			t.Fatalf("got %+v, want defaults", cfg)
 		}
 	})
