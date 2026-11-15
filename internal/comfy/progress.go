@@ -81,7 +81,7 @@ func (c *Client) dial(ctx context.Context, clientID string) (*websocket.Conn, er
 	wsURL := "ws" + strings.TrimPrefix(c.base, "http") + "/ws?clientId=" + clientID
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPClient: &http.Client{}})
 	if err != nil {
-		return nil, fmt.Errorf("connect websocket: %w", err)
+		return nil, fmt.Errorf("connect websocket: %w", unreachable(ctx, err))
 	}
 	conn.SetReadLimit(64 << 20)
 	return conn, nil

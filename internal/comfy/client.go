@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -179,6 +180,26 @@ func (n NodeInfo) ComboOptions(name string) []string {
 	return nil
 }
 
+// ErrUnreachable means the server did not answer at all: it is stopped,
+// asleep, or the network to it is down.
+var ErrUnreachable = errors.New("comfyui server did not answer")
+
+// unreachableError keeps err's message and also matches ErrUnreachable.
+type unreachableError struct{ err error }
+
+func (e *unreachableError) Error() string   { return e.err.Error() }
+func (e *unreachableError) Unwrap() []error { return []error{e.err, ErrUnreachable} }
+
+// unreachable marks a request that got no answer from the server, unless
+// it failed because ctx ended.
+func unreachable(ctx context.Context, err error) error {
+	var ue *url.Error
+	if ctx.Err() != nil || !errors.As(err, &ue) {
+		return err
+	}
+	return &unreachableError{err: err}
+}
+
 // PromptError is returned when ComfyUI rejects a graph.
 type PromptError struct {
 	Status int
@@ -201,7 +222,7 @@ func (c *Client) QueuePrompt(ctx context.Context, g Graph, clientID string) (str
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("queue prompt: %w", err)
+		return "", fmt.Errorf("queue prompt: %w", unreachable(ctx, err))
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
@@ -283,7 +304,7 @@ func (c *Client) Download(ctx context.Context, f OutputFile, w io.Writer) error 
 	}
 	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
-		return fmt.Errorf("download %s: %w", f.Filename, err)
+		return fmt.Errorf("download %s: %w", f.Filename, unreachable(ctx, err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -335,7 +356,7 @@ func (c *Client) postJSON(ctx context.Context, path string, body any) error {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("POST %s: %w", path, err)
+		return fmt.Errorf("POST %s: %w", path, unreachable(ctx, err))
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -351,7 +372,7 @@ func (c *Client) getJSON(ctx context.Context, path string, v any) error {
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("GET %s: %w", path, err)
+		return fmt.Errorf("GET %s: %w", path, unreachable(ctx, err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
