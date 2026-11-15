@@ -293,11 +293,14 @@ func (s *Server) history(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.mu.Lock()
 	st := s.state[id]
+	sample := s.graphs[id][comfy.NodeSaveLatent].ClassType != ""
 	s.mu.Unlock()
-	switch st {
-	case "done":
+	switch {
+	case st == "done" && sample:
+		fmt.Fprintf(w, `{%q:{"status":{"status_str":"success","completed":true},"outputs":{"save_latent":{"latents":[{"filename":%q,"subfolder":"songsmith/latents","type":"output"}]}}}}`, id, id+".latent")
+	case st == "done":
 		fmt.Fprintf(w, `{%q:{"status":{"status_str":"success","completed":true},"outputs":{"save":{"audio":[{"filename":"song.flac","subfolder":"songsmith","type":"output"}]}}}}`, id)
-	case "interrupted":
+	case st == "interrupted":
 		fmt.Fprintf(w, `{%q:{"status":{"status_str":"error","completed":false,"messages":[["execution_interrupted",{"prompt_id":%q}]]},"outputs":{}}}`, id, id)
 	default:
 		io.WriteString(w, "{}")

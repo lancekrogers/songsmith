@@ -97,3 +97,25 @@ func TestSpeedsAreKeptPerMachineAcrossRuns(t *testing.T) {
 		t.Fatalf("all %+v", all)
 	}
 }
+
+func TestLowMemoryIsDecidedByEachMachinesOwnMemory(t *testing.T) {
+	small, big := comfytest.New(t, "small"), comfytest.New(t, "big")
+	small.SetMemory(32 * comfytest.GiB)
+	big.SetMemory(128 * comfytest.GiB)
+	cfg := config.Default()
+	cfg.Machines = []config.Machine{{Name: "Small", URL: small.URL, Enabled: true}, {Name: "Big", URL: big.URL, Enabled: true}}
+	get := func() config.Config { return cfg }
+	for _, m := range cfg.Machines {
+		b := Backend(m.Name, m.URL, get)
+		req := backend.Request{ID: "s", Caption: "pop", Lyrics: "[Verse]\nla", Seed: 1, MaxSeconds: 30, OutPath: filepath.Join(t.TempDir(), "song.flac")}
+		if _, err := b.Generate(t.Context(), req, nil); err != nil {
+			t.Fatalf("%s: %v", m.Name, err)
+		}
+	}
+	if got := small.Prompts(); len(got) != 2 || small.Graph(got[0])[comfy.NodeSaveLatent].ClassType == "" {
+		t.Fatalf("the 32 GB machine did not render in two prompts: %v", got)
+	}
+	if got := big.Prompts(); len(got) != 1 || big.Graph(got[0])[comfy.NodeSaveLatent].ClassType != "" {
+		t.Fatalf("the 128 GB machine did not render in one prompt: %v", got)
+	}
+}
