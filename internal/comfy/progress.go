@@ -81,7 +81,7 @@ func (c *Client) dial(ctx context.Context, clientID string) (*websocket.Conn, er
 	wsURL := "ws" + strings.TrimPrefix(c.base, "http") + "/ws?clientId=" + clientID
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPClient: &http.Client{}})
 	if err != nil {
-		return nil, fmt.Errorf("connect websocket: %w", err)
+		return nil, fmt.Errorf("connect websocket: %w", unreachable(ctx, err))
 	}
 	conn.SetReadLimit(64 << 20)
 	return conn, nil
@@ -120,7 +120,11 @@ type RunOptions struct {
 // returns the finished history entry. Cancelling ctx stops only this prompt.
 func (c *Client) Run(ctx context.Context, g Graph, opts RunOptions) (HistoryEntry, error) {
 	if opts.ResumeID != "" {
-		if h, ok, err := c.History(ctx, opts.ResumeID); err == nil && ok {
+		h, ok, err := c.History(ctx, opts.ResumeID)
+		if errors.Is(err, ErrUnreachable) {
+			return HistoryEntry{}, err
+		}
+		if err == nil && ok {
 			if opts.OnQueued != nil {
 				opts.OnQueued(opts.ResumeID)
 			}

@@ -53,6 +53,29 @@ func (l *Live) Set(key string, value any) error {
 	if err := Set(l.path, key, value); err != nil {
 		return err
 	}
+	return l.reload()
+}
+
+// Update runs change on the config file and, only if that worked, reloads
+// the file into the running settings, as Set does.
+func (l *Live) Update(change func(path string) error) error {
+	l.setMu.Lock()
+	defer l.setMu.Unlock()
+	if err := change(l.path); err != nil {
+		return err
+	}
+	return l.reload()
+}
+
+// Reload reads the config file into the running settings, so a change
+// another process saved shows here too.
+func (l *Live) Reload() error {
+	l.setMu.Lock()
+	defer l.setMu.Unlock()
+	return l.reload()
+}
+
+func (l *Live) reload() error {
 	cfg, err := l.load(l.path)
 	if err != nil {
 		return err

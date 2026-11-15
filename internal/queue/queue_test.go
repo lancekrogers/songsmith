@@ -25,15 +25,31 @@ type fakeBackend struct {
 	block     bool
 	jobID     string
 	abandoned []string
+	// holdAbandon, when set, keeps Abandon from returning until it is
+	// closed or its context ends.
+	holdAbandon chan struct{}
 }
 
 func (f *fakeBackend) Name() string { return "fake" }
 
-func (f *fakeBackend) Abandon(_ context.Context, jobID string) error {
+func (f *fakeBackend) Abandon(ctx context.Context, jobID string) error {
+	if f.holdAbandon != nil {
+		select {
+		case <-f.holdAbandon:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.abandoned = append(f.abandoned, jobID)
 	return nil
+}
+
+func (f *fakeBackend) abandonedJobs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.abandoned)
 }
 
 func (f *fakeBackend) Generate(ctx context.Context, req backend.Request, progress func(backend.Progress)) (backend.Result, error) {
@@ -409,9 +425,7 @@ func TestEditingDetachedSongDropsStaleJob(t *testing.T) {
 	if got := b.calls[0].ResumeID; got != "" {
 		t.Fatalf("edited song resumed stale job %q", got)
 	}
-	if len(b.abandoned) != 1 || b.abandoned[0] != "old-prompt" {
-		t.Fatalf("abandoned = %v", b.abandoned)
-	}
+	eventually(t, "the stale job is stopped", func() bool { return slices.Equal(b.abandonedJobs(), []string{"old-prompt"}) })
 }
 
 func TestTitleOnlyEditKeepsDetachedJob(t *testing.T) {
@@ -425,8 +439,8 @@ func TestTitleOnlyEditKeepsDetachedJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	q.Render(t.Context(), song)
-	if b.calls[0].ResumeID != "prompt-1" || len(b.abandoned) != 0 {
-		t.Fatalf("resume %q abandoned %v", b.calls[0].ResumeID, b.abandoned)
+	if b.calls[0].ResumeID != "prompt-1" || len(b.abandonedJobs()) != 0 {
+		t.Fatalf("resume %q abandoned %v", b.calls[0].ResumeID, b.abandonedJobs())
 	}
 }
 
@@ -440,9 +454,43 @@ func TestCancelDetachedSongAbandonsJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, _ := store.Load(song.ID)
-	if got.JobID != "" || len(b.abandoned) != 1 {
-		t.Fatalf("job %q abandoned %v", got.JobID, b.abandoned)
+	if got.JobID != "" {
+		t.Fatalf("job %q kept after cancelling", got.JobID)
 	}
+	eventually(t, "the job is stopped", func() bool { return slices.Equal(b.abandonedJobs(), []string{"prompt-1"}) })
+}
+
+func TestStoppingAJobThatHangsHoldsUpNothing(t *testing.T) {
+	b := &fakeBackend{holdAbandon: make(chan struct{})}
+	q, store := setup(t, b)
+	song := create(t, store, "Song", library.StatusQueued)
+	song.JobID = "prompt-1"
+	store.Save(song)
+
+	returned := func(what string, fn func()) {
+		t.Helper()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			fn()
+		}()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatalf("%s waited on a machine that does not answer", what)
+		}
+	}
+	returned("cancel", func() {
+		if err := q.Cancel(song.ID); err != nil {
+			t.Error(err)
+		}
+	})
+	returned("listing what renders", func() { q.Rendering() })
+	if got, _ := store.Load(song.ID); got.JobID != "" || got.Status != library.StatusDraft {
+		t.Fatalf("cancelled: %+v", got)
+	}
+	close(b.holdAbandon)
+	eventually(t, "the job is stopped", func() bool { return slices.Equal(b.abandonedJobs(), []string{"prompt-1"}) })
 }
 
 func TestEnqueueRefusesASongThatCannotRender(t *testing.T) {
@@ -550,5 +598,25 @@ func TestBeforeRenderRunsOnceBeforeTheBackendAndCannotStopIt(t *testing.T) {
 	q.Render(t.Context(), got)
 	if len(order) != 2 {
 		t.Fatal("the hook ran for a song that was not claimed")
+	}
+}
+
+type brokenSpeeds struct{}
+
+func (brokenSpeeds) Speed(string) (float64, bool) { return 0, false }
+
+func (brokenSpeeds) Record(string, time.Duration, float64) error {
+	return errors.New("machines.json is not valid JSON")
+}
+
+func TestASpeedThatCannotBeRecordedIsNotedOnTheSong(t *testing.T) {
+	q, store := setup(t, &fakeBackend{})
+	q.SetSpeeds(brokenSpeeds{})
+	got := q.Render(t.Context(), create(t, store, "Song", library.StatusQueued))
+	if got.Status != library.StatusDone || !strings.Contains(got.Error, "speed") || !strings.Contains(got.Error, "machines.json is not valid JSON") {
+		t.Fatalf("song = %+v", got)
+	}
+	if saved, _ := store.Load(got.ID); saved.Status != library.StatusDone || saved.Error != got.Error {
+		t.Fatalf("saved = %+v", saved)
 	}
 }

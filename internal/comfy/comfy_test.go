@@ -447,3 +447,142 @@ func TestEveryRenderGraphDecodesInTiles(t *testing.T) {
 		t.Error("the sampling stage must not decode")
 	}
 }
+
+// cutServer serves /view as a body of want bytes but sends only the first
+// half before the connection drops.
+func cutServer(t *testing.T, want int, hang <-chan struct{}) *Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprint(want))
+		w.Write([]byte(strings.Repeat("a", want/2)))
+		w.(http.Flusher).Flush()
+		if hang != nil {
+			select {
+			case <-hang:
+			case <-r.Context().Done():
+			}
+		}
+		panic(http.ErrAbortHandler)
+	}))
+	t.Cleanup(srv.Close)
+	return NewClient(srv.URL)
+}
+
+func TestADownloadCutOffMidwayIsUnreachable(t *testing.T) {
+	c := cutServer(t, 1000, nil)
+	var sb strings.Builder
+	err := c.Download(t.Context(), OutputFile{Filename: "song.flac"}, &sb)
+	if !errors.Is(err, ErrUnreachable) {
+		t.Fatalf("a download cut off midway: %v", err)
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+
+func TestADownloadThatCannotBeWrittenIsNotUnreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, "audio-bytes")
+	}))
+	t.Cleanup(srv.Close)
+	err := NewClient(srv.URL).Download(t.Context(), OutputFile{Filename: "song.flac"}, failingWriter{})
+	if err == nil || errors.Is(err, ErrUnreachable) || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("a write failure: %v", err)
+	}
+}
+
+func TestACancelledDownloadIsNotUnreachable(t *testing.T) {
+	hang := make(chan struct{})
+	defer close(hang)
+	c := cutServer(t, 1000, hang)
+	ctx, cancel := context.WithCancel(t.Context())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	var sb strings.Builder
+	err := c.Download(ctx, OutputFile{Filename: "song.flac"}, &sb)
+	if err == nil || errors.Is(err, ErrUnreachable) {
+		t.Fatalf("a cancelled download: %v", err)
+	}
+}
+
+func TestComboOptionsReadsEveryListShape(t *testing.T) {
+	// Captured from ComfyUI 0.45.0: UNETLoader lists its files the old way,
+	// newer nodes such as AudioEncoderLoader and KSamplerSelect as COMBO. A
+	// combo filled from a remote route has no options; that entry follows
+	// ComfyUI's Combo.Input.as_dict rather than a captured node.
+	const objectInfo = `{"input":{"required":{
+		"unet_name":[["a.safetensors","b.safetensors"]],
+		"weight_dtype":[["default","fp8_e4m3fn"],{"advanced":true}],
+		"audio_encoder_name":["COMBO",{"multiselect":false,"options":[]}],
+		"sampler_name":["COMBO",{"multiselect":false,"options":["euler","heun"]}],
+		"remote_name":["COMBO",{"multiselect":false,"remote":{"route":"/models"}}],
+		"text":["STRING",{"multiline":true}]}}}`
+	var info NodeInfo
+	if err := json.Unmarshal([]byte(objectInfo), &info); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		input string
+		want  []string
+		ok    bool
+	}{
+		{"unet_name", []string{"a.safetensors", "b.safetensors"}, true},
+		{"weight_dtype", []string{"default", "fp8_e4m3fn"}, true},
+		{"audio_encoder_name", []string{}, true},
+		{"sampler_name", []string{"euler", "heun"}, true},
+		{"remote_name", nil, false},
+		{"text", nil, false},
+		{"absent", nil, false},
+	} {
+		got, ok := info.ComboList(tc.input)
+		if ok != tc.ok || fmt.Sprint(got) != fmt.Sprint(tc.want) || ok && got == nil {
+			t.Errorf("%s: got %v, %v; want %v, %v", tc.input, got, ok, tc.want, tc.ok)
+		}
+		if opts := info.ComboOptions(tc.input); fmt.Sprint(opts) != fmt.Sprint(tc.want) {
+			t.Errorf("%s: ComboOptions %v", tc.input, opts)
+		}
+	}
+}
+
+// cutHistory answers /history with the start of an entry, then drops the
+// connection, or once hang closes when it is set.
+func cutHistory(t *testing.T, hang <-chan struct{}) *Client {
+	t.Helper()
+	const start = `{"p":{"status":{"status_str":"succ`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprint(4*len(start)))
+		io.WriteString(w, start)
+		w.(http.Flusher).Flush()
+		if hang != nil {
+			select {
+			case <-hang:
+			case <-r.Context().Done():
+			}
+		}
+		panic(http.ErrAbortHandler)
+	}))
+	t.Cleanup(srv.Close)
+	return NewClient(srv.URL)
+}
+
+func TestAHistoryCutOffMidwayIsUnreachable(t *testing.T) {
+	if _, _, err := cutHistory(t, nil).History(t.Context(), "p"); !errors.Is(err, ErrUnreachable) {
+		t.Fatalf("a history cut off midway: %v", err)
+	}
+
+	garbled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, `{"p": nope}`)
+	}))
+	t.Cleanup(garbled.Close)
+	if _, _, err := NewClient(garbled.URL).History(t.Context(), "p"); err == nil || errors.Is(err, ErrUnreachable) {
+		t.Fatalf("a history that is not JSON: %v", err)
+	}
+
+	hang := make(chan struct{})
+	defer close(hang)
+	ctx, cancel := context.WithCancel(t.Context())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	if _, _, err := cutHistory(t, hang).History(ctx, "p"); err == nil || errors.Is(err, ErrUnreachable) {
+		t.Fatalf("a cancelled history: %v", err)
+	}
+}

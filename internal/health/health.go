@@ -240,29 +240,49 @@ type objectInfoer interface {
 	ObjectInfo(ctx context.Context, class string) (comfy.NodeInfo, bool, error)
 }
 
-func nodeChecks(ctx context.Context, c objectInfoer, models config.ComfyUI) []Check {
-	nodes := Check{ID: IDNodes, Name: "ComfyUI nodes", Blocking: true}
-	var missingNodes, unseenFiles []string
+// MissingNodes asks a ComfyUI server which node classes and inputs the
+// MiniMax graphs need it lacks, and which of the model files in models its
+// loaders cannot see. unchecked names the model files whose loader does not
+// list the files it sees, so they could not be checked.
+func MissingNodes(ctx context.Context, c objectInfoer, models config.ComfyUI) (nodes, files, unchecked []string, err error) {
+	wanted := []struct{ input, file string }{
+		{"unet_name", models.DiffusionModel}, {"clip_name", models.TextEncoder}, {"vae_name", models.VAE},
+	}
 	for _, class := range slices.Sorted(maps.Keys(comfy.RequiredNodes)) {
 		info, ok, err := c.ObjectInfo(ctx, class)
 		if err != nil {
-			nodes.Result, nodes.Detail = Fail, err.Error()
-			return []Check{nodes}
+			return nil, nil, nil, err
 		}
 		if !ok {
-			missingNodes = append(missingNodes, class)
+			nodes = append(nodes, class)
 			continue
 		}
 		for _, in := range comfy.RequiredNodes[class] {
 			if !info.HasInput(in) {
-				missingNodes = append(missingNodes, class+"."+in)
+				nodes = append(nodes, class+"."+in)
 			}
 		}
-		for input, want := range map[string]string{"unet_name": models.DiffusionModel, "clip_name": models.TextEncoder, "vae_name": models.VAE} {
-			if opts := info.ComboOptions(input); opts != nil && !slices.Contains(opts, want) {
-				unseenFiles = append(unseenFiles, want)
+		for _, w := range wanted {
+			if !info.HasInput(w.input) {
+				continue
+			}
+			switch opts, ok := info.ComboList(w.input); {
+			case !ok:
+				unchecked = append(unchecked, w.file)
+			case !slices.Contains(opts, w.file):
+				files = append(files, w.file)
 			}
 		}
+	}
+	return nodes, files, unchecked, nil
+}
+
+func nodeChecks(ctx context.Context, c objectInfoer, models config.ComfyUI) []Check {
+	nodes := Check{ID: IDNodes, Name: "ComfyUI nodes", Blocking: true}
+	missingNodes, unseenFiles, unchecked, err := MissingNodes(ctx, c, models)
+	if err != nil {
+		nodes.Result, nodes.Detail = Fail, err.Error()
+		return []Check{nodes}
 	}
 	if len(missingNodes) > 0 {
 		nodes.Result, nodes.Detail = Fail, "missing "+strings.Join(missingNodes, ", ")+"; update ComfyUI to a version with MiniMax Music 3 support (shell: `git pull` in "+models.Dir+")"
@@ -270,9 +290,14 @@ func nodeChecks(ctx context.Context, c objectInfoer, models config.ComfyUI) []Ch
 		nodes.Result, nodes.Detail = OK, "MiniMax Music 3 nodes available"
 	}
 	out := []Check{nodes}
-	if len(unseenFiles) > 0 {
+	switch {
+	case len(unseenFiles) > 0:
 		out = append(out, Check{ID: IDServerModelFiles, Name: "ComfyUI model list", Result: Fail, Blocking: true,
 			Detail: "ComfyUI cannot see " + strings.Join(unseenFiles, ", ") + "; restart ComfyUI so it lists the new files (shell: `songsmith server stop`, then `songsmith server start`)"})
+	case len(unchecked) > 0:
+		out = append(out, Check{ID: IDServerModelFiles, Name: "ComfyUI model list", Result: Warn,
+			Detail: "could not read which model files ComfyUI lists, so songsmith did not check that it sees " + strings.Join(unchecked, ", ") +
+				"; a render fails at once if it does not"})
 	}
 	return out
 }

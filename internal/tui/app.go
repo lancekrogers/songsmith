@@ -10,10 +10,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/lancekrogers/songsmith/internal/backend"
 	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/health"
 	"github.com/lancekrogers/songsmith/internal/library"
+	"github.com/lancekrogers/songsmith/internal/machines"
 	"github.com/lancekrogers/songsmith/internal/master"
 	"github.com/lancekrogers/songsmith/internal/queue"
 	"github.com/lancekrogers/songsmith/internal/writer"
@@ -69,6 +69,9 @@ type Deps struct {
 	Installer Installer
 	// Clipboard copies text for the user; nil means the system clipboard.
 	Clipboard func(text string) error
+	// CheckMachine asks a ComfyUI server whether it can render with models;
+	// nil means machines.Check. It is called off the UI goroutine.
+	CheckMachine func(ctx context.Context, url string, models config.ComfyUI) machines.Status
 }
 
 type screen int
@@ -295,7 +298,7 @@ func (a app) update(msg tea.Msg) (app, tea.Cmd) {
 		return a, waitPlayDone(a.d.Player)
 	case tickMsg:
 		a.ticks++
-		if a.d.Queue.Current() != "" {
+		if len(a.d.Queue.Rendering()) > 0 {
 			a.layoutDetail()
 		}
 		// Other processes can change the library; refresh now and then.
@@ -443,14 +446,4 @@ func (a app) screenView() string {
 	default:
 		return a.launcher.view(a.launcherState(), a.width, a.height)
 	}
-}
-
-// renderingSong is the song being rendered here or in another process.
-func (a app) renderingSong() (library.Song, backend.Progress, bool) {
-	for _, s := range a.library.songs {
-		if s.Status == library.StatusRendering {
-			return s, a.library.progress[s.ID], true
-		}
-	}
-	return library.Song{}, backend.Progress{}, false
 }

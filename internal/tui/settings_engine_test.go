@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/lancekrogers/songsmith/internal/comfy/server"
+	"github.com/lancekrogers/songsmith/internal/library"
 )
 
 func TestServerShowsTheEngineAsALineAndItsRows(t *testing.T) {
@@ -172,7 +173,7 @@ func TestFoldersAndHostSaveOnlyTheirKeyForTheNextStart(t *testing.T) {
 		t.Fatalf("host:\n%s", plain(a))
 	}
 
-	a = pressSettings(t, a, "8")
+	a = pressSettings(t, a, "9")
 	view := plain(a)
 	for _, s := range []string{"Library folder", "State folder", "Config file"} {
 		if !strings.Contains(view, s) {
@@ -195,5 +196,23 @@ func TestFoldersAndHostSaveOnlyTheirKeyForTheNextStart(t *testing.T) {
 	}
 	if !strings.Contains(plain(a), "Applies after restart · Library folder:") {
 		t.Fatalf("status line:\n%s", plain(a))
+	}
+}
+
+func TestOnlyASongRenderingOnThisComputerKeepsTheServerRunning(t *testing.T) {
+	a, srv := newSettingsApp(t, readyChecks())
+	srv.status = server.Status{Running: true, Managed: true, Device: "mps"}
+	a.library.songs = []library.Song{
+		{ID: "a", Title: "Far", Status: library.StatusRendering, RenderingOn: "MacBook Pro"},
+		{ID: "b", Title: "Also far", Status: library.StatusRendering, RenderingOn: "Attic"},
+	}
+	a = openSettingsOn(t, a, sectionServer)
+	a = focus(t, a, "Server", -1)
+	if got := footerLine(a); !strings.Contains(got, "enter stop") {
+		t.Fatalf("songs rendering on other machines blocked stopping this one: %q\n%s", got, plain(a))
+	}
+	a.library.songs = append(a.library.songs, library.Song{ID: "c", Title: "Here", Status: library.StatusRendering})
+	if !strings.Contains(plain(a), "rendering — stop is unavailable") {
+		t.Fatalf("a song rendering here did not block stopping:\n%s", plain(a))
 	}
 }

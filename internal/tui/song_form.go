@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/health"
 	"github.com/lancekrogers/songsmith/internal/library"
 	"github.com/lancekrogers/songsmith/internal/queue"
@@ -36,6 +38,7 @@ const (
 	rowLength
 	rowVocals
 	rowSeed
+	rowMachine
 	rowLyrics
 	rowGlobal
 	rowVocal
@@ -50,7 +53,7 @@ func (r formRow) isText() bool { return r >= rowLyrics }
 func (r formRow) textIndex() int { return int(r - rowLyrics) }
 
 func (r formRow) name() string {
-	return [...]string{"Idea", "Writer", "Draft", "Revise", "Title", "Length", "Vocals", "Seed", "Lyrics", "Global metadata", "Vocal details", "Arrangement"}[r]
+	return [...]string{"Idea", "Writer", "Draft", "Revise", "Title", "Length", "Vocals", "Seed", "Render on", "Lyrics", "Global metadata", "Vocal details", "Arrangement"}[r]
 }
 
 const (
@@ -62,6 +65,7 @@ const (
 // songFields are the form's values, compared to tell whether it changed.
 type songFields struct {
 	idea, title, seed string
+	machine           string
 	seconds           float64
 	autoLength        bool
 	instrumental      bool
@@ -90,6 +94,11 @@ type composeModel struct {
 	// lengthSet is set once the user steps Length in this form.
 	lengthSet    bool
 	instrumental bool
+	// machine is the machine the song is pinned to; "" is any free one.
+	machine string
+	// machineRow keeps Render on drawn for the rest of the visit once shown,
+	// so it never goes away under the cursor.
+	machineRow bool
 	// lastSeed is the seed the song's latest render used, which p pins.
 	lastSeed int64
 	// texts are Lyrics, Global metadata, Vocal details and Arrangement.
@@ -195,7 +204,8 @@ func (c *composeModel) resize(w, h int) {
 	inner := c.boxWidth() - 4
 	c.idea.SetWidth(max(inner-1, 10))
 	c.fitIdea()
-	c.title.Width = max(inner-labelWidth-4, 10)
+	// The label column widens to fit Render on when that row is shown.
+	c.title.Width = max(inner-len(rowMachine.name())-4, 10)
 	c.fitSeed()
 	c.rv.input.Width = max(inner-8, 10)
 	c.layoutEditor()
@@ -224,6 +234,7 @@ func (c *composeModel) startEdit(song library.Song, newSeconds float64) tea.Cmd 
 	c.autoLength = song.ID == "" && !c.copied && song.Seconds == 0
 	c.draftedLength, c.lengthSet = false, false
 	c.instrumental = song.Instrumental
+	c.machine, c.machineRow = song.Machine, false
 	c.texts = [4]string{song.Lyrics, song.Caption.GlobalMetadata, song.Caption.VocalDetails, song.Caption.Arrangement}
 	c.initial = c.fields()
 	c.editor, c.drafting, c.cancel, c.armed, c.msg, c.note = nil, false, nil, "", "", ""
@@ -253,6 +264,7 @@ func (c *composeModel) fitSeed() {
 func asCopy(song library.Song) library.Song {
 	song.DerivedFrom = cmp.Or(song.ID, song.DerivedFrom)
 	song.ID, song.Status, song.Audio, song.Duration, song.Error, song.JobID = "", "", "", 0, "", ""
+	song.RenderingOn, song.LostSince = "", time.Time{}
 	song.Takes = nil
 	song.Started, song.Finished, song.Timings = time.Time{}, time.Time{}, nil
 	if !song.SeedPinned {
@@ -263,7 +275,7 @@ func asCopy(song library.Song) library.Song {
 
 func (c *composeModel) fields() songFields {
 	return songFields{
-		idea: c.idea.Value(), title: c.title.Value(), seed: c.seed.Value(),
+		idea: c.idea.Value(), title: c.title.Value(), seed: c.seed.Value(), machine: c.machine,
 		seconds: c.seconds, autoLength: c.autoLength, instrumental: c.instrumental, texts: c.texts,
 	}
 }
@@ -359,6 +371,7 @@ func (c *composeModel) song() (library.Song, error) {
 	s.Title = cmp.Or(strings.TrimSpace(c.title.Value()), "Untitled")
 	s.Seconds = c.seconds
 	s.Instrumental = c.instrumental
+	s.Machine = c.machine
 	s.Lyrics = strings.TrimSpace(c.texts[0])
 	s.Caption = writer.Caption{
 		GlobalMetadata: strings.TrimSpace(c.texts[1]),
@@ -544,6 +557,9 @@ func (a app) formKey(key tea.KeyMsg) (app, tea.Cmd) {
 			return a, nil
 		case rowVocals:
 			c.instrumental = !c.instrumental
+			return a, nil
+		case rowMachine:
+			a.stepMachine(dir)
 			return a, nil
 		}
 	}
@@ -867,6 +883,79 @@ func (a *app) refreshFormSkips() {
 	c.skip[rowWriter] = !ok
 	c.skip[rowDraft] = down
 	c.skip[rowRevise] = down || !c.hasLyrics()
+	_, _, show := a.formMachines()
+	c.skip[rowMachine] = !show
+	c.machineRow = show
+}
+
+// anyMachine is the Render on choice that pins nothing.
+const anyMachine = "any free machine"
+
+// formMachines is what the Render on row offers: any free machine, then
+// each machine that gets new songs, this computer first, then the pin the
+// song was opened with and the chosen one when they are none of those. show
+// is whether the row is drawn: when more than one machine gets new songs,
+// the song is or was pinned, or the row was drawn earlier in the visit.
+func (a app) formMachines() (names []string, cur int, show bool) {
+	cfg := a.cfg()
+	names = []string{anyMachine}
+	if cfg.Local.Enabled {
+		names = append(names, config.ThisComputer)
+	}
+	for _, m := range cfg.Machines {
+		if m.Enabled {
+			names = append(names, m.Name)
+		}
+	}
+	enabled := len(names) - 1
+	c := &a.compose
+	offer := func(pin string) int {
+		if pin == "" {
+			return 0
+		}
+		i := slices.IndexFunc(names[1:], func(n string) bool { return strings.EqualFold(n, pin) }) + 1
+		if i == 0 {
+			names = append(names, pin)
+			i = len(names) - 1
+		}
+		return i
+	}
+	offer(c.base.Machine)
+	cur = offer(c.machine)
+	return names, cur, enabled > 1 || c.machine != "" || c.base.Machine != "" || c.machineRow
+}
+
+// stepMachine pins the song to the next or previous machine on offer.
+func (a *app) stepMachine(dir int) {
+	names, cur, show := a.formMachines()
+	if !show {
+		return
+	}
+	next := min(max(cur+dir, 0), len(names)-1)
+	a.compose.machine = ""
+	if next > 0 {
+		a.compose.machine = names[next]
+	}
+}
+
+// machineNote says why a pinned machine is drawn dim: it gets no new songs
+// or is not set up, so the song would wait.
+func (a app) machineNote(name string) string {
+	cfg := a.cfg()
+	if strings.EqualFold(name, config.ThisComputer) {
+		if !cfg.Local.Enabled {
+			return "gets no new songs"
+		}
+		return ""
+	}
+	m, ok := cfg.Machine(name)
+	switch {
+	case !ok:
+		return "not one of the machines"
+	case !m.Enabled:
+		return "gets no new songs"
+	}
+	return ""
 }
 
 // formWriterChoice is the models the form's Writer row cycles through, the

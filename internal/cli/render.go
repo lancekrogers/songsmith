@@ -2,11 +2,13 @@ package cli
 
 import (
 	"context"
+	"time"
 
 	"github.com/lancekrogers/songsmith/internal/backend"
 	"github.com/lancekrogers/songsmith/internal/comfy/server"
 	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/library"
+	"github.com/lancekrogers/songsmith/internal/machines"
 	"github.com/lancekrogers/songsmith/internal/master"
 	"github.com/lancekrogers/songsmith/internal/ollama"
 	"github.com/lancekrogers/songsmith/internal/queue"
@@ -21,13 +23,17 @@ type renderer struct {
 }
 
 // newRenderer builds the render stack. The folders, host and port come from
-// live once; the backend reads the rest of live at the start of each render.
+// live once; the backend reads the rest of live at the start of each render,
+// and the queue reads the machines each time it sends a song.
 func newRenderer(live *config.Live) *renderer {
 	cfg := live.Get()
 	m := server.New(cfg.ComfyUI, cfg.StateDir)
 	b := backend.NewComfyMiniMax(m.Client(), backend.StarterFunc(m.Ensure), live.Get)
 	store := library.NewStore(cfg.LibraryDir)
 	q := queue.New(store, b)
+	q.SetMachines(queue.ConfigMachines(live.Get, b))
+	q.SetSpeeds(machines.NewSpeeds(cfg.StateDir))
+	q.ReclaimAfter(func() time.Duration { return live.Get().ReclaimAfter })
 	q.BeforeRender(func(ctx context.Context) { unloadWriter(ctx, live.Get().Ollama) })
 	run := master.NewRunner()
 	q.AfterRender(autoMaster(store, live.Get, run))

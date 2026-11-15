@@ -156,6 +156,9 @@ func (a app) checkState(c health.Check, act setup.Action, planned bool) (string,
 	case health.IDNodes:
 		return "missing nodes", ""
 	case health.IDServerModelFiles:
+		if c.Result == health.Warn {
+			return "not checked", "could not read the file list"
+		}
 		return "needs a restart", ""
 	case health.IDWriter:
 		switch {

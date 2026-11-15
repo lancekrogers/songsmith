@@ -293,6 +293,9 @@ songsmith revise --save <song-id> "add a bridge"    # keep it as a new draft; --
 songsmith master <song-id> --preset streaming --set-current
 songsmith takes <song-id>                  # list takes; --use <file> makes one current
 songsmith server start|status|stop
+songsmith machines                         # the computers songs render on, and whether each is ready
+songsmith machines add "MacBook Pro" http://100.101.102.103:8188
+songsmith generate --machine "MacBook Pro" --lyrics lyrics.txt --caption caption.txt
 songsmith config                           # the effective configuration
 ```
 
@@ -329,6 +332,82 @@ the same performance: the render and the masters made from it. Nothing overwrite
 either, and only `d` in the library deletes them. Only one songsmith process renders at a time; another open
 songsmith waits and takes over when the first one quits.
 
+## Rendering on more than one computer
+
+Songsmith can send songs to ComfyUI on other computers as well as this one. Each
+machine renders one song at a time, so two machines render two queued songs at once,
+and the audio lands in your library like any other render. The other computer needs
+only ComfyUI and the model files: no SSH, no shared folder, no extra step to fetch
+the result.
+
+On the other computer, once:
+
+1. Install ComfyUI and the model files. `songsmith setup --install` there is the
+   easiest way.
+2. Set `comfyui.host` in its config to an address this computer can reach, such as
+   its Tailscale IP. ComfyUI listens on that address.
+3. Run `songsmith server start` there and leave it running.
+
+On this computer, open **Settings → Machines** in the terminal UI. It lists This computer
+and each machine you added, with its status (ready, offline, models missing and which files,
+or ComfyUI too old and which nodes), address, memory and measured speed, a toggle for
+whether it gets new songs, and Remove, which asks for `y` first. **Add a machine** asks for
+a name, then an address; it checks the machine and shows what it found before you save it.
+Checks run in the background, so a machine that is asleep never holds up the screen, and
+a change applies to the next song sent, with no restart. The same from a shell:
+
+```bash
+songsmith machines add "MacBook Pro" http://100.101.102.103:8188   # checks it, says what it found, saves it
+songsmith machines                                                # each machine, its status and measured speed
+songsmith machines remove "MacBook Pro"
+```
+
+Once more than one machine gets new songs, the song form has a **Render on** row: any free
+machine, or one machine by name. The library shows each rendering song's machine and its
+own progress under its title, says when a song waits for a machine that stopped answering
+or for the machine it is pinned to, and names the machine each take was rendered on; `x`
+cancels the selected song only. The launcher's Queue chip counts the renders in flight.
+
+**ComfyUI has no login.** Anyone who can reach its address can render on it, read its
+files and stop its work. Give it an address on a private network, such as Tailscale,
+never a public one.
+
+How songs are shared out:
+
+- The oldest queued song goes first. When several machines are free, it goes to the
+  fastest: songsmith keeps each machine's render seconds per second of audio in
+  `machines.json` in `state_dir`. A machine with no renders yet is tried first, so it
+  gets measured.
+- Render on in the song form, or `generate --machine <name>`, pins a song to one machine
+  (`"This computer"` is this one). A pinned song waits for its machine and never goes
+  anywhere else.
+- Before a new song goes to another computer, songsmith checks that machine answers
+  and has the MiniMax Music 3 nodes and model files. A machine that fails the check is
+  skipped and checked again a little later, so it never fails songs it cannot render.
+- If a machine stops answering mid-render, whether it closes the connection or goes
+  quiet as a sleeping computer does, songsmith notices within about half a minute. The
+  song stays rendering and songsmith picks the render up again when the machine is back. After `reclaim_after` (10 minutes by
+  default) the song is queued again; a pinned one goes back to waiting for its machine.
+- Quitting songsmith leaves every render running on its machine, and the next start
+  picks each one up. A song whose machine was removed in the meantime is queued again.
+- Turning This computer off in Settings → Machines (`local.enabled: false`) stops
+  rendering on this computer, so songs go only to the machines you added.
+- A change applies to the next song sent. A change made with `songsmith machines` in a
+  shell while the terminal UI is open applies when the terminal UI next starts; one made
+  in Settings → Machines applies at once.
+
+Known limits:
+
+- A song renders start to finish on one machine; one song is not split across machines.
+- A low-memory render saves an intermediate file of a few MB per song. On another
+  computer it stays in `output/songsmith/latents` in that computer's ComfyUI folder,
+  because ComfyUI cannot delete files over its API; clear that folder there now and then.
+- The other computer must be awake. Songsmith does not wake it or keep it awake.
+- Writing lyrics (Ollama) and mastering (ffmpeg) stay on this computer.
+- The model files must be installed on every machine. If a machine's files have other
+  names, set them in its `machines` entry, or with `--diffusion-model`,
+  `--text-encoder` and `--vae` on `machines add`.
+
 ## Configuration
 
 `~/.config/songsmith/config.yaml`, or `--config`, or `$SONGSMITH_CONFIG`. Every key is
@@ -364,6 +443,16 @@ master:
   default: {}                 # e.g. {loudness: -14, ceiling: -1, low_cut: 30}
 library_dir: ~/Music/Songsmith
 state_dir: ~/.local/state/songsmith
+machines: []                  # other computers' ComfyUI servers; see Rendering on more than one computer
+#  - name: MacBook Pro
+#    url: http://100.101.102.103:8188
+#    enabled: true            # send it new songs
+#    diffusion_model: ""      # these three default to the names under comfyui:
+#    text_encoder: ""
+#    vae: ""
+local:
+  enabled: true               # render on this computer as well as on the machines
+reclaim_after: 10m            # how long a song waits for a machine that stopped answering mid-render
 ```
 
 ## Development
@@ -374,7 +463,7 @@ just test unit      # unit tests
 just test race      # with the race detector
 just test lint      # go vet + gofmt
 just test hardware  # renders a 20 s song on the ComfyUI install your config names
-just demo           # re-record demos/tui.gif (also demo-editor, demo-master, demo-setup, demo-settings)
+just demo           # re-record demos/tui.gif (also demo-editor, demo-master, demo-setup, demo-settings, demo-machines)
 ```
 
 The recordings run against `demos/setupfake`, a loopback stand-in for Ollama, ComfyUI

@@ -263,6 +263,9 @@ func (a app) takesRow() settingRow {
 	for i, t := range takes {
 		row.options = append(row.options, t.File)
 		extra := takeDetail(t)
+		if where := takeWhere(takes, t, len(a.cfg().Machines) > 0); where != "" {
+			extra += " · " + where
+		}
 		if t.File == m.take {
 			extra += " · working on"
 		}

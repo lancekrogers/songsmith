@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -15,6 +16,7 @@ import (
 
 	"github.com/lancekrogers/songsmith/internal/comfy"
 	"github.com/lancekrogers/songsmith/internal/comfy/server"
+	"github.com/lancekrogers/songsmith/internal/library"
 	"github.com/lancekrogers/songsmith/internal/setup"
 )
 
@@ -210,13 +212,15 @@ func (a app) serverRow() settingRow {
 	return row
 }
 
-// rendering reports whether a song is rendering, here or in another process.
+// rendering reports whether a song is rendering on this computer, from this
+// process or another.
 func (a app) rendering() bool {
 	if a.d.Queue != nil && a.d.Queue.Current() != "" {
 		return true
 	}
-	_, _, ok := a.renderingSong()
-	return ok
+	return slices.ContainsFunc(a.library.songs, func(s library.Song) bool {
+		return s.Status == library.StatusRendering && s.RenderingOn == ""
+	})
 }
 
 // managedServerRunning reports whether the last check found a server

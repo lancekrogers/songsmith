@@ -19,7 +19,7 @@ import (
 
 func newGenerateCmd(a *app) *cobra.Command {
 	var f writeFlags
-	var lyricsFile, captionFile, title string
+	var lyricsFile, captionFile, title, machine string
 	var seed int64
 	cmd := &cobra.Command{
 		Use:   "generate [idea]",
@@ -28,7 +28,8 @@ func newGenerateCmd(a *app) *cobra.Command {
 			"caption first, or pass --lyrics and --caption files you wrote yourself.\n" +
 			"Renders take several minutes per minute of audio.",
 		Example: `  songsmith generate --seconds 60 "a sea shanty about debugging production at 3am"
-  songsmith generate --title "Coast Road" --lyrics lyrics.txt --caption caption.txt --seconds 90`,
+  songsmith generate --title "Coast Road" --lyrics lyrics.txt --caption caption.txt --seconds 90
+  songsmith generate --machine "MacBook Pro" --lyrics lyrics.txt --caption caption.txt`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := a.loadConfig()
@@ -37,8 +38,12 @@ func newGenerateCmd(a *app) *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 			idea := strings.TrimSpace(strings.Join(args, " "))
+			pin, err := machinePin(cfg, machine)
+			if err != nil {
+				return err
+			}
 
-			song := library.Song{Idea: idea, Title: title, Seed: seed, SeedPinned: cmd.Flags().Changed("seed"), Seconds: f.seconds}
+			song := library.Song{Idea: idea, Title: title, Seed: seed, SeedPinned: cmd.Flags().Changed("seed"), Seconds: f.seconds, Machine: pin}
 			switch {
 			case lyricsFile != "" || captionFile != "":
 				if lyricsFile == "" || captionFile == "" {
@@ -88,6 +93,9 @@ func newGenerateCmd(a *app) *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(out, "Rendering %s (up to %.0fs of audio, usually several minutes per minute)...\n", song.ID, song.Seconds)
+			if len(cfg.Machines) > 0 {
+				fmt.Fprintf(out, "It goes to %s.\n", cmp.Or(pin, "the fastest machine that answers"))
+			}
 
 			updates, stop := r.queue.Subscribe()
 			defer stop()
@@ -106,7 +114,12 @@ func newGenerateCmd(a *app) *cobra.Command {
 				fmt.Fprintf(out, "\nDone in %s: %s (%.0fs)\n", time.Since(start).Round(time.Second), r.store.AudioPath(song), song.Duration)
 				return nil
 			case library.StatusQueued:
-				fmt.Fprintf(out, "\nDetached; ComfyUI keeps rendering %s and songsmith picks up the result the next time it runs its queue.\n", song.ID)
+				if song.JobID == "" {
+					return fmt.Errorf("%s. It is saved as %s, and the songsmith terminal UI renders it once a machine can take it",
+						cmp.Or(song.Error, song.Title+" did not render: no machine took it"), song.ID)
+				}
+				fmt.Fprintf(out, "\nDetached; ComfyUI on %s keeps rendering %s and songsmith picks up the result the next time it runs its queue.\n",
+					cmp.Or(song.RenderingOn, config.ThisComputer), song.ID)
 				return nil
 			default:
 				return fmt.Errorf("render failed: %s", song.Error)
@@ -118,7 +131,30 @@ func newGenerateCmd(a *app) *cobra.Command {
 	cmd.Flags().StringVar(&captionFile, "caption", "", "caption file (Global Metadata / Vocal Details / Arrangement)")
 	cmd.Flags().StringVar(&title, "title", "", "song title")
 	cmd.Flags().Int64Var(&seed, "seed", 0, "render seed (default random)")
+	cmd.Flags().StringVar(&machine, "machine", "", `render on this machine only, "`+config.ThisComputer+`" or a name from songsmith machines (default: the fastest free one)`)
 	return cmd
+}
+
+// machinePin checks that name is a machine a song can be pinned to now, and
+// returns its name as the config spells it; "" pins nothing.
+func machinePin(cfg config.Config, name string) (string, error) {
+	switch {
+	case name == "":
+		return "", nil
+	case strings.EqualFold(name, config.ThisComputer):
+		if !cfg.Local.Enabled {
+			return "", fmt.Errorf("%s is turned off for rendering (local.enabled: false in the config)", config.ThisComputer)
+		}
+		return config.ThisComputer, nil
+	}
+	m, ok := cfg.Machine(name)
+	if !ok {
+		return "", fmt.Errorf("there is no machine named %q; the machines are: %s", name, machineNames(cfg))
+	}
+	if !m.Enabled {
+		return "", fmt.Errorf("%s is turned off for rendering (enabled: false in its machines entry in the config)", m.Name)
+	}
+	return m.Name, nil
 }
 
 func printProgress(w io.Writer, updates <-chan queueUpdate) {
