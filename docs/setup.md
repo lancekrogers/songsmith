@@ -53,6 +53,21 @@ The server keeps running after songsmith exits so models stay loaded between son
 Stop it with `songsmith server stop`. Its log is at
 `~/.local/state/songsmith/comfyui.log`.
 
+## 4. Rendering on another computer too
+
+Another computer with ComfyUI and the model files can render songs for this one.
+On that computer, follow steps 1 and 2 (or run `songsmith setup --install` there), set
+`comfyui.host` in its config to an address this computer can reach, such as its
+Tailscale IP, and run `songsmith server start`. Then, on this computer:
+
+```bash
+songsmith machines add "MacBook Pro" http://100.101.102.103:8188
+```
+
+ComfyUI has no login, so keep that address on a private network such as Tailscale,
+never a public one. The README's "Rendering on more than one computer" covers how
+songs are shared out and the known limits.
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -61,3 +76,5 @@ Stop it with `songsmith server stop`. Its log is at
 | `doctor`: ComfyUI cannot see a model file | Check the file name in config, then restart ComfyUI |
 | Renders extremely slow | Make sure the server runs with `--gpu-only` (`songsmith server status`) |
 | Draft fails | Check `ollama.model` is installed (`ollama list`); you can still write lyrics by hand |
+| `songsmith machines`: a machine is offline | Wake that computer, run `songsmith server start` there, and check its `comfyui.host` is an address this computer can reach |
+| `songsmith machines`: models missing | Install the model files on that computer, or set its file names in its `machines` entry, then restart ComfyUI there |
