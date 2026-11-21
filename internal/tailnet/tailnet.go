@@ -115,7 +115,12 @@ func runStatus(ctx context.Context, cli string) ([]byte, []byte, error) {
 }
 
 type status struct {
-	BackendState   string          `json:"BackendState"`
+	BackendState string `json:"BackendState"`
+	// CurrentTailnet holds the tailnet's DNS suffix; older versions of
+	// Tailscale give it only as MagicDNSSuffix.
+	CurrentTailnet *struct {
+		MagicDNSSuffix string `json:"MagicDNSSuffix"`
+	} `json:"CurrentTailnet"`
 	MagicDNSSuffix string          `json:"MagicDNSSuffix"`
 	Self           *node           `json:"Self"`
 	Peer           map[string]node `json:"Peer"`
@@ -148,7 +153,11 @@ func Parse(data []byte) ([]Node, error) {
 	if st.BackendState != "" && st.BackendState != "Running" {
 		return nil, errors.New(backendState(st.BackendState))
 	}
-	suffix := strings.ToLower(trimDot(st.MagicDNSSuffix))
+	suffix := st.MagicDNSSuffix
+	if st.CurrentTailnet != nil && st.CurrentTailnet.MagicDNSSuffix != "" {
+		suffix = st.CurrentTailnet.MagicDNSSuffix
+	}
+	suffix = strings.ToLower(trimDot(suffix))
 	var self node
 	if st.Self != nil {
 		self = *st.Self
@@ -175,6 +184,8 @@ func backendState(state string) string {
 	switch state {
 	case "NeedsLogin":
 		return "Tailscale is signed out on this computer; sign in (tailscale up) and try again"
+	case "NeedsMachineAuth":
+		return "This computer is waiting to be approved on its tailnet; approve it in the Tailscale admin console and try again"
 	case "Stopped":
 		return "Tailscale is stopped on this computer; start it and try again"
 	case "NoState", "Starting":

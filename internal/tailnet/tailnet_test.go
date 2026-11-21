@@ -86,13 +86,27 @@ func TestParseWithoutASuffixKeepsEveryDNSName(t *testing.T) {
 	}
 }
 
+func TestParseReadsTheSuffixFromTheCurrentTailnet(t *testing.T) {
+	data := `{"BackendState":"Running","CurrentTailnet":{"MagicDNSSuffix":"example-tailnet.ts.net"},"Peer":{
+	  "a":{"HostName":"Shared","DNSName":"box.other.ts.net.","TailscaleIPs":["100.64.0.20"],"Online":true},
+	  "b":{"HostName":"Studio Mac","DNSName":"studio.example-tailnet.ts.net.","TailscaleIPs":["100.64.0.2"],"Online":true}}}`
+	nodes, err := Parse([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := names(nodes), []string{"Studio Mac"}; !slices.Equal(got, want) {
+		t.Fatalf("names %q, want %q", got, want)
+	}
+}
+
 func TestParseSaysWhatToDoWhenTailscaleIsNotRunning(t *testing.T) {
 	for state, want := range map[string]string{
-		"NeedsLogin": "Tailscale is signed out on this computer; sign in (tailscale up) and try again",
-		"Stopped":    "Tailscale is stopped on this computer; start it and try again",
-		"NoState":    "Tailscale is not ready yet on this computer; wait for it to connect and try again",
-		"Starting":   "Tailscale is not ready yet on this computer; wait for it to connect and try again",
-		"Weird":      "Tailscale is not running on this computer (it says Weird); start it and try again",
+		"NeedsLogin":       "Tailscale is signed out on this computer; sign in (tailscale up) and try again",
+		"NeedsMachineAuth": "This computer is waiting to be approved on its tailnet; approve it in the Tailscale admin console and try again",
+		"Stopped":          "Tailscale is stopped on this computer; start it and try again",
+		"NoState":          "Tailscale is not ready yet on this computer; wait for it to connect and try again",
+		"Starting":         "Tailscale is not ready yet on this computer; wait for it to connect and try again",
+		"Weird":            "Tailscale is not running on this computer (it says Weird); start it and try again",
 	} {
 		_, err := Parse([]byte(`{"BackendState":"` + state + `","Peer":{}}`))
 		if err == nil || err.Error() != want {
