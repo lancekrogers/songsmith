@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +19,7 @@ import (
 	"github.com/lancekrogers/songsmith/internal/comfy/comfytest"
 	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/library"
+	"github.com/lancekrogers/songsmith/internal/machines"
 )
 
 // machinesEnv is a config whose own ComfyUI server is on a closed port and
@@ -25,11 +28,16 @@ type machinesEnv struct {
 	t    *testing.T
 	dir  string
 	path string
+	// find stands in for Tailscale; it never runs the real one.
+	find machines.Finder
 }
 
 func newMachinesEnv(t *testing.T) *machinesEnv {
 	dir := t.TempDir()
-	e := &machinesEnv{t: t, dir: dir, path: filepath.Join(dir, "config.yaml")}
+	e := &machinesEnv{t: t, dir: dir, path: filepath.Join(dir, "config.yaml"),
+		find: func(context.Context) ([]machines.Candidate, error) {
+			return nil, errors.New("this test has no tailnet")
+		}}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +61,7 @@ func newMachinesEnv(t *testing.T) *machinesEnv {
 
 func (e *machinesEnv) run(args ...string) (string, error) {
 	e.t.Helper()
-	root := newRootCmd()
+	root := newRootCmdFor(&app{findMachines: e.find})
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&out)

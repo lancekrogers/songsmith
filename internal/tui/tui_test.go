@@ -15,6 +15,7 @@ import (
 	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/health"
 	"github.com/lancekrogers/songsmith/internal/library"
+	"github.com/lancekrogers/songsmith/internal/machines"
 	"github.com/lancekrogers/songsmith/internal/queue"
 	"github.com/lancekrogers/songsmith/internal/writer"
 )
@@ -64,6 +65,9 @@ func testDeps(t *testing.T, store *library.Store, q *queue.Queue, d Drafter) Dep
 		Store: store, Queue: q, Drafter: d, Player: newFakePlayer(), Master: &fakeMaster{}, Config: testConfig(t),
 		Checks:    func(context.Context, config.Config) []health.Check { return readyChecks() },
 		Clipboard: func(string) error { return nil },
+		FindMachines: func(context.Context) ([]machines.Candidate, error) {
+			return nil, errors.New("this test has no tailnet")
+		},
 	}
 }
 

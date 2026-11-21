@@ -10,20 +10,25 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/lancekrogers/songsmith/internal/config"
+	"github.com/lancekrogers/songsmith/internal/machines"
 )
 
 var version = "dev"
 
 type app struct {
 	configPath string
+	// findMachines lists the computers machines add --discover offers; nil
+	// means the demo list or Tailscale (see machineFinder).
+	findMachines machines.Finder
 }
 
 func (a *app) loadConfig() (config.Config, error) {
 	return config.Load(a.configPath)
 }
 
-func newRootCmd() *cobra.Command {
-	a := &app{}
+func newRootCmd() *cobra.Command { return newRootCmdFor(&app{}) }
+
+func newRootCmdFor(a *app) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "songsmith",
 		Short: "Write and render songs with local models",

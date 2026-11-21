@@ -1,13 +1,15 @@
 # Rendering on more than one computer: Settings → Machines with this
 # computer, Studio Mac (ready and measured), Attic PC (offline) and MacBook
-# Air (its VAE file missing); adding Den iMac, which is checked before it is
-# saved; the song form's Render on row pinning a song to Studio Mac; and the
-# library with two songs rendering at once on different machines, one
-# waiting for Attic PC to come back and one waiting for Studio Mac. Uses a
-# throwaway config under /tmp/songsmith-demo-machines (see
-# demos/machines.yaml); every ComfyUI is demos/machinesfake on a loopback
-# port and the writer is demos/setupfake, so nothing real is reached,
-# rendered or played.
+# Air (its VAE file missing); Find on Tailscale listing the tailnet (Den iMac
+# ready, Garage Mini offline, Kitchen PC not answering, with the fix under
+# it, and Studio Mac added already), then adding Den iMac under its Tailscale
+# name, checked before it is saved; the song form's Render on row pinning a
+# song to Studio Mac; and the library with two songs rendering at once on
+# different machines, one waiting for Attic PC to come back and one waiting
+# for Studio Mac. Uses a throwaway config under /tmp/songsmith-demo-machines
+# (see demos/machines.yaml); the tailnet is demos/tailnet.json, every ComfyUI
+# is demos/machinesfake on a loopback port and the writer is
+# demos/setupfake, so nothing real is reached, rendered or played.
 # Record with: just demo-machines
 
 Output demos/machines.gif
@@ -30,7 +32,7 @@ Type "rm -rf /tmp/songsmith-demo-machines && mkdir -p /tmp/songsmith-demo-machin
 Type "d=/tmp/songsmith-demo-machines/ComfyUI && mkdir -p $d/.venv/bin $d/.venv/lib/python3.12/site-packages/torch $d/models/diffusion_models $d/models/text_encoders $d/models/vae && touch $d/main.py $d/.venv/bin/python $d/.venv/lib/python3.12/site-packages/torch/__init__.py" Enter
 Type "for f in diffusion_models/minimax_music3_dit_fp16.safetensors:4914197682 text_encoders/minimax_music3_text_encoder_pruned_bf16.safetensors:16706629398 vae/minimax_music3_dav.safetensors:216696128; do dd if=/dev/zero of=$d/models/${f%%:*} bs=1 count=0 seek=${f##*:} 2>/dev/null; done" Enter
 Type "for b in ffprobe ffmpeg; do printf '#!/bin/sh\nexit 0\n' > /tmp/songsmith-demo-machines/bin/$b && chmod +x /tmp/songsmith-demo-machines/bin/$b; done" Enter
-Type "export PATH=$PWD/bin:/tmp/songsmith-demo-machines/bin:/usr/bin:/bin SONGSMITH_CONFIG=/tmp/songsmith-demo-machines/config.yaml SONGSMITH_DEMO_SETUP=http://127.0.0.1:18490" Enter
+Type "export PATH=$PWD/bin:/tmp/songsmith-demo-machines/bin:/usr/bin:/bin SONGSMITH_CONFIG=/tmp/songsmith-demo-machines/config.yaml SONGSMITH_DEMO_SETUP=http://127.0.0.1:18490 SONGSMITH_DEMO_TAILNET=$PWD/demos/tailnet.json" Enter
 # Stop here unless this shell runs the fresh build on the scratch config.
 Type `[ "$SONGSMITH_CONFIG" = /tmp/songsmith-demo-machines/config.yaml ] && [ "$(command -v songsmith)" = "$PWD/bin/songsmith" ] || exit 1` Enter
 Type "/tmp/songsmith-demo-machinesfake/machinesfake -seed $SONGSMITH_CONFIG || exit 1" Enter
@@ -56,17 +58,23 @@ Sleep 3s
 Down@350ms 10
 Sleep 4s
 
-# Add a machine: a name, an address, and what the check found before it is saved.
+# Find on Tailscale, just above Add: every computer on the tailnet and what its ComfyUI answered.
 Type "G"
+Sleep 1.5s
+Up
 Sleep 2s
 Enter
-Sleep 1s
-Type "Den iMac"
-Sleep 800ms
+Sleep 5s
+
+# Kitchen PC is on Tailscale but nothing answers; the line under it says what to set there.
+Down@700ms 3
+Sleep 6s
+
+# Den iMac: its Tailscale name filled in, then what the check found before it is saved.
+Up@700ms 2
+Sleep 2.5s
 Enter
-Sleep 1s
-Type "127.0.0.1:18516"
-Sleep 1.5s
+Sleep 2.5s
 Enter
 Sleep 4s
 Enter
