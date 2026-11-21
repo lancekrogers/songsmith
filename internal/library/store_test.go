@@ -2,9 +2,11 @@ package library
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -177,4 +179,39 @@ func TestSongsSavedBeforeSeedPinningLoadUnpinned(t *testing.T) {
 	if err != nil || song.SeedPinned || song.Seed != 99 {
 		t.Fatalf("%v %+v", err, song)
 	}
+}
+
+func TestListWhileNewSongsAreLoaded(t *testing.T) {
+	s := NewStore(t.TempDir())
+	for i := range 20 {
+		if _, err := s.Create(Song{Title: fmt.Sprintf("Old %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := s.List(); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	})
+	for i := range 60 {
+		song, err := s.Create(Song{Title: fmt.Sprintf("New %d", i)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Load(song.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	wg.Wait()
 }
