@@ -9,8 +9,10 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/lancekrogers/songsmith/internal/comfy/comfytest"
 	"github.com/lancekrogers/songsmith/internal/config"
 	"github.com/lancekrogers/songsmith/internal/library"
+	"github.com/lancekrogers/songsmith/internal/machines"
 )
 
 // fitsScreen fails the test for any line wider than width or a view taller
@@ -150,4 +152,86 @@ func TestLauncherHintsWrapAtEightyColumns(t *testing.T) {
 			t.Errorf("%s: the hint is not shown whole:\n%s", c.name, view)
 		}
 	}
+}
+
+// assertFits fails for a line wider than width or one cut with an ellipsis.
+func assertFits(t *testing.T, views []string, width int) {
+	t.Helper()
+	for _, v := range views {
+		for _, l := range strings.Split(v, "\n") {
+			if w := ansi.StringWidth(l); w > width {
+				t.Errorf("a line is %d wide: %q", w, l)
+			}
+			if strings.Contains(l, "…") && !strings.Contains(l, "checking…") && !strings.Contains(l, "asking…") {
+				t.Errorf("a line was cut: %q", l)
+			}
+		}
+	}
+}
+
+func TestEveryFoundStateFitsEightyColumns(t *testing.T) {
+	const long = "basement-workstation-under-the-stairs-at-the-back-of-the-house"
+	a, r := newTailnetRig(t, 80, 24)
+	models := r.live.Get().ComfyUI
+	ready, missing, old := comfytest.New(t, "ready"), comfytest.New(t, "missing"), comfytest.New(t, "old")
+	ready.SetModels(models.DiffusionModel, models.TextEncoder, models.VAE)
+	missing.SetModels(models.DiffusionModel, models.TextEncoder)
+	old.SetModels(models.DiffusionModel, models.TextEncoder, models.VAE)
+	old.SetMissingNode("MiniMaxMusic3TextEncode")
+	closed := comfytest.New(t, "closed")
+	closed.Close()
+	cand := func(suffix, addr, url string, online bool) machines.Candidate {
+		return machines.Candidate{Name: long + suffix, Online: online, Address: addr, URLs: []string{url}, Hosts: []string{addr}}
+	}
+	r.list = []machines.Candidate{
+		cand("-1", "100.64.0.11", ready.URL, true),
+		cand("-2", "100.64.0.12", missing.URL, true),
+		cand("-3", "100.64.0.13", old.URL, true),
+		cand("-4", "100.64.0.14", closed.URL, true),
+		cand("-5", "100.64.0.15", "http://127.0.0.1:1", false),
+		cand("-6", "100.64.0.16", r.servers[studio].URL, true),
+		{Name: "Short Name", Online: true, Address: "100.64.0.17", URLs: []string{closed.URL}, Hosts: []string{"100.64.0.17"}},
+	}
+	a = openSettingsOn(t, a, sectionMachines)
+	a = focusAnchor(t, a, "find machines")
+	a = pressSettings(t, a, "enter")
+	views := screens(t, a)
+	for _, want := range []string{
+		long + "-1 · ready · mps · 64 GB · ComfyUI 0.3.99",
+		long + "-2 · models missing", "Missing model files: minimax_music3_dav.safetensors",
+		long + "-3 · ComfyUI too old", "Missing nodes: MiniMaxMusic3TextEncode",
+		long + "-4 · ComfyUI not answering", "Nothing answers at 100.64.0.14 on port " + portOf(t, closed.URL) + ". On that computer, set comfyui.host to 100.64.0.14 in its songsmith config and run songsmith server start.",
+		long + "-5 · offline on Tailscale", "Offline on Tailscale: it can still be added, and songs go to it once it answers",
+		long + "-6 · already added as Studio Mac",
+		"Short Name", "ComfyUI not answering",
+	} {
+		if !seen(views, want) {
+			t.Errorf("%q is never shown whole", want)
+		}
+	}
+	assertFits(t, views, 80)
+
+	a = focusAnchor(t, a, "found 100.64.0.11")
+	a = pressSettings(t, a, "enter")
+	if a.settings.edit.input.Value() != long+"-1" {
+		t.Fatalf("the name editor holds %q", a.settings.edit.input.Value())
+	}
+	if !shows(a, "what songsmith calls it; enter keeps this name") {
+		t.Errorf("the name editor's hint is not shown whole:\n%s", plain(a))
+	}
+	assertFits(t, []string{plain(a)}, 80)
+	a = pressSettings(t, a, "enter")
+	if a.settings.machines.add == nil {
+		t.Fatalf("no draft:\n%s", plain(a))
+	}
+	a = focusAnchor(t, a, "draft discard")
+	a = pressSettings(t, a, "enter")
+
+	f := a.settings.machines.find
+	delete(f.results, 0)
+	views = screens(t, a)
+	if !seen(views, long+"-1 · asking…") {
+		t.Errorf("a computer still being asked:\n%s", strings.Join(views, "\n"))
+	}
+	assertFits(t, views, 80)
 }

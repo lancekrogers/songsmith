@@ -295,6 +295,7 @@ songsmith takes <song-id>                  # list takes; --use <file> makes one 
 songsmith server start|status|stop
 songsmith machines                         # the computers songs render on, and whether each is ready
 songsmith machines add "MacBook Pro" http://100.101.102.103:8188
+songsmith machines add --discover          # the computers on your Tailscale network, and whether ComfyUI answers on each
 songsmith generate --machine "MacBook Pro" --lyrics lyrics.txt --caption caption.txt
 songsmith config                           # the effective configuration
 ```
@@ -362,6 +363,27 @@ songsmith machines                                                # each machine
 songsmith machines remove "MacBook Pro"
 ```
 
+If both computers are on [Tailscale](https://tailscale.com), you can skip finding the
+address. **Find on Tailscale**, under Add a machine, asks the Tailscale on this computer
+for the other computers on your tailnet and lists each one with what its ComfyUI
+answered: ready (with its memory and ComfyUI version), models missing, ComfyUI too old,
+not answering, offline on Tailscale, or already added. Phones, tablets, Mullvad exit
+nodes and computers shared with you from someone else's tailnet are left out. Nothing is
+asked until you press enter on it. Enter on a computer fills in its Tailscale name, which
+you can change, then checks it and shows what it found before you save it, as Add does.
+It is saved at its Tailscale address (`http://100.x.y.z:8188`), which does not depend
+on DNS. For a computer that is on Tailscale but not answering, the line under it says
+what to set on that computer, with its address in it. The same from a shell:
+
+```bash
+songsmith machines add --discover                 # lists the computers and what each answered; adds nothing
+songsmith machines add --discover "Studio Mac"    # adds one by its name, Tailscale name or address
+songsmith machines add Studio studio --discover   # adds it under a name of your own
+```
+
+Without Tailscale, Find on Tailscale says so in one sentence, and adding by address
+works as above.
+
 Once more than one machine gets new songs, the song form has a **Render on** row: any free
 machine, or one machine by name. The library shows each rendering song's machine and its
 own progress under its title, says when a song waits for a machine that stopped answering
@@ -407,6 +429,9 @@ Known limits:
 - The model files must be installed on every machine. If a machine's files have other
   names, set them in its `machines` entry, or with `--diffusion-model`,
   `--text-encoder` and `--vae` on `machines add`.
+- Find on Tailscale asks each computer on port 8188, then on this computer's
+  `comfyui.port` if that differs. A computer whose ComfyUI listens elsewhere is added
+  by its address.
 
 ## Configuration
 

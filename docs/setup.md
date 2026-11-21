@@ -66,6 +66,13 @@ saving it, or from a shell:
 songsmith machines add "MacBook Pro" http://100.101.102.103:8188
 ```
 
+If both computers are on Tailscale, you need not look up the address: **Find on
+Tailscale** in Settings → Machines lists the other computers on your tailnet and whether
+ComfyUI answers on each, and enter on one adds it the same way. From a shell,
+`songsmith machines add --discover` lists them and `songsmith machines add --discover
+"Studio Mac"` adds one. For a computer that is not answering yet, it says what to set
+there: `comfyui.host` to that computer's Tailscale address, then `songsmith server start`.
+
 ComfyUI has no login, so keep that address on a private network such as Tailscale,
 never a public one. The README's "Rendering on more than one computer" covers how
 songs are shared out and the known limits.
