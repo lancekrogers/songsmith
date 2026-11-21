@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -102,8 +103,9 @@ func (s *Store) scan() (songs map[string]string, folders []string, err error) {
 		}
 	}
 	walk("", 1)
+	// The caller's copy is its own: remember and forget change s.where.
 	s.idx.Lock()
-	s.where = songs
+	s.where = maps.Clone(songs)
 	s.idx.Unlock()
 	return songs, folders, errors.Join(errs...)
 }
