@@ -62,15 +62,18 @@ func (r Reader) Peers(ctx context.Context) ([]Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, Timeout)
+	bounded, cancel := context.WithTimeout(ctx, Timeout)
 	defer cancel()
 	run := r.Run
 	if run == nil {
 		run = runStatus
 	}
-	out, stderr, err := run(ctx, cli)
+	out, stderr, err := run(bounded, cli)
 	if err != nil {
 		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if bounded.Err() != nil {
 			return nil, fmt.Errorf("Tailscale did not answer within %s; check that it runs on this computer and try again", Timeout)
 		}
 		detail := strings.TrimSpace(string(stderr))

@@ -367,13 +367,13 @@ If both computers are on [Tailscale](https://tailscale.com), you can skip findin
 address. **Find on Tailscale**, under Add a machine, asks the Tailscale on this computer
 for the other computers on your tailnet and lists each one with what its ComfyUI
 answered: ready (with its memory and ComfyUI version), models missing, ComfyUI too old,
-not answering, offline on Tailscale, or already added. Phones, tablets, Mullvad exit nodes and
-computers shared with you from someone else's tailnet are left out. Nothing is asked until you
-press enter on it. Enter on a computer fills in its Tailscale name, which you can change,
-then checks it and shows what it found before you save it, as Add does. It is saved at
-its Tailscale address (`http://100.x.y.z:8188`), which does not depend on DNS. For a
-computer that is on Tailscale but not answering, the line under it says what to set on
-that computer, with its address in it. The same from a shell:
+not answering, offline on Tailscale, or already added. Phones, tablets, Mullvad exit
+nodes and computers shared with you from someone else's tailnet are left out. Nothing is
+asked until you press enter on it. Enter on a computer fills in its Tailscale name, which
+you can change, then checks it and shows what it found before you save it, as Add does.
+It is saved at its Tailscale address (`http://100.x.y.z:8188`), which does not depend
+on DNS. For a computer that is on Tailscale but not answering, the line under it says
+what to set on that computer, with its address in it. The same from a shell:
 
 ```bash
 songsmith machines add --discover                 # lists the computers and what each answered; adds nothing
