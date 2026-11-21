@@ -108,7 +108,7 @@ func newMachinesAddCmd(a *app) *cobra.Command {
 	var m config.Machine
 	var discover bool
 	cmd := &cobra.Command{
-		Use:   "add <name> <address> | --discover [<name>] [<computer>]",
+		Use:   "add <name> <address> | --discover [[<name>] <computer>]",
 		Short: "Add another computer's ComfyUI server to render on",
 		Long: "Add another computer's ComfyUI server, such as http://studio.tailnet.ts.net:8188. Songsmith checks it\n" +
 			"and says what it found, then saves it, ready or not, so a computer that is asleep now can be added.\n\n" +
@@ -267,15 +267,17 @@ func listDiscovered(ctx context.Context, w io.Writer, cfg config.Config, models 
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "COMPUTER\tCOMFYUI\tADDRESS")
-	example := -1
+	// The example is a computer that is ready, else the first not added.
+	example, ready := -1, false
 	for i, c := range cs {
 		f := found[i]
-		state := discoveredState(cfg, c, f)
-		_, added := c.AddedAs(cfg)
-		if !added && (example < 0 || f.Answered && f.Status.State == machines.Ready && !found[example].Answered) {
-			example = i
+		if _, added := c.AddedAs(cfg); !added {
+			isReady := f.Answered && f.Status.State == machines.Ready
+			if example < 0 || isReady && !ready {
+				example, ready = i, isReady
+			}
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", c.Name, state, f.URL)
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", c.Name, discoveredState(cfg, c, f), f.URL)
 	}
 	tw.Flush()
 

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -82,8 +83,7 @@ func (a *app) receiveTailnet(msg tailnetReadMsg) {
 	f.looking, f.found, f.err = false, msg.found, msg.err
 	f.results = map[int]machines.Found{}
 	if msg.err == nil && len(msg.found) > 0 {
-		n := len(msg.found)
-		a.settingsNote(fmt.Sprintf("%d %s on Tailscale · asking each whether its ComfyUI answers", n, plural(n, "computer", "computers")))
+		a.settingsNote(askingNote(len(msg.found)))
 	}
 	a.revealFound()
 }
@@ -122,6 +122,21 @@ func (a *app) receiveAsked(msg machineAskedMsg) {
 		return
 	}
 	f.results[msg.i] = msg.found
+	n := len(f.found)
+	if len(f.results) < n || a.settings.message != askingNote(n) {
+		return
+	}
+	cfg := a.cfg()
+	next := "all added already"
+	if slices.ContainsFunc(f.found, func(c machines.Candidate) bool { _, added := c.AddedAs(cfg); return !added }) {
+		next = "enter on one adds it"
+	}
+	a.settingsNote(fmt.Sprintf("%d %s on Tailscale · %s", n, plural(n, "computer", "computers"), next))
+}
+
+// askingNote is the note shown while the computers found are being asked.
+func askingNote(n int) string {
+	return fmt.Sprintf("%d %s on Tailscale · asking each whether its ComfyUI answers", n, plural(n, "computer", "computers"))
 }
 
 // findRows are Find on Tailscale and, once asked, every computer found, or
@@ -224,6 +239,6 @@ func (a *app) beginAddFound(c machines.Candidate, url string) tea.Cmd {
 		}
 		return cmd, err
 	})
-	a.settings.edit.hint = "what songsmith calls it; it is checked before it is saved"
+	a.settings.edit.hint = "what songsmith calls it; enter keeps this name"
 	return cmd
 }

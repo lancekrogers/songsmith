@@ -101,6 +101,24 @@ func TestDiscoverListsEveryComputerAndAddsNothing(t *testing.T) {
 	}
 }
 
+func TestDiscoverSuggestsAComputerThatIsReady(t *testing.T) {
+	e := newTailnetEnv(t)
+	e.find = func(context.Context) ([]machines.Candidate, error) {
+		return []machines.Candidate{
+			{Name: "Air", Online: true, Address: "100.64.0.5", URLs: []string{e.air.URL}, Hosts: []string{"100.64.0.5"}},
+			{Name: "Kitchen PC", Online: true, Address: "100.64.0.6", URLs: []string{e.kitchen}, Hosts: []string{"100.64.0.6"}},
+			{Name: "Zen iMac", Online: true, Address: "100.64.0.4", URLs: []string{e.den.URL}, Hosts: []string{"100.64.0.4"}},
+		}, nil
+	}
+	out, err := e.run("machines", "add", "--discover")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if !strings.Contains(out, `songsmith machines add --discover "Zen iMac"`) {
+		t.Fatalf("the example is not the computer that is ready:\n%s", out)
+	}
+}
+
 func TestDiscoverAddsAComputerByItsName(t *testing.T) {
 	e := newTailnetEnv(t)
 	out, err := e.run("machines", "add", "--discover", "den imac")

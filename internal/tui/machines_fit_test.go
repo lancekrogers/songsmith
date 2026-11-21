@@ -216,7 +216,7 @@ func TestEveryFoundStateFitsEightyColumns(t *testing.T) {
 	if a.settings.edit.input.Value() != long+"-1" {
 		t.Fatalf("the name editor holds %q", a.settings.edit.input.Value())
 	}
-	if !shows(a, "what songsmith calls it; it is checked before it is saved") {
+	if !shows(a, "what songsmith calls it; enter keeps this name") {
 		t.Errorf("the name editor's hint is not shown whole:\n%s", plain(a))
 	}
 	assertFits(t, []string{plain(a)}, 80)

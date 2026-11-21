@@ -117,9 +117,15 @@ func TestFoundComputersFillInOneByOne(t *testing.T) {
 			t.Errorf("%q not shown while Den iMac is being asked:\n%s", want, view)
 		}
 	}
+	if !shows(a, "4 computers on Tailscale · asking each whether its ComfyUI answers") {
+		t.Errorf("no note that the computers are being asked:\n%s", view)
+	}
 	once.Do(func() { close(release) })
 	pump(func(a app) bool { _, ok := a.settings.machines.find.results[0]; return ok })
 	<-done
+	if shows(a, "asking each") || !shows(a, "4 computers on Tailscale · enter on one adds it") {
+		t.Errorf("the note still says the computers are being asked once all have answered:\n%s", plain(a))
+	}
 	if !shows(a, "ready · mps · 96 GB · ComfyUI 0.3.99") {
 		t.Fatalf("Den iMac's result:\n%s", plain(a))
 	}
