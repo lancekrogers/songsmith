@@ -23,7 +23,7 @@ const sample = `{
     "k7": {"HostName": "TV", "DNSName": "tv.example-tailnet.ts.net.", "TailscaleIPs": ["100.64.0.8"], "Online": true, "OS": "tvOS"},
     "k8": {"HostName": "friend", "DNSName": "friend.example-tailnet.ts.net.", "TailscaleIPs": ["100.64.0.9"], "Online": true, "OS": "linux", "ShareeNode": true},
     "k9": {"HostName": "shared-in", "DNSName": "shared-in.other-tailnet.ts.net.", "TailscaleIPs": ["100.64.0.10"], "Online": true, "OS": "linux"},
-    "k10": {"HostName": "us-nyc-wg-301", "DNSName": "us-nyc-wg-301.mullvad.ts.net.", "TailscaleIPs": ["100.64.0.11"], "Online": true, "OS": "linux"},
+    "k10": {"HostName": "exit-relay-1", "DNSName": "exit-relay-1.mullvad.ts.net.", "TailscaleIPs": ["100.64.0.11"], "Online": true, "OS": "linux"},
     "k11": {"HostName": "exit", "DNSName": "exit.example-tailnet.ts.net.", "TailscaleIPs": ["100.64.0.12"], "Online": true, "OS": "linux", "Tags": ["tag:mullvad-exit-node"]},
     "k12": {"HostName": "noaddr", "DNSName": "noaddr.example-tailnet.ts.net.", "TailscaleIPs": [], "Online": true, "OS": "linux"},
     "k13": {"HostName": "Laptop", "DNSName": "laptop.example-tailnet.ts.net.", "TailscaleIPs": ["100.64.0.1"], "Online": true, "OS": "macOS"}

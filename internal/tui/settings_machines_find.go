@@ -224,6 +224,6 @@ func (a *app) beginAddFound(c machines.Candidate, url string) tea.Cmd {
 		}
 		return cmd, err
 	})
-	a.settings.edit.hint = "what songsmith calls it; it is checked at " + url + " before it is saved"
+	a.settings.edit.hint = "what songsmith calls it; it is checked before it is saved"
 	return cmd
 }

@@ -211,6 +211,22 @@ func TestEveryFoundStateFitsEightyColumns(t *testing.T) {
 	}
 	assertFits(t, views, 80)
 
+	a = focusAnchor(t, a, "found 100.64.0.11")
+	a = pressSettings(t, a, "enter")
+	if a.settings.edit.input.Value() != long+"-1" {
+		t.Fatalf("the name editor holds %q", a.settings.edit.input.Value())
+	}
+	if !shows(a, "what songsmith calls it; it is checked before it is saved") {
+		t.Errorf("the name editor's hint is not shown whole:\n%s", plain(a))
+	}
+	assertFits(t, []string{plain(a)}, 80)
+	a = pressSettings(t, a, "enter")
+	if a.settings.machines.add == nil {
+		t.Fatalf("no draft:\n%s", plain(a))
+	}
+	a = focusAnchor(t, a, "draft discard")
+	a = pressSettings(t, a, "enter")
+
 	f := a.settings.machines.find
 	delete(f.results, 0)
 	views = screens(t, a)
