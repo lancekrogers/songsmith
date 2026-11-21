@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/lancekrogers/songsmith/internal/backend"
 	"github.com/lancekrogers/songsmith/internal/config"
@@ -30,6 +31,8 @@ type machinesState struct {
 	speeds map[string]machines.Speed
 	add    *machineDraft
 	remove string
+	// find is Find on Tailscale, once it was asked.
+	find *machineFind
 	// question is what removing remove does to the songs that use it.
 	question string
 }
@@ -45,6 +48,8 @@ type machineCheck struct {
 type machineDraft struct {
 	machine config.Machine
 	check   machineCheck
+	// back is the line Discard returns to; empty means Add.
+	back string
 }
 
 type machineCheckedMsg struct {
@@ -270,6 +275,17 @@ func statusReport(st machines.Status, done, local bool, url string, width int, a
 	if !done || st.State == "" || st.State == machines.Ready && len(st.Unchecked) == 0 {
 		return nil
 	}
+	text, style := statusText(st, local, url)
+	rows := styledReportRows(anchor, text, width, style)
+	for i := range rows {
+		rows[i].indent, rows[i].anchor = true, anchor
+	}
+	return rows
+}
+
+// statusText is what a check of the machine at url found wrong and what to
+// do about it, and the style to draw it in.
+func statusText(st machines.Status, local bool, url string) (string, *lipgloss.Style) {
 	text, style := st.Detail, &warningStyle
 	missing := strings.Join(st.Missing, ", ")
 	switch {
@@ -291,11 +307,7 @@ func statusReport(st machines.Status, done, local bool, url string, width int, a
 	case st.State == machines.TooOld:
 		text = "Missing nodes: " + missing + ". Update ComfyUI on that computer to a version with MiniMax Music 3 support."
 	}
-	rows := styledReportRows(anchor, text, width, style)
-	for i := range rows {
-		rows[i].indent, rows[i].anchor = true, anchor
-	}
-	return rows
+	return text, style
 }
 
 func (a app) memoryRow(check machineCheck, checked bool, group, anchor string) settingRow {
@@ -338,14 +350,15 @@ func (a app) addMachineRows(width int) []settingRow {
 	note := styledReportRows("add machine note", privateNetworkNote, width, &warningStyle)
 	note[0].gap = true
 	rows = append(rows, note...)
+	rows = append(rows, a.findRows(width)...)
 	for i := range rows {
 		rows[i].group = group
 	}
 	if d := a.settings.machines.add; d != nil {
 		return append(rows, a.draftRows(d, width)...)
 	}
-	return append(rows, settingRow{name: "Add", kind: rowAction, verb: "add", group: group, anchor: "add machine", gap: true,
-		value: "type a name, then its address", wrap: true, applies: appliesNextSent,
+	return append(rows, settingRow{name: "Add", kind: rowAction, verb: "add", group: group, anchor: "add machine",
+		gap: a.settings.machines.find != nil, value: "type a name, then its address", wrap: true, applies: appliesNextSent,
 		help: "Checks the machine and shows what it found before saving it",
 		run:  (*app).beginAddMachine})
 }
@@ -363,10 +376,14 @@ func (a app) draftRows(d *machineDraft, width int) []settingRow {
 	rows = append(rows, settingRow{name: "Discard", kind: rowAction, verb: "discard", group: group, anchor: "draft discard",
 		value: "don't add it", applies: appliesNow,
 		run: func(a *app) tea.Cmd {
-			name := a.settings.machines.add.machine.Name
+			d := a.settings.machines.add
 			a.settings.machines.add = nil
-			a.settingsNote("Did not add " + name)
-			a.settings.marks[sectionMachines] = lineAnchor{set: true, name: "add machine", option: -1}
+			a.settingsNote("Did not add " + d.machine.Name)
+			back := d.back
+			if back == "" {
+				back = "add machine"
+			}
+			a.settings.marks[sectionMachines] = lineAnchor{set: true, name: back, option: -1}
 			return nil
 		}})
 	if done {
@@ -385,14 +402,20 @@ func (a app) draftRows(d *machineDraft, width int) []settingRow {
 
 // beginAddMachine asks for the new machine's name, then its address.
 func (a *app) beginAddMachine() tea.Cmd {
-	cmd := a.beginEdit("Name", "", func(a *app, v string) (tea.Cmd, error) {
+	return a.beginMachineName("", func(a *app, name string) (tea.Cmd, error) { return a.beginAddress(name), nil })
+}
+
+// beginMachineName asks for a new machine's name, starting from initial,
+// and hands a name that can be used to next.
+func (a *app) beginMachineName(initial string, next func(a *app, name string) (tea.Cmd, error)) tea.Cmd {
+	cmd := a.beginEdit("Name", initial, func(a *app, v string) (tea.Cmd, error) {
 		if err := config.CheckMachineName(v); err != nil {
 			return nil, a.editorProblem(capitalize(err.Error()))
 		}
 		if m, ok := a.cfg().Machine(v); ok {
 			return nil, a.editorProblem("There is already a machine named " + m.Name + "; type another name")
 		}
-		return a.beginAddress(v), nil
+		return next(a, v)
 	})
 	e := &a.settings.edit
 	e.input.CharLimit = 0

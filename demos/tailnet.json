@@ -1,0 +1,6 @@
+[
+  {"name": "Den iMac", "os": "macOS", "online": true, "address": "100.64.0.4", "urls": ["http://127.0.0.1:18516"]},
+  {"name": "Garage Mini", "os": "macOS", "online": false, "address": "100.64.0.7", "urls": ["http://127.0.0.1:18518"]},
+  {"name": "Kitchen PC", "os": "windows", "online": true, "address": "100.64.0.6", "urls": ["http://127.0.0.1:18517"]},
+  {"name": "Studio Mac", "os": "macOS", "online": true, "address": "100.64.0.2", "urls": ["http://127.0.0.1:18513"]}
+]

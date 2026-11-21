@@ -26,6 +26,10 @@ func (a *app) runTUI(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	find, err := demoFinder()
+	if err != nil {
+		return err
+	}
 	live := config.NewLive(a.configPath, cfg)
 	r := newRenderer(live)
 	var note atomic.Value
@@ -41,6 +45,8 @@ func (a *app) runTUI(ctx context.Context) error {
 		WorkerNote: func() string { return note.Load().(string) },
 		Server:     tui.NewComfyServer(r.server),
 		Installer:  installer,
+		// Nil asks Tailscale, on the port the running config names.
+		FindMachines: find,
 	}
 
 	ctx, cancel := context.WithCancel(ctx)

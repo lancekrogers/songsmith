@@ -72,6 +72,10 @@ type Deps struct {
 	// CheckMachine asks a ComfyUI server whether it can render with models;
 	// nil means machines.Check. It is called off the UI goroutine.
 	CheckMachine func(ctx context.Context, url string, models config.ComfyUI) machines.Status
+	// FindMachines lists the computers Find on Tailscale offers to add;
+	// nil means the other computers on this computer's tailnet. It is
+	// called off the UI goroutine.
+	FindMachines machines.Finder
 }
 
 type screen int

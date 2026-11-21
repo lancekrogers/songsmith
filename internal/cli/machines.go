@@ -25,7 +25,8 @@ func newMachinesCmd(a *app) *cobra.Command {
 			"Queued songs go to whichever machine is free, so two machines render two songs at once.\n\n" +
 			"On the other computer, once: install ComfyUI and the model files (`songsmith setup --install`\n" +
 			"there is the easy way), set comfyui.host to an address this computer can reach, and run\n" +
-			"`songsmith server start`. Then add it here with `songsmith machines add <name> <address>`.\n\n" +
+			"`songsmith server start`. Then add it here with `songsmith machines add <name> <address>`,\n" +
+			"or, if both computers are on Tailscale, find it with `songsmith machines add --discover`.\n\n" +
 			privateNetworkNote,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -91,7 +92,8 @@ func printMachines(ctx context.Context, w io.Writer, cfg config.Config) {
 		}
 	}
 	if len(cfg.Machines) == 0 {
-		fmt.Fprintf(w, "\nNo other machines yet. Add one with `songsmith machines add <name> <address>`; `songsmith machines --help` says what the other computer needs.\n")
+		fmt.Fprintf(w, "\nNo other machines yet. Add one with `songsmith machines add <name> <address>`, or find one on Tailscale with "+
+			"`songsmith machines add --discover`; `songsmith machines --help` says what the other computer needs.\n")
 	}
 }
 
@@ -104,46 +106,232 @@ func onOff(on bool) string {
 
 func newMachinesAddCmd(a *app) *cobra.Command {
 	var m config.Machine
+	var discover bool
 	cmd := &cobra.Command{
-		Use:   "add <name> <address>",
+		Use:   "add <name> <address> | --discover [<name>] [<computer>]",
 		Short: "Add another computer's ComfyUI server to render on",
 		Long: "Add another computer's ComfyUI server, such as http://studio.tailnet.ts.net:8188. Songsmith checks it\n" +
 			"and says what it found, then saves it, ready or not, so a computer that is asleep now can be added.\n\n" +
+			"With --discover, songsmith asks Tailscale for the other computers on your tailnet and asks each\n" +
+			"whether its ComfyUI answers. Alone, it lists them and adds nothing. Given a computer from that\n" +
+			"list, by its name, Tailscale name or address, it adds that one, under <name> when one is given.\n\n" +
 			privateNetworkNote,
 		Example: `  songsmith machines add "MacBook Pro" http://macbook-pro-2:8188
-  songsmith machines add Attic attic.tailnet.ts.net:8188 --vae minimax_music3_dav_fp8.safetensors`,
-		Args: cobra.ExactArgs(2),
+  songsmith machines add Attic attic.tailnet.ts.net:8188 --vae minimax_music3_dav_fp8.safetensors
+  songsmith machines add --discover
+  songsmith machines add --discover "Studio Mac"
+  songsmith machines add Studio studio --discover`,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if !discover {
+				return cobra.ExactArgs(2)(cmd, args)
+			}
+			if len(args) > 2 {
+				return fmt.Errorf("--discover takes at most a name and a computer, such as "+
+					"songsmith machines add --discover \"Studio Mac\" or songsmith machines add Studio \"Studio Mac\" --discover; got %d arguments", len(args))
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := a.loadConfig()
 			if err != nil {
 				return err
 			}
+			if discover {
+				return a.addDiscovered(cmd, cfg, m, args)
+			}
 			m.Name, m.URL, m.Enabled = args[0], args[1], true
-			list, err := cfg.WithMachine(m)
-			if err != nil {
-				return err
-			}
-			added := list[len(list)-1]
-			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "Checking %s at %s...\n", added.Name, added.URL)
-			st := machines.Check(cmd.Context(), added.URL, added.Models(cfg.ComfyUI))
-			if st.State == machines.Ready {
-				fmt.Fprintf(out, "%s is %s.\n", added.Name, st.Detail)
-			} else {
-				fmt.Fprintf(out, "%s is %s: %s\n", added.Name, st.State, st.Detail)
-			}
-			if _, err := config.AddMachine(config.Path(a.configPath), m); err != nil {
-				return err
-			}
-			fmt.Fprintf(out, "Saved %s. Songs go to it once it is ready; a songsmith that is already open uses it once Settings → Machines is opened there, or after it restarts.\n", added.Name)
-			fmt.Fprintln(out, privateNetworkNote)
-			return nil
+			return a.saveMachine(cmd, cfg, m, func(out io.Writer, added config.Machine) {
+				fmt.Fprintf(out, "Checking %s at %s...\n", added.Name, added.URL)
+				reportCheck(out, added.Name, machines.Check(cmd.Context(), added.URL, added.Models(cfg.ComfyUI)))
+			})
 		},
 	}
+	cmd.Flags().BoolVar(&discover, "discover", false, "find the computer on Tailscale instead of giving its address")
 	cmd.Flags().StringVar(&m.DiffusionModel, "diffusion-model", "", "the diffusion model file on that computer (default: comfyui.diffusion_model)")
 	cmd.Flags().StringVar(&m.TextEncoder, "text-encoder", "", "the text encoder file on that computer (default: comfyui.text_encoder)")
 	cmd.Flags().StringVar(&m.VAE, "vae", "", "the VAE file on that computer (default: comfyui.vae)")
 	return cmd
+}
+
+func reportCheck(out io.Writer, name string, st machines.Status) {
+	if st.State == machines.Ready {
+		fmt.Fprintf(out, "%s is %s.\n", name, st.Detail)
+	} else {
+		fmt.Fprintf(out, "%s is %s: %s\n", name, st.State, st.Detail)
+	}
+}
+
+// saveMachine adds m once report has said what it found, ready or not.
+func (a *app) saveMachine(cmd *cobra.Command, cfg config.Config, m config.Machine, report func(out io.Writer, added config.Machine)) error {
+	list, err := cfg.WithMachine(m)
+	if err != nil {
+		return err
+	}
+	added := list[len(list)-1]
+	out := cmd.OutOrStdout()
+	report(out, added)
+	if _, err := config.AddMachine(config.Path(a.configPath), m); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Saved %s. Songs go to it once it is ready; a songsmith that is already open uses it once Settings → Machines is opened there, or after it restarts.\n", added.Name)
+	fmt.Fprintln(out, privateNetworkNote)
+	return nil
+}
+
+// addDiscovered lists the computers on the tailnet, or adds the one args
+// names, under the name args gives first when there are two.
+func (a *app) addDiscovered(cmd *cobra.Command, cfg config.Config, m config.Machine, args []string) error {
+	find, err := a.machineFinder(cfg)
+	if err != nil {
+		return err
+	}
+	out := cmd.OutOrStdout()
+	fmt.Fprintln(out, "Looking for computers on Tailscale...")
+	cs, err := find(cmd.Context())
+	if err != nil {
+		return err
+	}
+	if len(args) == 0 {
+		listDiscovered(cmd.Context(), out, cfg, m.Models(cfg.ComfyUI), cs)
+		return nil
+	}
+	c, err := pickComputer(cs, args[len(args)-1])
+	if err != nil {
+		return err
+	}
+	if name, ok := c.AddedAs(cfg); ok {
+		return fmt.Errorf("%s is already added, as %s; `songsmith machines` shows it", c.Name, name)
+	}
+	m.Name, m.Enabled = c.Name, true
+	if len(args) == 2 {
+		m.Name = args[0]
+	}
+	if len(c.URLs) > 0 {
+		m.URL = c.URLs[0]
+	}
+	if !c.Online {
+		return a.saveMachine(cmd, cfg, m, func(out io.Writer, added config.Machine) {
+			fmt.Fprintf(out, "%s is offline on Tailscale, so songsmith did not ask it; it is saved at %s.\n", added.Name, added.URL)
+		})
+	}
+	url, answered, reason := machines.Prober{}.Reach(cmd.Context(), c)
+	m.URL = url
+	return a.saveMachine(cmd, cfg, m, func(out io.Writer, added config.Machine) {
+		fmt.Fprintf(out, "Checking %s at %s...\n", added.Name, added.URL)
+		if !answered {
+			fmt.Fprintf(out, "%s is not answering (%s). %s\n", added.Name, reason, c.NotAnswering())
+			return
+		}
+		reportCheck(out, added.Name, machines.Check(cmd.Context(), added.URL, added.Models(cfg.ComfyUI)))
+	})
+}
+
+// pickComputer is the one computer of cs that want names, by its name, its
+// Tailscale name or one of its addresses, ignoring case.
+func pickComputer(cs []machines.Candidate, want string) (machines.Candidate, error) {
+	var hits []machines.Candidate
+	for _, c := range cs {
+		if c.Matches(want) {
+			hits = append(hits, c)
+		}
+	}
+	switch len(hits) {
+	case 1:
+		return hits[0], nil
+	case 0:
+		if len(cs) == 0 {
+			return machines.Candidate{}, fmt.Errorf("Tailscale lists no other computers, so none is called %q; add it by its address with `songsmith machines add <name> <address>`", want)
+		}
+		return machines.Candidate{}, fmt.Errorf("no computer on Tailscale is called %q; the computers found are: %s", want, candidateNames(cs))
+	}
+	return machines.Candidate{}, fmt.Errorf("%d computers on Tailscale match %q: %s; give its full Tailscale name or its address instead", len(hits), want, candidateNames(hits))
+}
+
+func candidateNames(cs []machines.Candidate) string {
+	var names []string
+	for _, c := range cs {
+		names = append(names, fmt.Sprintf("%s (%s)", c.Name, c.Address))
+	}
+	return strings.Join(names, ", ")
+}
+
+// listDiscovered asks every computer on the tailnet whether its ComfyUI
+// answers, and prints what it found and how to add one.
+func listDiscovered(ctx context.Context, w io.Writer, cfg config.Config, models config.ComfyUI, cs []machines.Candidate) {
+	if len(cs) == 0 {
+		fmt.Fprintln(w, "Tailscale lists no other computers that could run ComfyUI. Add one by its address with `songsmith machines add <name> <address>`.")
+		return
+	}
+	found := make([]machines.Found, len(cs))
+	machines.Prober{}.ProbeAll(ctx, cfg, models, cs, func(i int, f machines.Found) { found[i] = f })
+
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "COMPUTER\tCOMFYUI\tADDRESS")
+	example := -1
+	for i, c := range cs {
+		f := found[i]
+		state := discoveredState(cfg, c, f)
+		_, added := c.AddedAs(cfg)
+		if !added && (example < 0 || f.Answered && f.Status.State == machines.Ready && !found[example].Answered) {
+			example = i
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", c.Name, state, f.URL)
+	}
+	tw.Flush()
+
+	if example < 0 {
+		fmt.Fprintln(w, "\nEvery computer found is added already.")
+	} else {
+		name := shellQuote(cs[example].Name)
+		fmt.Fprintf(w, "\nAdd one by its name: songsmith machines add --discover %s\n", name)
+		fmt.Fprintf(w, "Or under a name of your own: songsmith machines add <name> %s --discover\n", name)
+	}
+	for i, c := range cs {
+		f := found[i]
+		if _, added := c.AddedAs(cfg); added || !f.Asked {
+			continue
+		}
+		switch {
+		case !f.Answered:
+			fmt.Fprintf(w, "\n%s: %s\n", c.Name, c.NotAnswering())
+		case f.Status.State != machines.Ready || len(f.Status.Unchecked) > 0:
+			fmt.Fprintf(w, "\n%s: %s\n", c.Name, f.Status.Detail)
+		}
+	}
+	fmt.Fprintln(w, "\n"+privateNetworkNote)
+}
+
+// discoveredState sums up, in a few words, what asking c found.
+func discoveredState(cfg config.Config, c machines.Candidate, f machines.Found) string {
+	if name, ok := c.AddedAs(cfg); ok {
+		return "already added as " + name
+	}
+	switch {
+	case !c.Online:
+		return "offline on Tailscale"
+	case !f.Asked:
+		return "not asked"
+	case !f.Answered:
+		return "not answering (" + f.Reason + ")"
+	case f.Status.AnsweredWithError:
+		return "answered with an error"
+	case f.Status.State == machines.Ready && len(f.Status.Unchecked) > 0:
+		return "ready, files not checked"
+	case f.Status.State == machines.Ready:
+		return strings.Join(append([]string{"ready"}, f.Status.Hardware()...), ", ")
+	}
+	return string(f.Status.State)
+}
+
+// shellQuote quotes s for a shell when it has a space or other character
+// a shell would split or expand.
+func shellQuote(s string) string {
+	if s != "" && !strings.ContainsFunc(s, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_.:@/+", r))
+	}) {
+		return s
+	}
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", `\$`, "`", "\\`").Replace(s) + `"`
 }
 
 func newMachinesRemoveCmd(a *app) *cobra.Command {

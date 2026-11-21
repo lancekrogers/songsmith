@@ -93,13 +93,7 @@ func Check(ctx context.Context, baseURL string, models config.ComfyUI) Status {
 func offline(baseURL string, err error) Status {
 	detail := fmt.Sprintf("not answering at %s (%v). Check that the computer is awake, that ComfyUI runs there (`songsmith server start` on that computer), "+
 		"and that its comfyui.host is an address this computer can reach.", baseURL, err)
-	reason := err.Error()
-	if i := strings.LastIndex(reason, ": "); i >= 0 {
-		reason = reason[i+2:]
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		reason = fmt.Sprintf("no answer within %s", CheckTimeout)
-	}
+	reason := shortReason(err, CheckTimeout)
 	answered := !errors.Is(err, comfy.ErrUnreachable) && !errors.Is(err, context.DeadlineExceeded)
 	if answered {
 		detail = fmt.Sprintf("ComfyUI at %s answered with an error: %v", baseURL, err)
@@ -108,8 +102,9 @@ func offline(baseURL string, err error) Status {
 	return Status{State: Offline, Detail: detail, Reason: reason, AnsweredWithError: answered}
 }
 
-// about describes the hardware a check found, such as ", mps, 64 GB, ComfyUI 0.3.60".
-func (s Status) about() string {
+// Hardware is what a check found the machine has, such as mps, 64 GB and
+// ComfyUI 0.3.60, each that it reported.
+func (s Status) Hardware() []string {
 	var parts []string
 	if s.Device != "" {
 		parts = append(parts, s.Device)
@@ -120,6 +115,12 @@ func (s Status) about() string {
 	if s.Version != "" {
 		parts = append(parts, "ComfyUI "+s.Version)
 	}
+	return parts
+}
+
+// about describes the hardware a check found, such as ", mps, 64 GB, ComfyUI 0.3.60".
+func (s Status) about() string {
+	parts := s.Hardware()
 	if len(parts) == 0 {
 		return ""
 	}

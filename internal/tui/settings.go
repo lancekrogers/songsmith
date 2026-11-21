@@ -459,6 +459,10 @@ func (a app) receiveSettings(msg settingsAsync) (app, tea.Cmd) {
 		a.receiveMachine(msg)
 	case machineSpeedsMsg:
 		a.settings.machines.speeds = msg.speeds
+	case tailnetReadMsg:
+		a.receiveTailnet(msg)
+	case machineAskedMsg:
+		a.receiveAsked(msg)
 	}
 	return a, nil
 }
